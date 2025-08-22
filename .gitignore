@@ -18,3 +18,5 @@ ios/
 # env
 .env
 .env.*.local
+android/
+ios/
