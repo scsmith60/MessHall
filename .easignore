@@ -1,0 +1,101 @@
+# --- dependencies (EAS installs these on the builder) ---
+node_modules/
+npm-debug.log*
+yarn.lock.*.backup
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/install-state.gz
+package-lock.json.*.backup
+
+# --- VCS & IDE cruft ---
+.git/
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# --- Expo/Metro caches ---
+.expo/
+.expo-shared/
+.metros/
+.metros-cache/
+.metro-cache/
+
+# --- Generic build outputs ---
+dist/
+build/
+web-build/
+coverage/
+reports/
+screenshots/
+*.log
+
+# --- Android-only heavy stuff (safe to ignore) ---
+android/.gradle/
+android/.cxx/
+android/build/
+android/app/build/
+android/app/intermediates/
+android/app/generated/
+android/local.properties
+android/**/*/build/
+android/**/outputs/
+android/.idea/
+android/captures/
+android/.settings/
+android/.classpath
+android/.project
+android/.externalNativeBuild/
+*.apk
+*.aab
+
+# keep the gradle wrapper (needed!)
+!android/gradle/wrapper/gradle-wrapper.properties
+!android/gradle/wrapper/gradle-wrapper.jar
+!android/gradlew
+!android/gradlew.bat
+
+# If you're ONLY building Android right now, you can exclude iOS entirely.
+# (Remove these lines when you want to build iOS.)
+ios/**
+!ios/README.md
+
+# --- CocoaPods junk if you ever include iOS ---
+ios/Pods/
+ios/build/
+ios/DerivedData/
+*.xcuserdatad/
+*.xcworkspace/xcuserdata/
+
+# --- Misc large local assets/tests you don't need in CI ---
+**/__tests__/
+**/__mocks__/
+**/*.map
+assets/samples/**
+assets/demo/**
+# --- More iOS cruft (safe to ignore) ---
+*.xcuserstate
+*.xcscmblueprint
+
+# --- Common tool / cache dirs ---
+.npm/
+.yarn/*
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions
+
+# --- Expo generated stuff ---
+expo-debug.log
+expo-error.log
+
+# --- Local env/config ---
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.secret

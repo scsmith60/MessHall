@@ -1,0 +1,4 @@
+{
+"name": "ShareExtension",
+"entry": "./share-extension/index.tsx"
+}

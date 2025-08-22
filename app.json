@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "scheme": "messhall",
+    "plugins": [
+      "./plugins/with-android-share-intent",
+      "./plugins/with-project-gradle-overrides",
+      "./plugins/with-patch-share-menu-gradle",
+      [
+        "expo-share-extension",
+        {
+          "activationRules": [
+            { "type": "url", "max": 1 },
+            { "type": "text" },
+            { "type": "image", "max": 1 }
+          ],
+          "backgroundColor": { "red": 17, "green": 24, "blue": 39, "alpha": 1 },
+          "displayName": "Save to MessHall",
+          "target": "ShareExtension"
+        }
+      ]
+    ],
+    "android": { "package": "com.scsmith60.messhall" },
+    "ios": {
+      "bundleIdentifier": "com.scsmith60.messhall",
+      "infoPlist": { "ITSAppUsesNonExemptEncryption": false }
+    },
+    "extra": {
+      "eas": { "projectId": "521a656b-0e37-4ae1-aae2-f4fd552a48b7" }
+    }
+  }
+}
