@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "packageManager": "npm@10.7.0",
-  "engines": { "node": ">=18 <19" },
+  "engines": {
+    "node": ">=18 <19"
+  },
   "scripts": {
     "start": "expo start --dev-client",
     "android": "expo run:android",
