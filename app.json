@@ -38,38 +38,37 @@
       ]
     },
     "plugins": [
-      [
-        "expo-share-extension",
-        {
-          "activationRules": [
-            { "type": "url", "max": 1 },
-            { "type": "text" },
-            { "type": "image", "max": 1 }
-          ],
-          "backgroundColor": { "red": 17, "green": 24, "blue": 39, "alpha": 1 },
-          "displayName": "Save to MessHall",
-          "target": "ShareExtension"
+  [
+    "expo-share-intent",
+    {
+      "iosActivationRules": {
+        "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+        "NSExtensionActivationSupportsWebPageWithMaxCount": 1,
+        "NSExtensionActivationSupportsImageWithMaxCount": 1,
+        "NSExtensionActivationSupportsMovieWithMaxCount": 1
+      },
+      "androidIntentFilters": ["text/*", "image/*"]
+    }
+  ],
+  [
+    "expo-build-properties",
+    {
+      "android": {
+        "minSdkVersion": 24,
+        "compileSdkVersion": 35,
+        "targetSdkVersion": 35,
+        "kotlinVersion": "2.0.21",
+        "gradleProperties": {
+          "android.useAndroidX": "true",
+          "android.enableJetifier": "true"
         }
-      ],
-      "./plugins/with-desugar-libs",
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "minSdkVersion": 24,
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
-            "kotlinVersion": "2.0.21",
-            "gradleProperties": {
-              "android.useAndroidX": "true",
-              "android.enableJetifier": "true"
-            }
-          },
-          "ios": { "deploymentTarget": "15.1" }
-        }
-      ],
-      "./plugins/with-assert-compile-sdks"
-    ],
+      },
+      "ios": { "deploymentTarget": "15.1" }
+    }
+  ],
+  "./plugins/with-assert-compile-sdks",
+  "./plugins/with-desugar-libs"
+],
     "experiments": { "typedRoutes": true },
     "extra": {
       "eas": { "projectId": "521a656b-0e37-4ae1-aae2-f4fd552a48b7" },
