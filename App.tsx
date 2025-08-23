@@ -3,13 +3,13 @@
 // - Navigation (stack)
 // - Deep linking (scheme: messhall) for Add + Reset Password
 // - Supabase session restore & listener
-// - Android share-intent (react-native-share-menu) → navigates to Add with sharedUrl
+// - Cross-platform share intent (expo-share-intent) → navigates to Add with sharedUrl
 // - Safe-area + Theme + Toast providers
-// - Defensive dynamic imports, lifecycle-safe navigation
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { Platform, AppState, AppStateStatus } from 'react-native';
+import { AppState, AppStateStatus } from 'react-native';
 import * as Linking from 'expo-linking';
+import { ShareIntentProvider, useShareIntentContext } from 'expo-share-intent';
 
 import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator, NativeStackNavigationOptions } from '@react-navigation/native-stack';
@@ -21,7 +21,7 @@ import { supabase } from './lib/supabaseClient';
 // ---- Theme provider ----
 import { ThemeProvider, useThemeController } from './lib/theme';
 
-// ---- Toast provider (wrap at root; screens can call useToast there) ----
+// ---- Toast provider ----
 import { ToastProvider } from './components/ToastProvider';
 
 // ---- Screens ----
@@ -71,28 +71,28 @@ const linking = {
 };
 
 // ==========================
-// 3) Share intent (Android)
+// 3) Share intent helpers
 // ==========================
-type ShareData = {
-  mimeType?: string | null;
-  data?: string | null;
-  extraData?: string | null;
-  subject?: string | null;
-  title?: string | null;
-  urls?: string[] | null;
+type ShareIntentPayload = {
+  text?: string | null;
+  url?: string | null;
+  webUrl?: string | null;
+  files?: Array<{ uri?: string | null; path?: string | null; mimeType?: string | null }>;
+  meta?: Record<string, unknown>;
 };
 
-function pickSharedUrl(payload: ShareData): string | undefined {
-  const isUrlLike = (s?: string | null) => !!s && /^(https?:\/\/|messhall:\/\/)/i.test(s.trim());
-  if (payload?.urls?.length) {
-    const first = payload.urls.find((u) => isUrlLike(u));
-    if (first) return first.trim();
-  }
-  if (isUrlLike(payload?.data)) return payload!.data!.trim();
-  if (isUrlLike(payload?.extraData)) return payload!.extraData!.trim();
-  const blob = `${payload?.data || ''}\n${payload?.extraData || ''}`;
-  const match = blob.match(/https?:\/\/[^\s]+/i);
-  return match?.[0]?.trim();
+function pickSharedUrlFromShareIntent(si?: ShareIntentPayload | null): string | undefined {
+  if (!si) return;
+  const isUrl = (s?: string | null) => !!s && /^https?:\/\//i.test(s.trim());
+  // Prefer explicit web/url fields
+  if (isUrl(si.webUrl)) return si.webUrl!.trim();
+  if (isUrl(si.url)) return si.url!.trim();
+  // Fallback: scan text for a URL
+  const t = si.text ?? '';
+  const match = t.match(/https?:\/\/[^\s]+/i);
+  if (match?.[0]) return match[0].trim();
+  // (Optional) consider file:// or content:// if Add supports it later
+  return undefined;
 }
 
 // ==========================
@@ -104,7 +104,8 @@ function AppInner() {
     useState<Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session'] | null>(null);
   const [ready, setReady] = useState(false);
 
-  const lastHandledRef = useRef<string | null>(null);
+  const lastHandledLinkRef = useRef<string | null>(null);
+  const shareHandledRef = useRef(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   // ---- Restore session / listen for auth changes
@@ -132,8 +133,8 @@ function AppInner() {
   const handleUrlNav = useCallback(
     (url: string) => {
       try {
-        if (lastHandledRef.current === url) return;
-        lastHandledRef.current = url;
+        if (lastHandledLinkRef.current === url) return;
+        lastHandledLinkRef.current = url;
 
         const parsed = Linking.parse(url);
 
@@ -167,7 +168,7 @@ function AppInner() {
     return () => sub.remove();
   }, [handleUrlNav]);
 
-  // ---- Track app state (optional, kept for future logic)
+  // ---- Track app state (optional)
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       appStateRef.current = state;
@@ -175,47 +176,26 @@ function AppInner() {
     return () => sub.remove();
   }, []);
 
-  // ---- Android Share Target (react-native-share-menu)
+  // ---- Cross-platform Share Target (expo-share-intent)
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
+
   useEffect(() => {
-    if (Platform.OS !== 'android') return;
+    if (!hasShareIntent || !shareIntent) return;
+    if (shareHandledRef.current) return;
 
-    let removeListener: undefined | (() => void);
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const ShareMenu = (await import('react-native-share-menu')).default;
-        const { ShareMenuReactView } = await import('react-native-share-menu');
-
-        removeListener = ShareMenu.addNewShareListener((sharedItem: ShareData) => {
-          if (cancelled) return;
-          const sharedUrl = pickSharedUrl(sharedItem);
-          if (!sharedUrl) return;
-          if (navRef.isReady()) navRef.navigate('Add', { sharedUrl });
-        });
-
-        ShareMenuReactView?.getSharedItem?.((sharedItem: ShareData | null) => {
-          if (cancelled || !sharedItem) return;
-          const sharedUrl = pickSharedUrl(sharedItem);
-          if (!sharedUrl) return;
-          if (navRef.isReady()) {
-            navRef.navigate('Add', { sharedUrl });
-          } else {
-            setTimeout(() => {
-              if (navRef.isReady()) navRef.navigate('Add', { sharedUrl });
-            }, 150);
-          }
-        });
-      } catch {
-        // Module not installed or environment mismatch — ignore gracefully
+    const sharedUrl = pickSharedUrlFromShareIntent(shareIntent as ShareIntentPayload);
+    // Navigate as soon as the navigator is ready; small fallback delay helps on cold start.
+    const go = () => {
+      if (sharedUrl && navRef.isReady()) {
+        navRef.navigate('Add', { sharedUrl });
+        shareHandledRef.current = true;
+        resetShareIntent?.();
+      } else if (sharedUrl) {
+        setTimeout(go, 120);
       }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (removeListener) try { removeListener(); } catch {}
     };
-  }, [navRef]);
+    go();
+  }, [hasShareIntent, shareIntent, navRef, resetShareIntent]);
 
   // ---- Decide initial route
   const initialRouteName = useMemo<keyof RootStackParamList>(() => {
@@ -236,7 +216,6 @@ function AppInner() {
             <Stack.Screen name="Add" component={Add} />
             <Stack.Screen name="Recipe" component={Recipe} />
             <Stack.Screen name="Profile" component={Profile} />
-            <Stack.Screen name="RecipeEdit" component={RecipeEdit} />
             <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
           </>
         ) : (
@@ -266,9 +245,11 @@ export default function App() {
     <SafeAreaProvider>
       <ThemeProvider>
         <ToastProvider>
-          <ThemeGate>
-            <AppInner />
-          </ThemeGate>
+          <ShareIntentProvider>
+            <ThemeGate>
+              <AppInner />
+            </ThemeGate>
+          </ShareIntentProvider>
         </ToastProvider>
       </ThemeProvider>
     </SafeAreaProvider>

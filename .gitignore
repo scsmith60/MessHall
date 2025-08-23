@@ -1,5 +1,4 @@
-# MessHall / Expo (managed)
-# IMPORTANT: keep package-lock.json committed!
+
 node_modules/
 android/
 ios/
