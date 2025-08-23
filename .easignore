@@ -1,12 +1,12 @@
 # --- dependencies (EAS installs these on the builder) ---
 node_modules/
 npm-debug.log*
-yarn.lock.*.backup
+
 .pnpm-store/
 .yarn/cache/
 .yarn/unplugged/
 .yarn/install-state.gz
-package-lock.json.*.backup
+
 
 # --- VCS & IDE cruft ---
 .git/
