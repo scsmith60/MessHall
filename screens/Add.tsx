@@ -1,397 +1,420 @@
 // screens/Add.tsx
-import React, { useEffect, useRef, useState } from 'react';
+// MessHall — Add screen
+// ✅ Prefills from route.params.sharedUrl (deep link or Android share target)
+// ✅ If a new share arrives while Add is open, updates the input without clobbering manual edits
+// ✅ Optional auto-enrich on mount when a sharedUrl is provided
+// ✅ Robust enrich() pipeline: fetch meta → normalize → durable thumbnail upload
+// ✅ Save to Supabase (recipes table), defensive logging & toasts
+// ✅ Minimal, dependency-safe code (Hermes-friendly), no fancy UI libs required
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   TextInput,
   Image,
-  FlatList,
-  ActivityIndicator,
-  Keyboard,
   Pressable,
+  ScrollView,
+  Alert,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
 } from 'react-native';
-import { useRoute, RouteProp, useNavigation } from '@react-navigation/native';
-import ensureDurableThumb from '../lib/ensureDurableThumb';
+import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
+import * as Clipboard from 'expo-clipboard';
+import * as ImagePicker from 'expo-image-picker';
 
-type AddParams = {
-  sharedUrl?: string;
-  sharedText?: string;
-  sharedImages?: string[];
-};
+import { supabase } from '../lib/supabaseClient';
+import type { RootStackParamList } from '../App';
 
-type OgMeta = {
-  url?: string;
+// ---- Optional helpers (expected to exist; safe fallbacks if they don't) ----
+let ensureDurableThumb: undefined | ((src: string) => Promise<{ publicUrl: string; bucketPath: string }>);
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  ensureDurableThumb = require('../lib/ensureDurableThumb').ensureDurableThumb || require('../lib/ensureDurableThumb').default;
+} catch { /* optional */ }
+
+type MetaResult = {
   title?: string;
-  description?: string;
   image?: string;
-  siteName?: string;
+  ingredients?: string[];
+  steps?: string[];
+  source?: string;
 };
+let fetchMeta: undefined | ((url: string) => Promise<MetaResult>);
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  fetchMeta = require('../lib/fetch_meta').fetchMeta || require('../lib/fetch_meta').default;
+} catch { /* optional */ }
+
+// ---- Types ----
+type AddRoute = RouteProp<RootStackParamList, 'Add'>;
+
+// Basic URL validator (generous)
+const looksLikeUrl = (s?: string) => !!s && /^https?:\/\/[^\s]+/i.test(s.trim());
+
+// Normalize arrays produced by parsers; remove empties/dupes
+const uniq = (arr: string[]) => Array.from(new Set(arr.map(s => s.trim()).filter(Boolean)));
 
 export default function Add() {
-  const route = useRoute<RouteProp<Record<string, AddParams>, string>>();
-  const navigation = useNavigation<any>();
-  const params = route.params ?? {};
+  const route = useRoute<AddRoute>();
+  const nav = useNavigation();
 
-  // Initials from params
-  const initialSharedUrl = (params.sharedUrl || '').trim();
-  const initialSharedText = (params.sharedText || '').trim();
-  const initialSharedImages = Array.isArray(params.sharedImages)
-    ? params.sharedImages.filter(Boolean)
-    : [];
-
-  // Local state
+  // ====== State ======
+  const initialSharedUrl = (route.params?.sharedUrl || '').trim();
   const [url, setUrl] = useState(initialSharedUrl);
-  const [notes, setNotes] = useState(initialSharedText);
-  const [images, setImages] = useState<string[]>(initialSharedImages);
-
-  // OG scan state
-  const [og, setOg] = useState<OgMeta | null>(null);
+  const [title, setTitle] = useState('');
+  const [thumbUrl, setThumbUrl] = useState<string>('');       // public URL (storage or remote)
+  const [ingredients, setIngredients] = useState<string[]>([]);
+  const [steps, setSteps] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const [scanError, setScanError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [autoEnrichOnMount] = useState<boolean>(looksLikeUrl(initialSharedUrl));
 
-  // Durable thumb state
-  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
-  const [thumbBusy, setThumbBusy] = useState(false);
-  const [thumbError, setThumbError] = useState<string | null>(null);
+  // track whether user has touched the URL field to avoid clobbering manual edits
+  const userTouchedUrlRef = useRef(false);
 
-  // Keep a handle to cancel/ignore stale scans
-  const scanSeqRef = useRef(0);
-  // Prevent duplicate thumb builds
-  const thumbSeqRef = useRef(0);
+  // ====== Sync URL if a new share arrives while this screen is active ======
+  useEffect(() => {
+    const incoming = (route.params?.sharedUrl || '').trim();
+    if (!incoming) return;
 
-  // Input ref so we can focus when URL is empty
-  const urlInputRef = useRef<TextInput>(null);
+    // If user hasn't typed into URL box since mount, or if it's a different URL, adopt it
+    if (!userTouchedUrlRef.current || (incoming && incoming !== url)) {
+      setUrl(incoming);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params?.sharedUrl]);
 
-  // --- Helpers ---------------------------------------------------------------
+  // Mark that user typed in the URL box
+  const onUrlChange = useCallback((v: string) => {
+    userTouchedUrlRef.current = true;
+    setUrl(v);
+  }, []);
 
-  const isValidUrl = (s: string) => {
-    if (!s) return false;
+  // ====== Auto-enrich when launched from a share/deep link ======
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!autoEnrichOnMount) return;
+      if (!looksLikeUrl(url)) return;
+      setLoading(true);
+      try {
+        const res = await doEnrich(url);
+        if (!cancelled && res) {
+          // already set inside doEnrich
+        }
+      } catch (e) {
+        console.warn('[add:autoEnrich]', e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEnrichOnMount]);
+
+  // ====== Actions ======
+  const pasteFromClipboard = useCallback(async () => {
+    const text = await Clipboard.getStringAsync();
+    if (text) {
+      setUrl(text.trim());
+    } else {
+      Alert.alert('Clipboard empty', 'Copy a link first, then tap Paste.');
+    }
+  }, []);
+
+  const pickImage = useCallback(async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission needed', 'Enable Photos permission to pick a thumbnail.');
+      return;
+    }
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.9 });
+    if (res.canceled || !res.assets?.length) return;
+    const localUri = res.assets[0].uri;
+    // If ensureDurableThumb exists, upload to storage; otherwise just keep local file://
     try {
-      const u = new URL(s);
-      return !!u.protocol && !!u.host;
-    } catch {
+      if (ensureDurableThumb) {
+        setLoading(true);
+        const out = await ensureDurableThumb(localUri);
+        setThumbUrl(out.publicUrl);
+      } else {
+        setThumbUrl(localUri);
+      }
+    } catch (e) {
+      console.warn('[add:pickImage]', e);
+      Alert.alert('Image error', 'Could not prepare the image.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const doEnrich = useCallback(async (theUrl: string) => {
+    if (!looksLikeUrl(theUrl)) {
+      Alert.alert('Invalid link', 'Please paste a valid recipe URL (https://…)');
       return false;
     }
-  };
-
-  // Make relative image URLs absolute against the page URL
-  const absolutize = (maybeUrl: string | undefined, baseUrl: string) => {
-    if (!maybeUrl) return undefined;
-    try {
-      return new URL(maybeUrl, baseUrl).toString();
-    } catch {
-      return maybeUrl;
-    }
-  };
-
-  // Tiny OG parser for HTML (title/description/image/sitename)
-  const parseOgFromHtml = (html: string): OgMeta => {
-    const pick = (prop: string) =>
-      html.match(new RegExp(`<meta[^>]+property=["']${prop}["'][^>]+content=["']([^"']+)["']`, 'i'))?.[1] ||
-      html.match(new RegExp(`<meta[^>]+name=["']${prop}["'][^>]+content=["']([^"']+)["']`, 'i'))?.[1];
-    const tag = (name: string) =>
-      html.match(new RegExp(`<${name}[^>]*>([^<]+)</${name}>`, 'i'))?.[1];
-
-    const ogTitle = pick('og:title') || tag('title') || undefined;
-    const ogDesc = pick('og:description') || pick('description') || undefined;
-    const ogImg = pick('og:image') || undefined;
-    const ogSite = pick('og:site_name') || undefined;
-
-    return {
-      title: ogTitle,
-      description: ogDesc,
-      image: ogImg,
-      siteName: ogSite,
-    };
-  };
-
-  const fetchOg = async (targetUrl: string) => {
-    // Increment sequence so stale responses can be ignored
-    const mySeq = ++scanSeqRef.current;
     setLoading(true);
-    setScanError(null);
-
     try {
-      // Basic fetch of HTML. If you later add a backend metadata proxy, call it here.
-      const res = await fetch(targetUrl, { method: 'GET' });
-      const text = await res.text();
-      if (scanSeqRef.current !== mySeq) return; // stale
-
-      const meta = parseOgFromHtml(text);
-      const imageAbs = absolutize(meta.image, targetUrl);
-      setOg({ url: targetUrl, ...meta, image: imageAbs });
-    } catch {
-      if (scanSeqRef.current !== mySeq) return; // stale
-      setOg(null);
-      setScanError('Could not read link preview.');
-    } finally {
-      if (scanSeqRef.current === mySeq) setLoading(false);
-    }
-  };
-
-  // Build a durable thumbnail from the best available source:
-  // 1) first shared image (if any), else 2) og.image
-  const maybeBuildDurableThumb = async () => {
-    const sourceUri = images[0] || og?.image;
-    if (!sourceUri) return;
-
-    const myThumbSeq = ++thumbSeqRef.current;
-    setThumbBusy(true);
-    setThumbError(null);
-
-    try {
-      // OPTIONAL: if you have the recipe row already, pass recipeId to enable cleanup
-      const recipeId: string | undefined = undefined; // replace when available
-      const out = await ensureDurableThumb(sourceUri, {
-        recipeId,            // enables auto-cleanup per recipe folder when set
-        keyHint: 'main',
-        cropMode: 'third',   // 'top' | 'third' | 'center'
-        targetWidth: 1200,
-        signedUrlSeconds: 60 * 60 * 24 * 30, // 30 days; default is 1 year
-      });
-
-      if (thumbSeqRef.current !== myThumbSeq) return; // stale
-
-      if (out?.url) {
-        setThumbUrl(out.url);
+      // 1) Fetch meta (title, hero image, ingredients, steps)
+      let meta: MetaResult = {};
+      if (fetchMeta) {
+        meta = await fetchMeta(theUrl);
       } else {
-        setThumbError('Could not generate thumbnail.');
+        // Safe fallback if lib is not present
+        meta = {
+          title: theUrl.replace(/^https?:\/\//i, '').slice(0, 60),
+          image: undefined,
+          ingredients: [],
+          steps: [],
+          source: theUrl,
+        };
       }
-    } catch {
-      if (thumbSeqRef.current !== myThumbSeq) return; // stale
-      setThumbError('Could not generate thumbnail.');
+
+      const cleanedIngredients = uniq(meta.ingredients || []);
+      const cleanedSteps = uniq(meta.steps || []);
+
+      // 2) Durable thumbnail if we have one
+      let finalThumb = '';
+      if (meta.image) {
+        if (ensureDurableThumb) {
+          try {
+            const { publicUrl } = await ensureDurableThumb(meta.image);
+            finalThumb = publicUrl;
+          } catch (e) {
+            console.warn('[add:ensureDurableThumb]', e);
+            finalThumb = meta.image; // fall back to remote
+          }
+        } else {
+          finalThumb = meta.image;
+        }
+      }
+
+      // 3) Set state
+      setTitle(meta.title || '');
+      setThumbUrl(finalThumb);
+      setIngredients(cleanedIngredients);
+      setSteps(cleanedSteps);
+
+      return true;
+    } catch (e: any) {
+      console.warn('[add:enrich]', e?.message || e);
+      Alert.alert('Enrich failed', 'Could not pull details from the link.');
+      return false;
     } finally {
-      if (thumbSeqRef.current === myThumbSeq) setThumbBusy(false);
+      setLoading(false);
     }
-  };
+  }, []);
 
-  // UI helpers (Step‑6 polish)
-  const handleRetryOg = () => { if (isValidUrl(url)) fetchOg(url); };
-  const handleRetryThumb = () => { setThumbUrl(null); setThumbError(null); maybeBuildDurableThumb(); };
+  const clearAll = useCallback(() => {
+    setTitle('');
+    setThumbUrl('');
+    setIngredients([]);
+    setSteps([]);
+  }, []);
 
-  const handleSave = () => {
-    // TODO: insert/update Supabase row with:
-    // url, notes, title: og?.title, site: og?.siteName, thumb_url: thumbUrl
-    // Optionally navigate after save
-    // navigation.goBack();
-  };
-  const handleCancel = () => {
-    if (navigation?.goBack) navigation.goBack();
-  };
-
-  // --- Effects ---------------------------------------------------------------
-
-  // Keep in sync if this screen receives new share params while mounted
-  useEffect(() => {
-    const nextUrl = (route.params?.sharedUrl || '').trim();
-    if (nextUrl && nextUrl !== url) setUrl(nextUrl);
-
-    const nextText = (route.params?.sharedText || '').trim();
-    if (nextText && nextText !== notes) setNotes(nextText);
-
-    const nextImages = Array.isArray(route.params?.sharedImages)
-      ? route.params!.sharedImages!.filter(Boolean)
-      : [];
-    if (nextImages.length && JSON.stringify(nextImages) !== JSON.stringify(images)) {
-      setImages(nextImages);
+  const saveRecipe = useCallback(async () => {
+    if (!title.trim()) {
+      Alert.alert('Missing title', 'Please add a recipe title.');
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.params?.sharedUrl, route.params?.sharedText, route.params?.sharedImages]);
+    setSaving(true);
+    try {
+      const user = (await supabase.auth.getUser()).data.user;
+      if (!user) {
+        Alert.alert('Sign in required', 'Please sign in to save recipes.');
+        return;
+      }
 
-  // Immediately kick off OG scan when landing with a valid URL.
-  // Also re-run when URL changes to another valid one (e.g., multiple shares while open).
-  useEffect(() => {
-    if (isValidUrl(url)) {
-      Keyboard.dismiss();
-      fetchOg(url);
-    } else {
-      setOg(null);
-      setScanError(null);
-      setTimeout(() => urlInputRef.current?.focus(), 100);
+      const payload = {
+        user_id: user.id,
+        title: title.trim(),
+        source_url: looksLikeUrl(url) ? url.trim() : null,
+        thumb_url: thumbUrl || null,
+        ingredients,
+        steps,
+        created_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase.from('recipes').insert(payload);
+      if (error) throw error;
+
+      Alert.alert('Saved', 'Your recipe has been saved.');
+      // Navigate home or to the newly created recipe if your insert returns id (add returning option server-side)
+      // nav.goBack();
+    } catch (e: any) {
+      console.warn('[add:save]', e?.message || e);
+      Alert.alert('Save failed', 'Please try again.');
+    } finally {
+      setSaving(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url]);
+  }, [ingredients, nav, steps, thumbUrl, title, url]);
 
-  // When we have a good candidate image (shared or OG), try to build the durable thumb
-  useEffect(() => {
-    // Only auto-generate if we don't already have one and not currently building
-    if (!thumbUrl && !thumbBusy && (images[0] || og?.image)) {
-      maybeBuildDurableThumb();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [images, og?.image]);
+  // Derived
+  const canEnrich = useMemo(() => looksLikeUrl(url) && !loading, [url, loading]);
 
-  // --- UI --------------------------------------------------------------------
-
-  // quick pill button (local, to avoid extra file)
-  const PillButton = ({
-    label,
-    onPress,
-    variant = 'primary',
-    disabled,
-  }: {
-    label: string;
-    onPress?: () => void;
-    variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
-    disabled?: boolean;
-  }) => {
-    const baseBtn = {
-      paddingVertical: 12,
-      paddingHorizontal: 20,
-      borderRadius: 9999,
-      alignItems: 'center' as const,
-      justifyContent: 'center' as const,
-      borderWidth: 1,
-      opacity: disabled ? 0.5 : 1,
-    };
-    const stylesByVariant: any = {
-      primary: { btn: { backgroundColor: '#111', borderColor: '#111' }, txt: { color: '#fff', fontWeight: '600' } },
-      secondary:{ btn: { backgroundColor: '#fff', borderColor: '#111' }, txt: { color: '#111', fontWeight: '600' } },
-      danger:  { btn: { backgroundColor: '#fff', borderColor: '#b00020' }, txt: { color: '#b00020', fontWeight: '600' } },
-      ghost:   { btn: { backgroundColor: 'transparent', borderColor: '#ddd' }, txt: { color: '#111', fontWeight: '600' } },
-    };
-    return (
-      <Pressable onPress={onPress} disabled={disabled} style={[baseBtn, stylesByVariant[variant].btn]} hitSlop={8}>
-        <Text style={stylesByVariant[variant].txt}>{label}</Text>
-      </Pressable>
-    );
-  };
-
+  // ====== UI ======
   return (
-    <View style={{ padding: 16, gap: 12 }}>
-      {/* URL input (prefilled from share) */}
-      <TextInput
-        ref={urlInputRef}
-        value={url}
-        onChangeText={setUrl}
-        placeholder="Paste or share a recipe link"
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="url"
-        style={{ borderWidth: 1, borderColor: '#ddd', padding: 12, borderRadius: 8 }}
-      />
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
+      <ScrollView contentContainerStyle={styles.container}>
+        <Text style={styles.h1}>Add Recipe</Text>
 
-      {/* Small loading state */}
-      {loading && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <ActivityIndicator />
-          <Text>Scanning link…</Text>
+        {/* URL Input Row */}
+        <View style={styles.row}>
+          <TextInput
+            style={styles.input}
+            placeholder="Paste or share a recipe link"
+            value={url}
+            onChangeText={onUrlChange}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+          />
         </View>
-      )}
 
-      {/* OG preview (polished) */}
-      {!loading && og && (og.title || og.image || og.description) && (
-        <View style={{ gap: 8, borderWidth: 1, borderColor: '#eee', padding: 12, borderRadius: 12 }}>
-          {og.image ? (
-            <Image
-              source={{ uri: og.image }}
-              style={{ width: '100%', height: 160, borderRadius: 8 }}
-              resizeMode="cover"
-            />
-          ) : null}
-
-          {/* Title bigger & bold */}
-          {og.title ? <Text style={{ fontSize: 20, fontWeight: '700' }}>{og.title}</Text> : null}
-
-          {/* Site + description */}
-          {og.siteName ? <Text style={{ fontWeight: '600' }}>{og.siteName}</Text> : null}
-          {og.description ? (
-            <Text numberOfLines={3} style={{ color: '#555' }}>
-              {og.description}
-            </Text>
-          ) : null}
-
-          {/* Tiny source label */}
-          <Text style={{
-            alignSelf: 'flex-start',
-            backgroundColor: '#f3f4f6',
-            color: '#374151',
-            paddingVertical: 4,
-            paddingHorizontal: 8,
-            borderRadius: 9999,
-            fontSize: 12,
-          }}>
-            Source: {images.length > 0 ? 'Captured snapshot' : og.image ? 'OG image' : 'N/A'}
-          </Text>
+        <View style={styles.actionsRow}>
+          <Pressable style={styles.btn} onPress={pasteFromClipboard}>
+            <Text style={styles.btnText}>Paste</Text>
+          </Pressable>
+          <Pressable style={[styles.btn, !canEnrich && styles.btnDisabled]} onPress={() => doEnrich(url)} disabled={!canEnrich}>
+            {loading ? <ActivityIndicator /> : <Text style={styles.btnText}>Enrich</Text>}
+          </Pressable>
+          <Pressable style={styles.btn} onPress={pickImage}>
+            <Text style={styles.btnText}>Pick Image</Text>
+          </Pressable>
+          <Pressable style={styles.btnGhost} onPress={clearAll}>
+            <Text style={styles.btnGhostText}>Clear</Text>
+          </Pressable>
         </View>
-      )}
 
-      {/* OG error + retry */}
-      {scanError && (
-        <View style={{ gap: 8 }}>
-          <Text style={{ color: '#b00020' }}>{scanError}</Text>
-          <PillButton label="Retry" variant="danger" onPress={handleRetryOg} />
-        </View>
-      )}
-
-      {/* Optional notes from sharedText */}
-      <TextInput
-        value={notes}
-        onChangeText={setNotes}
-        placeholder="Notes (optional)"
-        multiline
-        style={{
-          borderWidth: 1,
-          borderColor: '#ddd',
-          padding: 12,
-          borderRadius: 8,
-          minHeight: 80,
-          textAlignVertical: 'top',
-        }}
-      />
-
-      {/* Optional image previews from sharedImages */}
-      {images.length > 0 && (
-        <FlatList
-          data={images}
-          keyExtractor={(uri) => uri}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: 12 }}
-          renderItem={({ item }) => (
-            <Image
-              source={{ uri: item }}
-              style={{ width: 96, height: 96, borderRadius: 8 }}
-              resizeMode="cover"
-            />
-          )}
+        {/* Title */}
+        <Text style={styles.label}>Title</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Recipe title"
+          value={title}
+          onChangeText={setTitle}
         />
-      )}
 
-      {/* Durable thumbnail state/preview */}
-      {(thumbBusy || thumbUrl || thumbError) && (
-        <View style={{ gap: 8, borderWidth: 1, borderColor: '#eee', padding: 12, borderRadius: 8 }}>
-          {thumbBusy && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <ActivityIndicator />
-              <Text>Generating thumbnail…</Text>
-            </View>
-          )}
-          {thumbUrl && !thumbBusy && (
-            <>
-              <Text style={{ fontWeight: '600' }}>Durable thumbnail</Text>
-              <Image
-                source={{ uri: thumbUrl }}
-                style={{ width: '100%', height: 160, borderRadius: 8 }}
-                resizeMode="cover"
-              />
-              {/* Save this to your recipe record on Save */}
-            </>
-          )}
-          {thumbError && !thumbBusy && (
-            <View style={{ gap: 8 }}>
-              <Text style={{ color: '#b00020' }}>{thumbError}</Text>
-              <PillButton label="Retry thumbnail" variant="danger" onPress={handleRetryThumb} />
-            </View>
-          )}
+        {/* Thumbnail Preview */}
+        {thumbUrl ? (
+          <View style={styles.thumbWrap}>
+            <Image source={{ uri: thumbUrl }} style={styles.thumb} resizeMode="cover" />
+          </View>
+        ) : null}
+
+        {/* Ingredients */}
+        <Text style={styles.label}>Ingredients</Text>
+        <View style={styles.multiBox}>
+          {(ingredients.length ? ingredients : ['']).map((val, idx) => (
+            <TextInput
+              key={`ing-${idx}`}
+              style={styles.multiInput}
+              placeholder={idx === 0 ? '• e.g., 1/4 tsp onion powder' : '• add another'}
+              value={val}
+              onChangeText={(t) => {
+                const copy = ingredients.slice();
+                // grow list as user types on last line
+                if (idx === copy.length) copy.push('');
+                copy[idx] = t;
+                setIngredients(copy.filter((x, i) => i === copy.length - 1 ? true : x !== '' || i < copy.length - 1));
+              }}
+              multiline
+            />
+          ))}
+          <Pressable
+            onPress={() => setIngredients([...ingredients, ''])}
+            style={styles.addLine}
+          >
+            <Text style={styles.addLineText}>+ Add ingredient</Text>
+          </Pressable>
         </View>
-      )}
 
-      {/* Action buttons */}
-      <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
-        <PillButton label="Save" variant="primary" onPress={handleSave} disabled={thumbBusy} />
-        <PillButton label="Cancel" variant="secondary" onPress={handleCancel} />
-      </View>
-    </View>
+        {/* Steps */}
+        <Text style={styles.label}>Steps</Text>
+        <View style={styles.multiBox}>
+          {(steps.length ? steps : ['']).map((val, idx) => (
+            <TextInput
+              key={`step-${idx}`}
+              style={styles.multiInput}
+              placeholder={idx === 0 ? '1) Describe a step' : `${idx + 1}) Add another step`}
+              value={val}
+              onChangeText={(t) => {
+                const copy = steps.slice();
+                if (idx === copy.length) copy.push('');
+                copy[idx] = t;
+                setSteps(copy.filter((x, i) => i === copy.length - 1 ? true : x !== '' || i < copy.length - 1));
+              }}
+              multiline
+            />
+          ))}
+          <Pressable
+            onPress={() => setSteps([...steps, ''])}
+            style={styles.addLine}
+          >
+            <Text style={styles.addLineText}>+ Add step</Text>
+          </Pressable>
+        </View>
+
+        {/* Save */}
+        <View style={styles.footer}>
+          <Pressable style={[styles.saveBtn, saving && styles.btnDisabled]} onPress={saveRecipe} disabled={saving}>
+            {saving ? <ActivityIndicator /> : <Text style={styles.saveBtnText}>Save Recipe</Text>}
+          </Pressable>
+        </View>
+
+        {/* Spacer */}
+        <View style={{ height: 48 }} />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
+
+// ====== Styles ======
+const styles = StyleSheet.create({
+  flex: { flex: 1, backgroundColor: '#0B0F19' }, // Tailwind-esque slate-900
+  container: { padding: 16 },
+  h1: { color: '#E5E7EB', fontSize: 22, fontWeight: '700', marginBottom: 12 },
+  label: { color: '#9CA3AF', marginTop: 16, marginBottom: 6, fontSize: 13 },
+  input: {
+    backgroundColor: '#111827',
+    borderColor: '#1F2937',
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    color: '#E5E7EB',
+  },
+  row: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  actionsRow: { flexDirection: 'row', gap: 10, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' },
+  btn: { backgroundColor: '#374151', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10 },
+  btnDisabled: { opacity: 0.6 },
+  btnText: { color: '#F3F4F6', fontWeight: '600' },
+  btnGhost: { paddingHorizontal: 8, paddingVertical: 10 },
+  btnGhostText: { color: '#9CA3AF' },
+  thumbWrap: { marginTop: 12, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#1F2937' },
+  thumb: { width: '100%', height: 180 },
+  multiBox: {
+    backgroundColor: '#0F172A',
+    borderColor: '#1F2937',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 8,
+  },
+  multiInput: {
+    backgroundColor: '#111827',
+    color: '#E5E7EB',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    marginBottom: 8,
+    minHeight: 44,
+  },
+  addLine: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 6 },
+  addLineText: { color: '#93C5FD' },
+  footer: { marginTop: 18 },
+  saveBtn: { backgroundColor: '#4F46E5', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
+  saveBtnText: { color: 'white', fontWeight: '700' },
+});

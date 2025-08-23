@@ -1,69 +1,32 @@
 // plugins/with-patch-share-menu-gradle.js
-// Force react-native-share-menu to compile with modern SDK/toolchain on every prebuild.
+const { withAppBuildGradle, createRunOncePlugin } = require('@expo/config-plugins');
 
-const fs = require('fs');
-const path = require('path');
-const { withDangerousMod } = require('@expo/config-plugins');
+const TAG = 'with-patch-share-menu-gradle';
 
-function safeReplace(src, [pattern, replacement]) {
-  const re = typeof pattern === 'string' ? new RegExp(pattern, 'g') : pattern;
-  return src.replace(re, replacement);
+function ensureCompileOptions(src) {
+  if (/compileOptions\s*{[^}]*coreLibraryDesugaringEnabled\s+true/m.test(src)) return src;
+  // Insert under android {} if possible; otherwise append at end.
+  if (/android\s*{/.test(src)) {
+    return src.replace(/android\s*{/, (m) => `${m}
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+    }`);
+  }
+  return `${src}
+
+android {
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+    }
+}
+`;
 }
 
-module.exports = (config) =>
-  withDangerousMod(config, [
-    'android',
-    async (c) => {
-      const gradlePath = path.join(
-        c.modRequest.projectRoot,
-        'node_modules',
-        'react-native-share-menu',
-        'android',
-        'build.gradle'
-      );
+const withPatchShareMenuGradle = (config) =>
+  withAppBuildGradle(config, (cfg) => {
+    if (!cfg.modResults?.contents) return cfg;
+    cfg.modResults.contents = ensureCompileOptions(cfg.modResults.contents);
+    return cfg;
+  });
 
-      if (!fs.existsSync(gradlePath)) {
-        console.warn('[with-patch-share-menu-gradle] build.gradle not found at:', gradlePath);
-        return c;
-      }
-
-      let src = fs.readFileSync(gradlePath, 'utf8');
-      let out = src;
-
-      // Bump compile/target/min SDKs + build tools if they’re present.
-      out = safeReplace(out, [/compileSdkVersion\s+\d+/g, 'compileSdkVersion 35']);
-      out = safeReplace(out, [/compileSdk\s*=\s*\d+/g, 'compileSdk = 35']);
-      out = safeReplace(out, [/buildToolsVersion\s+['"][^'"]+['"]/g, 'buildToolsVersion "35.0.0"']);
-      out = safeReplace(out, [/targetSdkVersion\s+\d+/g, 'targetSdkVersion 35']);
-      out = safeReplace(out, [/minSdkVersion\s+\d+/g, 'minSdkVersion 24']);
-
-      // If the DSL uses rootProject.ext.* forms, leave them; AGP will resolve to our root ext values.
-      // Ensure Java 17 compileOptions block exists.
-      if (!/compileOptions\s*\{[^}]*sourceCompatibility/m.test(out)) {
-        out = out.replace(
-          /android\s*\{/,
-          `android {
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
-`
-        );
-      } else {
-        // If compileOptions exists, normalize it to Java 17.
-        out = safeReplace(out, [/sourceCompatibility\s+JavaVersion\.\S+/g, 'sourceCompatibility JavaVersion.VERSION_17']);
-        out = safeReplace(out, [/targetCompatibility\s+JavaVersion\.\S+/g, 'targetCompatibility JavaVersion.VERSION_17']);
-      }
-
-      if (out !== src) {
-        fs.writeFileSync(gradlePath, out, 'utf8');
-        console.log('[with-patch-share-menu-gradle] Patched:', gradlePath);
-      } else {
-        console.log('[with-patch-share-menu-gradle] No changes needed.');
-      }
-
-      return c;
-    },
-  ]);
-
-module.exports.name = 'with-patch-share-menu-gradle';
+module.exports = createRunOncePlugin(withPatchShareMenuGradle, TAG, '1.0.0');

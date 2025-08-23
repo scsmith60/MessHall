@@ -1,24 +1,22 @@
-# dependencies / caches
+# Node
 node_modules/
+npm-debug.log*
+yarn.lock
+package-lock.json
+
+# Expo
 .expo/
 .expo-shared/
+
+# Android / iOS
+android/
+ios/
+
+# Build
 dist/
 build/
-coverage/
-*.log
 
-# android heavy outputs
-android/.gradle/
-android/.cxx/
-android/app/build/
-
-# ios (if not building iOS now)
-ios/
-
-# env
+# Misc
+.DS_Store
 .env
-.env.*.local
-android/
-ios/
-android/
-ios/
+.env.*

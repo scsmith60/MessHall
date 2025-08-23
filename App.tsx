@@ -1,139 +1,276 @@
-import React, { useEffect } from 'react';
-import ShareMenu, { ShareData } from 'react-native-share-menu';
-import * as Linking from 'expo-linking';
-import {
-  NavigationContainer,
-  useNavigationContainerRef,
-  LinkingOptions,
-} from '@react-navigation/native';
+// App.tsx
+// MessHall — root app wiring
+// - Navigation (stack)
+// - Deep linking (scheme: messhall) for Add + Reset Password
+// - Supabase session restore & listener
+// - Android share-intent (react-native-share-menu) → navigates to Add with sharedUrl
+// - Safe-area + Theme + Toast providers
+// - Defensive dynamic imports, lifecycle-safe navigation
 
-/** ---------- Route types ---------- **/
-type RootStackParamList = {
-  Add: { sharedUrl?: string; sharedText?: string; sharedImages?: string[] } | undefined;
-  Recipe: { id: string };
-  // ...add others as you grow
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { Platform, AppState, AppStateStatus } from 'react-native';
+import * as Linking from 'expo-linking';
+
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
+import { createNativeStackNavigator, NativeStackNavigationOptions } from '@react-navigation/native-stack';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
+// ---- Supabase client ----
+import { supabase } from './lib/supabaseClient';
+
+// ---- Theme provider ----
+import { ThemeProvider, useThemeController } from './lib/theme';
+
+// ---- Toast provider (wrap at root; screens can call useToast there) ----
+import { ToastProvider } from './components/ToastProvider';
+
+// ---- Screens ----
+import SignIn from './screens/SignIn';
+import Home from './screens/Home';
+import Add from './screens/Add';
+import Recipe from './screens/Recipe';
+import Profile from './screens/Profile';
+import ResetPasswordScreen from './screens/ResetPasswordScreen';
+
+// ==========================
+// 1) Navigation types
+// ==========================
+export type RootStackParamList = {
+  SignIn: undefined;
+  Home: undefined;
+  Add: { sharedUrl?: string } | undefined;
+  Recipe: { id: string } | undefined;
+  Profile: undefined;
+  ResetPassword: { access_token?: string; email?: string } | undefined;
 };
 
-/** ---------- Step 6 helpers ---------- **/
-// Accepts http/https and "www." (normalizes to https)
-const URL_CANDIDATE = /^(https?:\/\/|www\.)/i;
-function extractUrl(candidate?: string): string {
-  if (!candidate) return '';
-  try {
-    const raw = candidate.trim();
-    const normalized =
-      URL_CANDIDATE.test(raw) && !/^https?:\/\//i.test(raw) ? `https://${raw}` : raw;
-    const u = new URL(normalized);
-    return u.href;
-  } catch {
-    return '';
-  }
-}
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
-type ParsedShare = { url: string; text: string; images: string[] };
+const screenOptions: NativeStackNavigationOptions = {
+  headerShown: false,
+  animation: 'slide_from_right',
+};
 
-// Coalesce ShareData into { url | text | images }
-function parseSharePayload(item?: ShareData): ParsedShare {
-  if (!item) return { url: '', text: '', images: [] };
-
-  const { mimeType, data, extras } = item as any;
-
-  // Images
-  if (mimeType && String(mimeType).startsWith('image/')) {
-    if (Array.isArray(data)) return { url: '', text: '', images: data.filter(Boolean) };
-    if (typeof data === 'string') return { url: '', text: '', images: [data] };
-  }
-
-  // Text / ambiguous
-  const candidates = []
-    .concat(data ?? [])
-    .concat(extras?.['android.intent.extra.TEXT'] ?? [])
-    .concat(extras?.['android.intent.extra.STREAM'] ?? []);
-  const flat = (candidates as any[]).flat().filter(Boolean).map(String);
-
-  for (const c of flat) {
-    const hit = extractUrl(c);
-    if (hit) return { url: hit, text: '', images: [] };
-  }
-
-  if (typeof data === 'string' && data.trim()) {
-    return { url: '', text: data.trim(), images: [] };
-  }
-
-  return { url: '', text: '', images: [] };
-}
-
-/** ---------- Linking config ---------- **/
-const linking: LinkingOptions<RootStackParamList> = {
-  prefixes: ['messhall://'],
+// ==========================
+// 2) Deep linking config
+// ==========================
+// Scheme must match app.json → expo.scheme = "messhall"
+const linking = {
+  prefixes: [Linking.createURL('/'), 'messhall://'],
   config: {
+    initialRouteName: 'Home',
     screens: {
-      Add: 'add',              // messhall://add
-      Recipe: 'recipe/:id',    // messhall://recipe/123
+      Add: 'add',
+      ResetPassword: 'reset-password',
+      Home: 'home',
+      Recipe: 'recipe/:id',
+      Profile: 'profile',
+      SignIn: 'signin',
     },
   },
-  getInitialURL: () => Linking.getInitialURL(),
-  subscribe: (listener) => {
-    const sub = Linking.addEventListener('url', ({ url }) => listener(url));
-    return () => sub.remove();
-  },
 };
-/** ------------------------------------ **/
 
-export default function App() {
+// ==========================
+// 3) Share intent (Android)
+// ==========================
+type ShareData = {
+  mimeType?: string | null;
+  data?: string | null;
+  extraData?: string | null;
+  subject?: string | null;
+  title?: string | null;
+  urls?: string[] | null;
+};
+
+function pickSharedUrl(payload: ShareData): string | undefined {
+  const isUrlLike = (s?: string | null) => !!s && /^(https?:\/\/|messhall:\/\/)/i.test(s.trim());
+  if (payload?.urls?.length) {
+    const first = payload.urls.find((u) => isUrlLike(u));
+    if (first) return first.trim();
+  }
+  if (isUrlLike(payload?.data)) return payload!.data!.trim();
+  if (isUrlLike(payload?.extraData)) return payload!.extraData!.trim();
+  const blob = `${payload?.data || ''}\n${payload?.extraData || ''}`;
+  const match = blob.match(/https?:\/\/[^\s]+/i);
+  return match?.[0]?.trim();
+}
+
+// ==========================
+// 4) Inner app with session + handlers
+// ==========================
+function AppInner() {
   const navRef = useNavigationContainerRef<RootStackParamList>();
+  const [session, setSession] =
+    useState<Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session'] | null>(null);
+  const [ready, setReady] = useState(false);
+
+  const lastHandledRef = useRef<string | null>(null);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+
+  // ---- Restore session / listen for auth changes
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!mounted) return;
+      setSession(data.session);
+      setReady(true);
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, _session) => {
+      setSession(_session);
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
+  // ---- Handle deep links that need param mapping
+  const handleUrlNav = useCallback(
+    (url: string) => {
+      try {
+        if (lastHandledRef.current === url) return;
+        lastHandledRef.current = url;
+
+        const parsed = Linking.parse(url);
+
+        if (parsed.path?.startsWith('reset-password')) {
+          const access_token = (parsed.queryParams?.access_token as string) || undefined;
+          const email = (parsed.queryParams?.email as string) || undefined;
+          if (navRef.isReady()) navRef.navigate('ResetPassword', { access_token, email });
+          return;
+        }
+
+        if (parsed.path?.startsWith('add')) {
+          const sharedUrl = (parsed.queryParams?.sharedUrl as string) || undefined;
+          if (navRef.isReady()) navRef.navigate('Add', { sharedUrl });
+          return;
+        }
+
+        // Let React Navigation handle other links via `linking` config.
+      } catch {
+        // ignore malformed links
+      }
+    },
+    [navRef]
+  );
 
   useEffect(() => {
-    const navigateToAdd = (payload: ParsedShare) => {
-      const hasSomething =
-        !!payload.url || !!payload.text || (payload.images && payload.images.length > 0);
-      if (!hasSomething) return;
+    const sub = Linking.addEventListener('url', ({ url }) => handleUrlNav(url));
+    (async () => {
+      const initial = await Linking.getInitialURL();
+      if (initial) handleUrlNav(initial);
+    })();
+    return () => sub.remove();
+  }, [handleUrlNav]);
 
-      const params = {
-        sharedUrl: payload.url || '',
-        sharedText: payload.text || '',
-        sharedImages: payload.images || [],
-      } as never;
+  // ---- Track app state (optional, kept for future logic)
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      appStateRef.current = state;
+    });
+    return () => sub.remove();
+  }, []);
 
-      const go = () => navRef.navigate('Add' as never, params);
+  // ---- Android Share Target (react-native-share-menu)
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
 
-      if (navRef.isReady()) {
-        go();
-      } else {
-        const unsub = navRef.addListener('state', () => {
+    let removeListener: undefined | (() => void);
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const ShareMenu = (await import('react-native-share-menu')).default;
+        const { ShareMenuReactView } = await import('react-native-share-menu');
+
+        removeListener = ShareMenu.addNewShareListener((sharedItem: ShareData) => {
+          if (cancelled) return;
+          const sharedUrl = pickSharedUrl(sharedItem);
+          if (!sharedUrl) return;
+          if (navRef.isReady()) navRef.navigate('Add', { sharedUrl });
+        });
+
+        ShareMenuReactView?.getSharedItem?.((sharedItem: ShareData | null) => {
+          if (cancelled || !sharedItem) return;
+          const sharedUrl = pickSharedUrl(sharedItem);
+          if (!sharedUrl) return;
           if (navRef.isReady()) {
-            go();
-            unsub();
+            navRef.navigate('Add', { sharedUrl });
+          } else {
+            setTimeout(() => {
+              if (navRef.isReady()) navRef.navigate('Add', { sharedUrl });
+            }, 150);
           }
         });
+      } catch {
+        // Module not installed or environment mismatch — ignore gracefully
       }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (removeListener) try { removeListener(); } catch {}
     };
-
-    const handleShare = (item?: ShareData) => {
-      const parsed = parseSharePayload(item);
-      navigateToAdd(parsed);
-    };
-
-    // Initial share (cold start) + legacy fallback
-    ShareMenu.getInitialShare?.((initial?: ShareData) => handleShare(initial));
-    (ShareMenu as any).getSharedItems?.().then(handleShare).catch(() => {});
-
-    // New shares while app is running
-    const listener = ShareMenu.addNewShareListener(handleShare);
-    return () => listener?.remove?.();
   }, [navRef]);
 
-  // Simple analytics hook
-  const onStateChange = () => {
-    const route = navRef.getCurrentRoute();
-    if (!route) return;
-    // Replace with your analytics call
-    console.log('[nav]', route.name, route.params);
-  };
+  // ---- Decide initial route
+  const initialRouteName = useMemo<keyof RootStackParamList>(() => {
+    return session ? 'Home' : 'SignIn';
+  }, [session]);
+
+  if (!ready) {
+    // Keep native splash or a tiny placeholder here if you wish.
+    return null;
+  }
 
   return (
-    <NavigationContainer linking={linking} ref={navRef} onStateChange={onStateChange}>
-      {/* your stacks here */}
+    <NavigationContainer ref={navRef} linking={linking}>
+      <Stack.Navigator initialRouteName={initialRouteName} screenOptions={screenOptions}>
+        {session ? (
+          <>
+            <Stack.Screen name="Home" component={Home} />
+            <Stack.Screen name="Add" component={Add} />
+            <Stack.Screen name="Recipe" component={Recipe} />
+            <Stack.Screen name="Profile" component={Profile} />
+            <Stack.Screen name="RecipeEdit" component={RecipeEdit} />
+            <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
+          </>
+        ) : (
+          <>
+            <Stack.Screen name="SignIn" component={SignIn} />
+            <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
+            {/* Let Add open even when logged out; it can bounce to SignIn internally if needed */}
+            <Stack.Screen name="Add" component={Add} />
+          </>
+        )}
+      </Stack.Navigator>
     </NavigationContainer>
+  );
+}
+
+// ==========================
+// 5) Root with providers
+// ==========================
+function ThemeGate({ children }: { children: React.ReactNode }) {
+  const { ready } = useThemeController();
+  if (!ready) return null;
+  return <>{children}</>;
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <ThemeProvider>
+        <ToastProvider>
+          <ThemeGate>
+            <AppInner />
+          </ThemeGate>
+        </ToastProvider>
+      </ThemeProvider>
+    </SafeAreaProvider>
   );
 }
