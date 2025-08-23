@@ -1,32 +1,59 @@
 // plugins/with-patch-share-menu-gradle.js
-const { withAppBuildGradle, createRunOncePlugin } = require('@expo/config-plugins');
+const { withDangerousMod } = require("@expo/config-plugins");
+const fs = require("fs");
+const path = require("path");
 
-const TAG = 'with-patch-share-menu-gradle';
+function patchShareMenuGradle(src) {
+  // 1) Remove any hard-coded buildToolsVersion like '29.0.2'
+  src = src.replace(/^\s*buildToolsVersion\s+['"].+?['"]\s*$/gm, "");
 
-function ensureCompileOptions(src) {
-  if (/compileOptions\s*{[^}]*coreLibraryDesugaringEnabled\s+true/m.test(src)) return src;
-  // Insert under android {} if possible; otherwise append at end.
-  if (/android\s*{/.test(src)) {
-    return src.replace(/android\s*{/, (m) => `${m}
-    compileOptions {
-        coreLibraryDesugaringEnabled true
-    }`);
-  }
-  return `${src}
+  // 2) Force modern SDKs for any pattern (numeric or safeExtGet)
+  // compileSdk
+  src = src
+    .replace(/compileSdkVersion\s*\(\s*rootProject\.ext\.[^)]+\)\s*/g, "compileSdkVersion 35")
+    .replace(/compileSdkVersion\s+safeExtGet\([^)]*\)/g, "compileSdkVersion 35")
+    .replace(/compileSdkVersion\s+\d+/g, "compileSdkVersion 35");
 
-android {
-    compileOptions {
-        coreLibraryDesugaringEnabled true
-    }
+  // targetSdk
+  src = src
+    .replace(/targetSdkVersion\s*\(\s*rootProject\.ext\.[^)]+\)\s*/g, "targetSdkVersion 35")
+    .replace(/targetSdkVersion\s+safeExtGet\([^)]*\)/g, "targetSdkVersion 35")
+    .replace(/targetSdkVersion\s+\d+/g, "targetSdkVersion 35");
+
+  // minSdk (keep at 24 for RN/Expo SDK 52)
+  src = src
+    .replace(/minSdkVersion\s*\(\s*rootProject\.ext\.[^)]+\)\s*/g, "minSdkVersion 24")
+    .replace(/minSdkVersion\s+safeExtGet\([^)]*\)/g, "minSdkVersion 24")
+    .replace(/minSdkVersion\s+\d+/g, "minSdkVersion 24");
+
+  return src;
 }
-`;
-}
 
-const withPatchShareMenuGradle = (config) =>
-  withAppBuildGradle(config, (cfg) => {
-    if (!cfg.modResults?.contents) return cfg;
-    cfg.modResults.contents = ensureCompileOptions(cfg.modResults.contents);
-    return cfg;
-  });
+module.exports = function withPatchShareMenuGradle(config) {
+  return withDangerousMod(config, [
+    "android",
+    async (cfg) => {
+      const file = path.join(
+        cfg.modRequest.projectRoot,
+        "node_modules",
+        "react-native-share-menu",
+        "android",
+        "build.gradle"
+      );
 
-module.exports = createRunOncePlugin(withPatchShareMenuGradle, TAG, '1.0.0');
+      if (fs.existsSync(file)) {
+        let src = fs.readFileSync(file, "utf8");
+        const patched = patchShareMenuGradle(src);
+        if (patched !== src) {
+          fs.writeFileSync(file, patched);
+          console.log("[with-patch-share-menu-gradle] Patched react-native-share-menu/android/build.gradle");
+        } else {
+          console.log("[with-patch-share-menu-gradle] No changes needed");
+        }
+      } else {
+        console.warn("[with-patch-share-menu-gradle] File not found:", file);
+      }
+      return cfg;
+    },
+  ]);
+};
