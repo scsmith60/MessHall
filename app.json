@@ -67,7 +67,8 @@
     }
   ],
   "./plugins/with-assert-compile-sdks",
-  "./plugins/with-desugar-libs"
+  "./plugins/with-desugar-libs",
+  "./plugins/with-enforce-kotlin"
 ],
     "experiments": { "typedRoutes": true },
     "extra": {
