@@ -7,51 +7,41 @@
     "scheme": "messhall",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
+
     "icon": "./assets/messhall_icon_1024.png",
     "splash": {
       "image": "./assets/messhall_splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#0B0F19"
     },
+
     "ios": {
       "bundleIdentifier": "com.scsmith60.messhall",
       "supportsTablet": false,
-      "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      }
+      "infoPlist": { "ITSAppUsesNonExemptEncryption": false }
     },
+
     "android": {
       "package": "com.scsmith60.messhall",
+      "enableEdgeToEdge": true,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/messhall_adaptive_foreground.png",
+        "foregroundImage": "./assets/messhall_icon_1024.png",  // ← use this unless you truly have messhall_adaptive_foreground.png
         "backgroundColor": "#0B0F19"
       },
       "intentFilters": [
         {
           "action": "VIEW",
           "autoVerify": false,
-          "category": [
-            "BROWSABLE",
-            "DEFAULT"
-          ],
+          "category": ["BROWSABLE", "DEFAULT"],
           "data": [
-            {
-              "scheme": "https",
-              "host": "messhall.app"
-            },
-            {
-              "scheme": "https",
-              "host": "www.messhall.app"
-            }
+            { "scheme": "https", "host": "messhall.app" },
+            { "scheme": "https", "host": "www.messhall.app" }
           ]
         }
-      ],
-      "permissions": [
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
-      ],
-      "blockedPermissions": []
+      ]
+      /* Removed deprecated READ/WRITE_EXTERNAL_STORAGE */
     },
+
     "plugins": [
       [
         "expo-build-properties",
@@ -66,84 +56,42 @@
               "android.enableJetifier": "true"
             }
           },
-          "ios": {
-            "deploymentTarget": "15.1"
-          }
+          "ios": { "deploymentTarget": "15.1" }
         }
       ],
       [
         "expo-share-extension",
         {
           "activationRules": [
-            {
-              "type": "url",
-              "max": 1
-            },
-            {
-              "type": "text"
-            },
-            {
-              "type": "image",
-              "max": 1
-            }
+            { "type": "url", "max": 1 },
+            { "type": "text" },
+            { "type": "image", "max": 1 }
           ],
-          "backgroundColor": {
-            "red": 17,
-            "green": 24,
-            "blue": 39,
-            "alpha": 1
-          },
+          "backgroundColor": { "red": 17, "green": 24, "blue": 39, "alpha": 1 },
           "displayName": "Save to MessHall",
           "target": "ShareExtension"
         }
       ],
-      "./plugins/with-android-share-intent",
-      "./plugins/with-desugar-libs",
-      "./plugins/with-project-gradle-overrides",
-      "./plugins/with-patch-share-menu-gradle"
+      "./plugins/with-desugar-libs"
+      /* If you really use the other local plugins, keep them — but be sure the files exist and are committed:
+         "./plugins/with-android-share-intent",
+         "./plugins/with-project-gradle-overrides",
+         "./plugins/with-patch-share-menu-gradle"
+      */
     ],
-    "experiments": {
-      "typedRoutes": true
-    },
+
+    "experiments": { "typedRoutes": true },
+
     "extra": {
       "eas": {
-        "build": {
-          "experimental": {
-            "ios": {
-              "appExtensions": [
-                {
-                  "targetName": "MessHallShareExtension",
-                  "bundleIdentifier": "com.scsmith60.messhall.ShareExtension",
-                  "entitlements": {
-                    "com.apple.security.application-groups": [
-                      "group.com.scsmith60.messhall"
-                    ]
-                  }
-                }
-              ]
-            }
-          }
-        },
         "projectId": "521a656b-0e37-4ae1-aae2-f4fd552a48b7"
       },
       "appleApplicationGroup": "group.com.scsmith60.messhall"
     },
-    "packagerOpts": {
-      "sourceExts": [
-        "ts",
-        "tsx",
-        "js",
-        "jsx",
-        "json",
-        "cjs"
-      ]
-    },
-    "updates": {
-      "fallbackToCacheTimeout": 0
-    },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+
+    "packagerOpts": { "sourceExts": ["ts", "tsx", "js", "jsx", "json", "cjs"] },
+    "updates": { "fallbackToCacheTimeout": 0 },
+    "assetBundlePatterns": ["**/*"],
     "owner": "scsmith60"
   }
 }
