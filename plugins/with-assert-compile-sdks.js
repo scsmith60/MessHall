@@ -1,16 +1,11 @@
-// plugins/with-assert-compile-sdks.js
 const { withProjectBuildGradle, withAppBuildGradle } = require("@expo/config-plugins");
-
 const SDKS = { compile: 35, target: 35, min: 24 };
 
 function forceNumbers(s) {
-  // Groovy
   s = s
     .replace(/compileSdkVersion\s+\d+/g, `compileSdkVersion ${SDKS.compile}`)
     .replace(/targetSdkVersion\s+\d+/g, `targetSdkVersion ${SDKS.target}`)
-    .replace(/minSdkVersion\s+\d+/g, `minSdkVersion ${SDKS.min}`);
-  // Kotlin DSL
-  s = s
+    .replace(/minSdkVersion\s+\d+/g, `minSdkVersion ${SDKS.min}`)
     .replace(/compileSdk\s*=\s*\d+/g, `compileSdk = ${SDKS.compile}`)
     .replace(/targetSdk\s*=\s*\d+/g, `targetSdk = ${SDKS.target}`)
     .replace(/minSdk\s*=\s*\d+/g, `minSdk = ${SDKS.min}`);
@@ -18,17 +13,15 @@ function forceNumbers(s) {
 }
 
 function ensureRootExt(s) {
-  // Ensure root ext { compile/target/min } exist or are updated
   if (!/ext\s*{[^}]*compileSdkVersion/.test(s)) {
-    const extBlock = `ext {
+    const extBlock =
+`ext {
     compileSdkVersion = ${SDKS.compile}
     targetSdkVersion = ${SDKS.target}
     minSdkVersion = ${SDKS.min}
 }
 `;
-    if (/buildscript\s*{/.test(s)) {
-      return s.replace(/buildscript\s*{/, (m) => `${m}\n${extBlock}`);
-    }
+    if (/buildscript\s*{/.test(s)) return s.replace(/buildscript\s*{/, (m) => `${m}\n${extBlock}`);
     return extBlock + s;
   }
   return s
@@ -38,7 +31,6 @@ function ensureRootExt(s) {
 }
 
 module.exports = function withAssertCompileSDKs(config) {
-  // Patch root android/build.gradle
   config = withProjectBuildGradle(config, (cfg) => {
     const mod = cfg.modResults;
     if (mod?.contents) {
@@ -50,5 +42,11 @@ module.exports = function withAssertCompileSDKs(config) {
     return cfg;
   });
 
-  // Patch app android/app/build.gradle
-  config
+  config = withAppBuildGradle(config, (cfg) => {
+    const mod = cfg.modResults;
+    if (mod?.contents) mod.contents = forceNumbers(mod.contents);
+    return cfg;
+  });
+
+  return config;
+};

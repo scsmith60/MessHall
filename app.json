@@ -7,20 +7,17 @@
     "scheme": "messhall",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
-
     "icon": "./assets/messhall_icon_1024.png",
     "splash": {
       "image": "./assets/messhall_splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#0B0F19"
     },
-
     "ios": {
       "bundleIdentifier": "com.scsmith60.messhall",
       "supportsTablet": false,
       "infoPlist": { "ITSAppUsesNonExemptEncryption": false }
     },
-
     "android": {
       "package": "com.scsmith60.messhall",
       "enableEdgeToEdge": true,
@@ -40,7 +37,6 @@
         }
       ]
     },
-
     "plugins": [
       [
         "expo-share-extension",
@@ -74,14 +70,11 @@
       ],
       "./plugins/with-assert-compile-sdks"
     ],
-
     "experiments": { "typedRoutes": true },
-
     "extra": {
       "eas": { "projectId": "521a656b-0e37-4ae1-aae2-f4fd552a48b7" },
       "appleApplicationGroup": "group.com.scsmith60.messhall"
     },
-
     "packagerOpts": { "sourceExts": ["ts", "tsx", "js", "jsx", "json", "cjs"] },
     "updates": { "fallbackToCacheTimeout": 0 },
     "assetBundlePatterns": ["**/*"],
