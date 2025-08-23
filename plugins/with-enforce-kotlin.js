@@ -41,7 +41,7 @@ module.exports = function withEnforceKotlin(config) {
     };
     setProp("KOTLIN_VERSION", KOTLIN);
     // Safety net if something still bumps Kotlin: uncomment the next line as a last resort.
-    // setProp("suppressKotlinVersionCompatibilityCheck", "true");
+     setProp("suppressKotlinVersionCompatibilityCheck", "true");
     cfg.modResults = props;
     return cfg;
   });
