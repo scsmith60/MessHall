@@ -98,6 +98,7 @@
         }
       ],
       "./plugins/with-android-share-intent",
+      "./plugins/with-desugar-libs",
       "./plugins/with-project-gradle-overrides",
       "./plugins/with-patch-share-menu-gradle"
     ],
