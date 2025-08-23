@@ -25,7 +25,7 @@
       "package": "com.scsmith60.messhall",
       "enableEdgeToEdge": true,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/messhall_icon_1024.png",  // ← use this unless you truly have messhall_adaptive_foreground.png
+        "foregroundImage": "./assets/messhall_icon_1024.png",
         "backgroundColor": "#0B0F19"
       },
       "intentFilters": [
@@ -39,26 +39,9 @@
           ]
         }
       ]
-      /* Removed deprecated READ/WRITE_EXTERNAL_STORAGE */
     },
 
     "plugins": [
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "minSdkVersion": 24,
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
-            "kotlinVersion": "2.0.21",
-            "gradleProperties": {
-              "android.useAndroidX": "true",
-              "android.enableJetifier": "true"
-            }
-          },
-          "ios": { "deploymentTarget": "15.1" }
-        }
-      ],
       [
         "expo-share-extension",
         {
@@ -72,20 +55,30 @@
           "target": "ShareExtension"
         }
       ],
-      "./plugins/with-desugar-libs"
-      /* If you really use the other local plugins, keep them — but be sure the files exist and are committed:
-         "./plugins/with-android-share-intent",
-         "./plugins/with-project-gradle-overrides",
-         "./plugins/with-patch-share-menu-gradle"
-      */
+      "./plugins/with-desugar-libs",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24,
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "kotlinVersion": "2.0.21",
+            "gradleProperties": {
+              "android.useAndroidX": "true",
+              "android.enableJetifier": "true",
+            "./plugins/with-assert-compile-sdks"
+            }
+          },
+          "ios": { "deploymentTarget": "15.1" }
+        }
+      ]
     ],
 
     "experiments": { "typedRoutes": true },
 
     "extra": {
-      "eas": {
-        "projectId": "521a656b-0e37-4ae1-aae2-f4fd552a48b7"
-      },
+      "eas": { "projectId": "521a656b-0e37-4ae1-aae2-f4fd552a48b7" },
       "appleApplicationGroup": "group.com.scsmith60.messhall"
     },
 
