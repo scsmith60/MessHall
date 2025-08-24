@@ -1,8 +1,9 @@
 // screens/Add.tsx
-// MessHall — Add screen (themed, TikTok auto-snap)
-// - Robust TikTok thumb via helpers (no login banners)
-// - Auto WebView screenshot fallback (no button; delay + capture + upload)
-// - Pasting or sharing a URL enriches immediately
+// MessHall — Add screen (themed, TikTok auto-snap, thumbnail debugger)
+// - Fixes Android black-image issue (no overflow clipping; radius on Image)
+// - Adds DEBUG_THUMBS panel + logs to inspect why preview fails
+// - Prefetch + getSize preflight; HEAD/Range check for signed URL reachability
+// - Auto WebView screenshot fallback + TikTok robust thumb
 // - SafeArea padding + tap-to-enlarge thumbnail
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,18 +31,20 @@ import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
 
-// ---- Optional helpers (expected to exist; safe fallbacks if they don't) ----
+// ===== DEBUG SWITCH =====
+// Toggle this to false to remove on-screen debug panel and most logs.
+const DEBUG_THUMBS = true;
+
+// ---- Optional helpers ----
 let ensureDurableThumb:
   | undefined
-  | ((src: string) => Promise<{ publicUrl: string; bucketPath?: string; uri?: string }>);
+  | ((src: string) => Promise<{ publicUrl: string; signedUrl?: string; bucketPath?: string; uri?: string }>);
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   ensureDurableThumb =
     require('../lib/ensureDurableThumb').ensureDurableThumb ||
     require('../lib/ensureDurableThumb').default;
-} catch {
-  /* optional */
-}
+} catch {}
 
 type MetaResult = {
   title?: string;
@@ -54,29 +57,225 @@ let fetchMeta: undefined | ((url: string) => Promise<MetaResult>);
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   fetchMeta = require('../lib/fetch_meta').fetchMeta || require('../lib/fetch_meta').default;
-} catch {
-  /* optional */
-}
+} catch {}
 
-// ---- Types ----
 type AddRoute = RouteProp<RootStackParamList, 'Add'>;
 
-// Basic URL validator (generous)
-const looksLikeUrl = (s?: string) => !!s && /^https?:\/\/[^\s]+/i.test(s.trim());
+const looksLikeUrl = (s?: string) => !!s && /^https?:\/\/[^\s]+/i.test(s?.trim() || '');
+const uniq = (arr: string[]) => Array.from(new Set(arr.map((s) => s.trim()).filter(Boolean)));
 
-// Normalize arrays produced by parsers; remove empties/dupes
-const uniq = (arr: string[]) =>
-  Array.from(new Set(arr.map((s) => s.trim()).filter(Boolean)));
+const isSupabaseSigned = (u: string) => /\/storage\/v1\/object\/sign\//.test(u);
+
+// Build a cache-busted URL for public/CDN images, but **never** for Supabase signed URLs
+function bustIfSafe(url: string): string {
+  if (!url || isSupabaseSigned(url)) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.set('_t', String(Date.now()));
+    return u.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}_t=${Date.now()}`;
+  }
+}
+
+/** Thumb with debug: avoids Android black rendering by:
+ *  - No overflow clipping on parent
+ *  - Border radius applied to Image itself
+ *  - getSize() preflight + prefetch
+ *  - HEAD / Range GET probe for signed URLs
+ *  - On-screen debug panel when DEBUG_THUMBS
+ */
+function Thumb({
+  uri,
+  onPress,
+  styles,
+}: {
+  uri: string;
+  onPress: () => void;
+  styles: ReturnType<typeof makeStyles>;
+}) {
+  const [ok, setOk] = useState<boolean | null>(null);
+  const [displayUri, setDisplayUri] = useState(uri);
+
+  // ---- DEBUG STATE (comment out if desired) ----
+  const [dbg, setDbg] = useState<{
+    isSigned: boolean;
+    getSizeOK?: boolean;
+    getSizeErr?: string;
+    width?: number;
+    height?: number;
+    prefetchOK?: boolean;
+    prefetchErr?: string;
+    headStatus?: number;
+    headCT?: string;
+    headLen?: string;
+    headErr?: string;
+    onErrorEvt?: any;
+  }>({ isSigned: isSupabaseSigned(uri) });
+
+  // Update display URL with safe cache-busting when URI changes (but not for signed)
+  useEffect(() => {
+    setOk(null);
+    const signed = isSupabaseSigned(uri);
+    const next = signed ? uri : bustIfSafe(uri);
+    if (DEBUG_THUMBS) console.log('[Thumb] new uri', { uri, signed, displayUri: next });
+    setDisplayUri(next);
+    setDbg((d) => ({ ...d, isSigned: signed }));
+  }, [uri]);
+
+  // Preflight: getSize + prefetch + HEAD/Range probe
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      // --- getSize ---
+      try {
+        await new Promise<void>((resolve, reject) => {
+          Image.getSize(
+            displayUri,
+            (w, h) => {
+              if (DEBUG_THUMBS) console.log('[Thumb] getSize OK', { w, h, displayUri });
+              if (!cancelled) setDbg((d) => ({ ...d, getSizeOK: true, width: w, height: h }));
+              resolve();
+            },
+            (err) => {
+              if (DEBUG_THUMBS) console.warn('[Thumb] getSize FAIL', err);
+              if (!cancelled) setDbg((d) => ({ ...d, getSizeOK: false, getSizeErr: String(err) }));
+              reject(err);
+            }
+          );
+        });
+      } catch {
+        // continue; some servers still work even if getSize fails (CORS)
+      }
+
+      // --- prefetch ---
+      try {
+        const pf = await Image.prefetch(displayUri);
+        if (DEBUG_THUMBS) console.log('[Thumb] prefetch', pf);
+        if (!cancelled) setDbg((d) => ({ ...d, prefetchOK: !!pf }));
+      } catch (e: any) {
+        if (DEBUG_THUMBS) console.warn('[Thumb] prefetch FAIL', e?.message || e);
+        if (!cancelled) setDbg((d) => ({ ...d, prefetchOK: false, prefetchErr: e?.message || String(e) }));
+      }
+
+      // --- HEAD or tiny Range GET (some backends block HEAD) ---
+      try {
+        let status = 0, ct = '', len = '';
+        let res = await fetch(displayUri, { method: 'HEAD' });
+        status = res.status;
+        ct = res.headers.get('content-type') || '';
+        len = res.headers.get('content-length') || '';
+        if (DEBUG_THUMBS) console.log('[Thumb] HEAD', status, ct, len);
+        if (!cancelled) setDbg((d) => ({ ...d, headStatus: status, headCT: ct, headLen: len }));
+        if (status >= 200 && status < 400) {
+          if (!cancelled) setOk(true);
+          return;
+        }
+        // fallback to a tiny GET (Range)
+        res = await fetch(displayUri, { method: 'GET', headers: { Range: 'bytes=0-0' } as any });
+        status = res.status;
+        ct = res.headers.get('content-type') || '';
+        len = res.headers.get('content-length') || '';
+        if (DEBUG_THUMBS) console.log('[Thumb] Range GET', status, ct, len);
+        if (!cancelled) setDbg((d) => ({ ...d, headStatus: status, headCT: ct, headLen: len }));
+        if (status >= 200 && status < 400) {
+          if (!cancelled) setOk(true);
+        } else {
+          if (!cancelled) setOk(false);
+        }
+      } catch (e: any) {
+        if (DEBUG_THUMBS) console.warn('[Thumb] HEAD/Range FAIL', e?.message || e);
+        if (!cancelled) setDbg((d) => ({ ...d, headErr: e?.message || String(e) }));
+        // don't mark as hard fail yet; RN Image may still load
+        if (!cancelled && dbg.getSizeOK) setOk(true);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayUri]);
+
+  return (
+    <Pressable onPress={onPress} style={{ marginTop: 12 }}>
+      {/* Loading */}
+      {ok === null && (
+        <View style={[styles.thumb, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111' }]}>
+          <ActivityIndicator />
+        </View>
+      )}
+
+      {/* Success */}
+      {ok === true && (
+        <Image
+          source={{ uri: displayUri }}
+          style={[
+            styles.thumb,
+            { borderRadius: 12, backgroundColor: '#111' },
+            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#4ade80' } : null, // DEBUG: green border on success
+          ]}
+          resizeMode="cover"
+          resizeMethod="resize"
+          fadeDuration={0}
+          onError={(e) => {
+            if (DEBUG_THUMBS) console.warn('[Thumb:onError]', e?.nativeEvent);
+            setDbg((d) => ({ ...d, onErrorEvt: e?.nativeEvent }));
+            setOk(false);
+          }}
+        />
+      )}
+
+      {/* Failure */}
+      {ok === false && (
+        <View
+          style={[
+            styles.thumb,
+            { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111', borderRadius: 12 },
+            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#f87171' } : null, // DEBUG: red border on fail
+          ]}
+        >
+          <Text style={{ color: '#fff' }}>Preview unavailable</Text>
+        </View>
+      )}
+
+      {/* ===== DEBUG PANEL (comment out this block when done) ===== */}
+      {DEBUG_THUMBS && (
+        <View style={{ marginTop: 6, padding: 8, backgroundColor: '#0b1221', borderRadius: 8 }}>
+          <Text style={{ color: '#93c5fd', fontWeight: '700', marginBottom: 4 }}>Thumbnail Debug</Text>
+          <Text style={{ color: '#cbd5e1' }} numberOfLines={3}>uri: {uri}</Text>
+          <Text style={{ color: '#cbd5e1' }} numberOfLines={2}>displayUri: {displayUri}</Text>
+          <Text style={{ color: '#e2e8f0' }}>
+            signed: {String(dbg.isSigned)} | getSizeOK: {String(dbg.getSizeOK)} {dbg.width && dbg.height ? `(${dbg.width}×${dbg.height})` : ''}
+          </Text>
+          {dbg.getSizeErr ? <Text style={{ color: '#fca5a5' }}>getSizeErr: {dbg.getSizeErr}</Text> : null}
+          <Text style={{ color: '#e2e8f0' }}>
+            prefetchOK: {String(dbg.prefetchOK)}
+          </Text>
+          {dbg.prefetchErr ? <Text style={{ color: '#fca5a5' }}>prefetchErr: {dbg.prefetchErr}</Text> : null}
+          <Text style={{ color: '#e2e8f0' }}>
+            headStatus: {dbg.headStatus ?? '-'} | ct: {dbg.headCT ?? '-'} | len: {dbg.headLen ?? '-'}
+          </Text>
+          {dbg.headErr ? <Text style={{ color: '#fca5a5' }}>headErr: {dbg.headErr}</Text> : null}
+          {dbg.onErrorEvt ? <Text style={{ color: '#fca5a5' }}>imageError: {JSON.stringify(dbg.onErrorEvt)}</Text> : null}
+        </View>
+      )}
+      {/* ===== END DEBUG PANEL ===== */}
+    </Pressable>
+  );
+}
 
 // ===== AutoSnap Modal (WebView + ViewShot) =====
-// NOTE: We pass `styles` from the parent so this component doesn’t try to use it out of scope.
 type AutoSnapModalProps = {
   visible: boolean;
   url: string;
   onDone: (durableUrl: string) => void;
   onCancel: () => void;
   colors: ReturnType<typeof useThemeController>['colors'];
-  styles: ReturnType<typeof makeStyles>; // receive themed styles
+  styles: ReturnType<typeof makeStyles>;
   delayMs?: number;
 };
 
@@ -94,6 +293,7 @@ function AutoSnapModal({
   const [snapping, setSnapping] = useState(false);
   const viewShotRef = useRef<any>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const gotDirectThumbRef = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -102,21 +302,17 @@ function AutoSnapModal({
         const WV = (modWV as any).WebView || (modWV as any).default;
         setWebViewComp(() => WV || null);
       } catch (e) {
-        console.warn('[autosnap] webview import failed', e);
-        setWebViewComp(() => null);
+        if (DEBUG_THUMBS) console.warn('[autosnap] webview import failed', e);
       }
       try {
         const modVS = await import('react-native-view-shot');
         const VS = (modVS as any).ViewShot || (modVS as any).default;
         setViewShotComp(() => VS || null);
       } catch (e) {
-        console.warn('[autosnap] view-shot import failed', e);
-        setViewShotComp(() => null);
+        if (DEBUG_THUMBS) console.warn('[autosnap] view-shot import failed', e);
       }
     })();
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, []);
 
   if (!visible) return null;
@@ -128,8 +324,7 @@ function AutoSnapModal({
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Preview unavailable</Text>
             <Text style={{ color: colors.mutedText, marginBottom: 12 }}>
-              Please install <Text style={{ fontWeight: '700' }}>react-native-webview</Text> and{' '}
-              <Text style={{ fontWeight: '700' }}>react-native-view-shot</Text>.
+              Please install react-native-webview and react-native-view-shot.
             </Text>
             <Pressable style={styles.btnNeutral} onPress={onCancel}>
               <Text style={styles.btnNeutralText}>Close</Text>
@@ -140,42 +335,72 @@ function AutoSnapModal({
     );
   }
 
-  // Try to hide common promo/login chrome via injected CSS (best-effort)
   const injectedJS = `
     (function() {
+      var meta = document.querySelector('meta[name="viewport"]');
+      if (!meta) { meta = document.createElement('meta'); meta.name='viewport'; document.head.appendChild(meta); }
+      meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0';
+
       const st = document.createElement('style');
       st.innerHTML = \`
+        html, body { margin:0!important; padding:0!important; background:#fff!important; overflow:hidden!important; }
         header, footer, .tiktok-top, .tiktok-header, .tiktok-footer,
         [data-e2e="banner"], [data-e2e="openAppButton"], .download-app,
-        .login-guide, .app-open, .bottomSheet, .sticky, .sidebar
-        { display:none !important; visibility:hidden !important; }
-        body { background: #fff !important; }
+        .login-guide, .app-open, .bottomSheet, .sticky, .sidebar, .share,
+        [data-e2e="interest-selection"], [data-e2e="cookie-banner"], [role="dialog"]
+        { display:none!important; visibility:hidden!important; pointer-events:none!important; }
+        #app, .app, .container, main { margin:0!important; padding:0!important; }
+        body { transform: scale(1.08); transform-origin: 58% 48%; }
       \`;
       document.documentElement.appendChild(st);
-      true;
+
+      function pm(tag, val){ try{ window.ReactNativeWebView.postMessage(tag + '|' + val); }catch(e){} }
+      var canon = document.querySelector('link[rel="canonical"]')?.href;
+      if (canon && /^https?:/.test(canon)) pm('CANONICAL', canon);
+
+      var og = document.querySelector('meta[property="og:image"]')?.content;
+      if (og) pm('THUMB', og);
+      var tw = document.querySelector('meta[name="twitter:image"]')?.content;
+      if (tw) pm('THUMB', tw);
+
+      var vid = document.querySelector('video');
+      var poster = vid && vid.getAttribute('poster');
+      if (poster) pm('THUMB', poster);
+
+      var imgs = Array.from(document.images || []).map(i=>i.src).filter(Boolean);
+      var candidates = imgs.filter(s => /(p16-sign|p19-sign|object-storage|imagecdn|img.tiktokcdn)/.test(s));
+      if (candidates[0]) pm('THUMB', candidates[0]);
     })();
   `;
+
+  const finishWithUrl = async (src: string) => {
+    try {
+      if (ensureDurableThumb) {
+        const out = await ensureDurableThumb(src);
+        onDone(out.signedUrl || out.publicUrl || out.uri || src);
+      } else {
+        onDone(src);
+      }
+    } catch (e) {
+      if (DEBUG_THUMBS) console.warn('[autosnap] finishWithUrl error', e);
+      onDone(src);
+    }
+  };
 
   const handleLoadEnd = () => {
     if (snapping) return;
     setSnapping(true);
     timerRef.current = setTimeout(async () => {
+      if (gotDirectThumbRef.current) { setSnapping(false); return; }
       try {
         const uri: string = await viewShotRef.current?.capture?.({
           format: 'jpg',
-          quality: 0.9,
+          quality: 0.95,
           result: 'tmpfile',
         });
-        if (!uri) throw new Error('ViewShot returned empty URI');
-
-        if (ensureDurableThumb) {
-          const out = await ensureDurableThumb(uri);
-          onDone(out.publicUrl || out.uri || uri);
-        } else {
-          onDone(uri);
-        }
+        if (uri) await finishWithUrl(uri);
       } catch (e) {
-        console.warn('[autosnap:capture]', e);
+        if (DEBUG_THUMBS) console.warn('[autosnap] capture failed', e);
         onCancel();
       } finally {
         setSnapping(false);
@@ -183,22 +408,68 @@ function AutoSnapModal({
     }, delayMs);
   };
 
+  const vw = 360, vh = 460;
+
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
       <View style={styles.modalScrim}>
         <View style={styles.modalCard}>
           <Text style={styles.modalTitle}>Preparing preview…</Text>
-          <ViewShotComp ref={viewShotRef} style={{ borderRadius: 12, overflow: 'hidden' }}>
-            <WebViewComp
-              source={{ uri: url }}
-              onLoadEnd={handleLoadEnd}
-              injectedJavaScript={injectedJS}
-              javaScriptEnabled
-              domStorageEnabled
-              userAgent={'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'}
-              style={{ width: 360, height: 460, borderRadius: 12, backgroundColor: '#fff' }}
-            />
+
+          <ViewShotComp
+            ref={viewShotRef}
+            style={{ width: vw, height: vh, borderRadius: 12, alignSelf: 'center' }}
+            options={{ format: 'jpg', quality: 0.95 }}
+            collapsable={false}
+          >
+            <View style={{ width: vw, height: vh, borderRadius: 12 }} renderToHardwareTextureAndroid collapsable={false}>
+              <WebViewComp
+                source={{ uri: url }}
+                onLoadEnd={handleLoadEnd}
+                injectedJavaScript={injectedJS}
+                javaScriptEnabled
+                domStorageEnabled
+                overScrollMode="never"
+                androidHardwareAccelerationDisabled
+                onMessage={async (e: any) => {
+                  const data: string = e?.nativeEvent?.data || '';
+                  if (!data) return;
+
+                  if (data.startsWith('CANONICAL|')) {
+                    const canon = data.slice(10);
+                    if (canon) {
+                      try {
+                        const tikThumb = await fetchTikTokThumbRobust(canon);
+                        if (tikThumb) {
+                          gotDirectThumbRef.current = true;
+                          if (timerRef.current) clearTimeout(timerRef.current);
+                          await finishWithUrl(tikThumb);
+                        }
+                      } catch {}
+                    }
+                  }
+                  if (data.startsWith('THUMB|')) {
+                    const src = data.slice(6);
+                    if (src) {
+                      gotDirectThumbRef.current = true;
+                      if (timerRef.current) clearTimeout(timerRef.current);
+                      await finishWithUrl(src);
+                    }
+                  }
+                }}
+                userAgent={'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'}
+                style={{
+                  width: 420,
+                  height: 560,
+                  backgroundColor: '#fff',
+                  marginLeft: -30,
+                  marginTop: -40,
+                  borderRadius: 12,
+                }}
+              />
+            </View>
           </ViewShotComp>
+
           <View style={{ marginTop: 10, alignItems: 'center' }}>
             {snapping ? <ActivityIndicator /> : null}
           </View>
@@ -213,60 +484,29 @@ function AutoSnapModal({
   );
 }
 
-// ===== Lazy WebView (kept for any manual preview code) =====
-function LazyWebView({ url, height = 420 }: { url: string; height?: number }) {
-  const [Comp, setComp] = useState<any>(null);
-  useEffect(() => {
-    (async () => {
-      try {
-        const mod = await import('react-native-webview');
-        setComp(() => (mod as any).WebView || (mod as any).default || null);
-      } catch {
-        setComp(() => null);
-      }
-    })();
-  }, []);
-  if (!Comp) {
-    return (
-      <View style={{ height, alignItems: 'center', justifyContent: 'center' }}>
-        <Text>Install react-native-webview to preview</Text>
-      </View>
-    );
-  }
-  return <Comp source={{ uri: url }} style={{ height, borderRadius: 12, overflow: 'hidden' }} />;
-}
-
 // ===== Main screen =====
 export default function Add() {
   const route = useRoute<AddRoute>();
   const nav = useNavigation();
   const insets = useSafeAreaInsets();
 
-  // THEME
   const { colors, getThemedInputProps } = useThemeController();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
-  // ====== State ======
   const initialSharedUrl = (route.params?.sharedUrl || '').trim();
   const [url, setUrl] = useState(initialSharedUrl);
   const [title, setTitle] = useState('');
-  const [thumbUrl, setThumbUrl] = useState<string>(''); // public URL (storage or remote)
+  const [thumbUrl, setThumbUrl] = useState<string>('');
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [autoEnrichOnMount] = useState<boolean>(looksLikeUrl(initialSharedUrl));
 
-  // Auto-snap modal visibility
   const [autoSnapVisible, setAutoSnapVisible] = useState(false);
-
-  // Tap-to-enlarge thumbnail
   const [thumbModal, setThumbModal] = useState(false);
-
-  // Avoid clobbering manual edits if a new share arrives
   const userTouchedUrlRef = useRef(false);
 
-  // ====== Sync URL if a new share arrives while this screen is active ======
   useEffect(() => {
     const incoming = (route.params?.sharedUrl || '').trim();
     if (!incoming) return;
@@ -280,7 +520,6 @@ export default function Add() {
         })();
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.params?.sharedUrl]);
 
   const onUrlChange = useCallback((v: string) => {
@@ -288,7 +527,6 @@ export default function Add() {
     setUrl(v);
   }, []);
 
-  // ====== Auto-enrich when launched from a share/deep link ======
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -297,22 +535,14 @@ export default function Add() {
       setLoading(true);
       try {
         const res = await doEnrich(url);
-        if (!cancelled && res && !res.hadImage) {
-          setAutoSnapVisible(true);
-        }
-      } catch (e) {
-        console.warn('[add:autoEnrich]', e);
+        if (!cancelled && res && !res.hadImage) setAutoSnapVisible(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { cancelled = true; };
   }, [autoEnrichOnMount]);
 
-  // ====== Actions ======
   const pasteFromClipboard = useCallback(async () => {
     const text = await Clipboard.getStringAsync();
     if (text) {
@@ -334,33 +564,21 @@ export default function Add() {
         Alert.alert('Permission needed', 'Enable Photos permission to pick a thumbnail.');
         return;
       }
-
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 0.9,
-        allowsMultipleSelection: false,
       });
       if (res.canceled || !res.assets?.length) return;
-
-      const localUri = res.assets[0].uri; // may be content:// or file://
+      const localUri = res.assets[0].uri;
       setLoading(true);
-
       if (ensureDurableThumb) {
-        try {
-          const out = await ensureDurableThumb(localUri);
-          setThumbUrl(out.publicUrl || out.uri || localUri);
-        } catch (e: any) {
-          console.warn('[add:pickImage ensureDurableThumb]', e);
-          const msg = typeof e?.message === 'string' ? e.message : String(e);
-          Alert.alert('Image error', `Could not prepare the image.\n\n${msg}`);
-        }
+        const out = await ensureDurableThumb(localUri);
+        setThumbUrl(out.signedUrl || out.publicUrl || out.uri || localUri);
       } else {
         setThumbUrl(localUri);
       }
     } catch (e: any) {
-      console.warn('[add:pickImage]', e);
-      const msg = typeof e?.message === 'string' ? e.message : String(e);
-      Alert.alert('Image error', `Could not prepare the image.\n\n${msg}`);
+      Alert.alert('Image error', e?.message || 'Could not prepare the image.');
     } finally {
       setLoading(false);
     }
@@ -374,69 +592,41 @@ export default function Add() {
       }
       setLoading(true);
       try {
-        // 1) Fetch meta (title, hero image, ingredients, steps)
         let meta: MetaResult = {};
-        if (fetchMeta) {
-          meta = await fetchMeta(theUrl);
-        } else {
-          // Safe fallback if lib is not present
-          meta = {
-            title: theUrl.replace(/^https?:\/\//i, '').slice(0, 60),
-            image: undefined,
-            ingredients: [],
-            steps: [],
-            source: theUrl,
-          };
-        }
+        if (fetchMeta) meta = await fetchMeta(theUrl);
+        else meta = { title: theUrl.replace(/^https?:\/\//i, '').slice(0, 60) };
 
         const cleanedIngredients = uniq(meta.ingredients || []);
         const cleanedSteps = uniq(meta.steps || []);
 
-        // 2) Determine a thumbnail:
-        //    (a) Use meta.image if present
-        //    (b) If TikTok and no image, use robust finder
-        //    (c) If still none, caller will auto-snap via WebView
         let finalThumb = '';
         let hadImage = !!meta.image;
 
         if (meta.image) {
           if (ensureDurableThumb) {
-            try {
-              const { publicUrl, uri } = await ensureDurableThumb(meta.image);
-              finalThumb = publicUrl || uri || meta.image;
-            } catch (e) {
-              console.warn('[add:ensureDurableThumb]', e);
-              finalThumb = meta.image; // fall back to remote
-            }
-          } else {
-            finalThumb = meta.image;
-          }
+            const { publicUrl, signedUrl, uri } = await ensureDurableThumb(meta.image);
+            finalThumb = signedUrl || publicUrl || uri || meta.image;
+          } else finalThumb = meta.image;
         } else if (isTikTokUrl(theUrl)) {
           try {
             const tikThumb = await fetchTikTokThumbRobust(theUrl);
             if (tikThumb) {
-              hadImage = true; // we got a clean image
+              hadImage = true;
               if (ensureDurableThumb) {
-                const { publicUrl, uri } = await ensureDurableThumb(tikThumb);
-                finalThumb = publicUrl || uri || tikThumb;
-              } else {
-                finalThumb = tikThumb;
-              }
+                const { publicUrl, signedUrl, uri } = await ensureDurableThumb(tikThumb);
+                finalThumb = signedUrl || publicUrl || uri || tikThumb;
+              } else finalThumb = tikThumb;
             }
-          } catch (e) {
-            console.warn('[add:tiktok-thumb]', e);
-          }
+          } catch {}
         }
 
-        // 3) Set state
         setTitle(meta.title || '');
         if (finalThumb) setThumbUrl(finalThumb);
         setIngredients(cleanedIngredients);
         setSteps(cleanedSteps);
 
         return { ok: true, hadImage };
-      } catch (e: any) {
-        console.warn('[add:enrich]', e?.message || e);
+      } catch {
         Alert.alert('Enrich failed', 'Could not pull details from the link.');
         return { ok: false, hadImage: false };
       } finally {
@@ -456,55 +646,78 @@ export default function Add() {
   }, []);
 
   const saveRecipe = useCallback(async () => {
-    if (!title.trim()) {
-      Alert.alert('Missing title', 'Please add a recipe title.');
+  if (!title.trim()) {
+    Alert.alert('Missing title', 'Please add a recipe title.');
+    return;
+  }
+  setSaving(true);
+  try {
+    const user = (await supabase.auth.getUser()).data.user;
+    if (!user) {
+      Alert.alert('Sign in required', 'Please sign in to save recipes.');
       return;
     }
-    setSaving(true);
-    try {
-      const user = (await supabase.auth.getUser()).data.user;
-      if (!user) {
-        Alert.alert('Sign in required', 'Please sign in to save recipes.');
-        return;
-      }
 
-      const payload = {
-        user_id: user.id,
-        title: title.trim(),
-        source_url: looksLikeUrl(url) ? url.trim() : null,
-        thumb_url: thumbUrl || null,
-        ingredients,
-        steps,
-        created_at: new Date().toISOString(),
-      };
+    // 1) Create the base recipe row (no ingredients/steps here)
+    const base = {
+      user_id: user.id,
+      title: title.trim(),
+      source_url: looksLikeUrl(url) ? url.trim() : null,
+      thumb_path: thumbUrl || null,
+      created_at: new Date().toISOString(),
+    };
 
-      const { error } = await supabase.from('recipes').insert(payload);
-      if (error) throw error;
+    const { data: created, error: createErr } = await supabase
+      .from('recipes')
+      .insert(base)
+      .select('id')
+      .single();
 
-      Alert.alert('Saved', 'Your recipe has been saved.');
-      // nav.goBack();
-    } catch (e: any) {
-      console.warn('[add:save]', e?.message || e);
-      Alert.alert('Save failed', 'Please try again.');
-    } finally {
-      setSaving(false);
+    if (createErr) throw createErr;
+    const newId = created.id as string;
+
+    // 2) Insert ingredients as rows
+    const ingRows = (ingredients || [])
+      .map(s => s?.trim())
+      .filter(Boolean)
+      .map((ingredient_text, idx) => ({ recipe_id: newId, ingredient_text, position: idx }));
+
+    if (ingRows.length) {
+      const { error: insIngErr } = await supabase.from('recipe_ingredients').insert(ingRows);
+      if (insIngErr) throw insIngErr;
     }
-  }, [ingredients, nav, steps, thumbUrl, title, url]);
 
-  // Derived
+    // 3) Insert steps as rows (requires recipe_steps table)
+    const stepRows = (steps || [])
+      .map(s => s?.trim())
+      .filter(Boolean)
+      .map((step_text, idx) => ({ recipe_id: newId, step_text, position: idx }));
+
+    if (stepRows.length) {
+      const { error: insStepErr } = await supabase.from('recipe_steps').insert(stepRows);
+      if (insStepErr) throw insStepErr;
+    }
+
+    Alert.alert('Saved', 'Your recipe has been saved.');
+    // optional: navigate to detail
+    // nav.navigate('Recipe' as never, { id: newId } as never);
+  } catch (e: any) {
+    Alert.alert('Save failed', e?.message || 'Please try again.');
+  } finally {
+    setSaving(false);
+  }
+}, [ingredients, steps, thumbUrl, title, url]);
+
+
   const canEnrich = useMemo(() => looksLikeUrl(url) && !loading, [url, loading]);
 
-  // ====== UI ======
   return (
     <SafeAreaView style={[styles.flex, { paddingTop: Math.max(insets.top, 8) }]} edges={['top', 'left', 'right']}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.flex}
-      >
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView contentContainerStyle={styles.container}>
           <Text style={styles.h1}>Add Recipe</Text>
 
-          {/* URL Input Row */}
+          {/* URL */}
           <View style={styles.row}>
             <TextInput
               {...getThemedInputProps()}
@@ -531,18 +744,13 @@ export default function Add() {
               }}
               disabled={!canEnrich}
             >
-              {loading ? (
-                <ActivityIndicator size="small" color={colors.tint} />
-              ) : (
-                <Text style={styles.btnNeutralText}>Enrich</Text>
-              )}
+              {loading ? <ActivityIndicator size="small" color={colors.tint} /> : <Text style={styles.btnNeutralText}>Enrich</Text>}
             </Pressable>
 
             <Pressable style={styles.btnNeutral} onPress={pickImage}>
               <Text style={styles.btnNeutralText}>Pick Image</Text>
             </Pressable>
 
-            {/* Clear */}
             <Pressable style={styles.btnGhost} onPress={clearAll}>
               <Text style={styles.btnGhostText}>Clear</Text>
             </Pressable>
@@ -558,12 +766,8 @@ export default function Add() {
             onChangeText={setTitle}
           />
 
-          {/* Thumbnail Preview (tap to enlarge) */}
-          {thumbUrl ? (
-            <Pressable style={styles.thumbWrap} onPress={() => setThumbModal(true)}>
-              <Image source={{ uri: thumbUrl }} style={styles.thumb} resizeMode="cover" />
-            </Pressable>
-          ) : null}
+          {/* Thumbnail (tap to enlarge) */}
+          {thumbUrl ? <Thumb uri={thumbUrl} onPress={() => setThumbModal(true)} styles={styles} /> : null}
 
           {/* Ingredients */}
           <Text style={styles.label}>Ingredients</Text>
@@ -579,9 +783,7 @@ export default function Add() {
                   const copy = ingredients.slice();
                   if (idx === copy.length) copy.push('');
                   copy[idx] = t;
-                  setIngredients(
-                    copy.filter((x, i) => (i === copy.length - 1 ? true : x !== '' || i < copy.length - 1))
-                  );
+                  setIngredients(copy.filter((x, i) => (i === copy.length - 1 ? true : x !== '' || i < copy.length - 1)));
                 }}
                 multiline
               />
@@ -605,9 +807,7 @@ export default function Add() {
                   const copy = steps.slice();
                   if (idx === copy.length) copy.push('');
                   copy[idx] = t;
-                  setSteps(
-                    copy.filter((x, i) => (i === copy.length - 1 ? true : x !== '' || i < copy.length - 1))
-                  );
+                  setSteps(copy.filter((x, i) => (i === copy.length - 1 ? true : x !== '' || i < copy.length - 1)));
                 }}
                 multiline
               />
@@ -619,23 +819,15 @@ export default function Add() {
 
           {/* Save */}
           <View style={styles.footer}>
-            <Pressable
-              style={[styles.saveBtn, saving && styles.btnDisabled]}
-              onPress={saveRecipe}
-              disabled={saving}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.saveBtnText}>Save Recipe</Text>
-              )}
+            <Pressable style={[styles.saveBtn, saving && styles.btnDisabled]} onPress={saveRecipe} disabled={saving}>
+              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.saveBtnText}>Save Recipe</Text>}
             </Pressable>
           </View>
 
           <View style={{ height: 48 }} />
         </ScrollView>
 
-        {/* AutoSnap modal — opens automatically only if we couldn't find a thumbnail */}
+        {/* AutoSnap modal */}
         <AutoSnapModal
           visible={autoSnapVisible}
           url={url}
@@ -652,7 +844,15 @@ export default function Add() {
         <Modal visible={thumbModal} transparent animationType="fade" onRequestClose={() => setThumbModal(false)}>
           <Pressable style={styles.thumbBackdrop} onPress={() => setThumbModal(false)}>
             {thumbUrl ? (
-              <Image source={{ uri: thumbUrl }} style={styles.thumbFullscreen} resizeMode="contain" />
+              <Image
+                source={{ uri: isSupabaseSigned(thumbUrl) ? thumbUrl : bustIfSafe(thumbUrl) }}
+                style={styles.thumbFullscreen}
+                resizeMode="contain"
+                fadeDuration={0}
+                onError={(e) => {
+                  if (DEBUG_THUMBS) console.warn('[Thumb Fullscreen:onError]', e?.nativeEvent);
+                }}
+              />
             ) : null}
           </Pressable>
         </Modal>
@@ -696,14 +896,16 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
 
     btnDisabled: { opacity: 0.6 },
 
+    // Note: we do NOT clip here (no overflow:'hidden') to avoid Android black rendering
     thumbWrap: {
       marginTop: 12,
-      borderRadius: 12,
-      overflow: 'hidden',
       borderWidth: 1,
       borderColor: c.border,
       backgroundColor: c.cardBg,
+      borderRadius: 12,
+      padding: 0,
     },
+    // The radius is applied on the Image itself
     thumb: { width: '100%', height: 180 },
 
     // Fullscreen thumb modal
@@ -714,7 +916,7 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
       justifyContent: 'center',
       padding: 16,
     },
-    thumbFullscreen: { width: '100%', height: '80%', borderRadius: 12 },
+    thumbFullscreen: { width: '100%', height: '80%', borderRadius: 12, backgroundColor: '#111' },
 
     multiBox: {
       backgroundColor: c.cardBg,
@@ -742,7 +944,7 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
     },
     saveBtnText: { color: '#ffffff', fontWeight: '700' },
 
-    // Modal shell reused by AutoSnap dependency-missing message
+    // Modal shell reused by AutoSnap
     modalScrim: {
       flex: 1,
       backgroundColor: '#0009',

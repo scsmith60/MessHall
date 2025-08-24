@@ -1,4 +1,8 @@
 // screens/RecipeEdit.tsx
+// MessHall — Recipe editor (normalized writes)
+// - Loads ingredients/steps from child tables
+// - On save: update recipes, then replace child rows
+
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TextInput, ScrollView, Pressable, ActivityIndicator, Alert,
@@ -11,15 +15,17 @@ import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
 import { useToast } from '../components/ToastProvider';
 
-type R = RouteProp<RootStackParamList, 'Recipe'>; // reuse same param { id: string }
+type R = RouteProp<RootStackParamList, 'Recipe'>; // param { id: string }
 
-type RecipeRow = {
+type IngredientRow = { ingredient_text: string; position: number | null };
+type StepRow = { step_text: string; position: number | null };
+
+type RecipeJoined = {
   id: string;
   title: string | null;
   source_url: string | null;
-  thumb_url: string | null;
-  ingredients: string[] | null;
-  steps: string[] | null;
+  recipe_ingredients: IngredientRow[] | null;
+  recipe_steps: StepRow[] | null;
 };
 
 export default function RecipeEdit() {
@@ -38,6 +44,7 @@ export default function RecipeEdit() {
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<string[]>([]);
 
+  // Load base + children
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -45,15 +52,28 @@ export default function RecipeEdit() {
         setLoading(true);
         const { data, error } = await supabase
           .from('recipes')
-          .select('*')
+          .select(`
+            id, title, source_url,
+            recipe_ingredients ( ingredient_text, position ),
+            recipe_steps ( step_text, position )
+          `)
           .eq('id', recipeId)
-          .maybeSingle<RecipeRow>();
+          .single<RecipeJoined>();
         if (error) throw error;
         if (!alive) return;
+
         setTitle(data?.title || '');
         setSourceUrl(data?.source_url || '');
-        setIngredients(data?.ingredients || []);
-        setSteps(data?.steps || []);
+        setIngredients(
+          (data?.recipe_ingredients ?? [])
+            .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+            .map(r => r.ingredient_text)
+        );
+        setSteps(
+          (data?.recipe_steps ?? [])
+            .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+            .map(r => r.step_text)
+        );
       } catch (e: any) {
         Alert.alert('Load failed', e?.message || 'Try again.');
         nav.goBack();
@@ -71,15 +91,40 @@ export default function RecipeEdit() {
     }
     setSaving(true);
     try {
-      const payload = {
+      // 1) Update recipe base fields
+      const { error: upErr } = await supabase.from('recipes').update({
         title: title.trim(),
         source_url: sourceUrl.trim() || null,
-        ingredients,
-        steps,
         updated_at: new Date().toISOString(),
-      };
-      const { error } = await supabase.from('recipes').update(payload).eq('id', recipeId);
-      if (error) throw error;
+      }).eq('id', recipeId);
+      if (upErr) throw upErr;
+
+      // 2) Replace ingredients
+      const ing = ingredients
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map((ingredient_text, idx) => ({ recipe_id: recipeId, ingredient_text, position: idx }));
+
+      const { error: delIngErr } = await supabase.from('recipe_ingredients').delete().eq('recipe_id', recipeId);
+      if (delIngErr) throw delIngErr;
+      if (ing.length) {
+        const { error: insIngErr } = await supabase.from('recipe_ingredients').insert(ing);
+        if (insIngErr) throw insIngErr;
+      }
+
+      // 3) Replace steps (requires recipe_steps table)
+      const stp = steps
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map((step_text, idx) => ({ recipe_id: recipeId, step_text, position: idx }));
+
+      const { error: delStepErr } = await supabase.from('recipe_steps').delete().eq('recipe_id', recipeId);
+      if (delStepErr) throw delStepErr;
+      if (stp.length) {
+        const { error: insStepErr } = await supabase.from('recipe_steps').insert(stp);
+        if (insStepErr) throw insStepErr;
+      }
+
       show('Recipe updated');
       nav.goBack();
     } catch (e: any) {

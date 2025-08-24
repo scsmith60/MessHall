@@ -4,11 +4,13 @@
 // - On Android, copies content:// to a real file:// in cache
 // - Normalizes bare tmp paths by prefixing file://
 // - Downloads remote URLs if needed, enforces a minimum byte size
-// - Uploads to Supabase Storage (bucket: recipe-thumbs) using Uint8Array (not Blob)
+// - Uploads to Supabase Storage (bucket: recipe-thumbs)
+// - Returns a **signed URL** (TTL configurable) so it works with private buckets
 // - Cleans older uploads with the same hash prefix
 //
 // Usage:
 //   const { publicUrl, bucketPath } = await ensureDurableThumb(srcUri);
+//   // publicUrl is a signed URL suitable for <Image source={{ uri: publicUrl }} />
 
 import * as FileSystem from 'expo-file-system';
 import * as Crypto from 'expo-crypto';
@@ -16,8 +18,9 @@ import { Platform } from 'react-native';
 import { supabase } from './supabaseClient';
 
 const BUCKET = 'recipe-thumbs';
-const FOLDER = 'u';            // keep everything under a folder
-const MIN_BYTES = 12_000;
+const FOLDER = 'u'; // keep everything under a folder
+const MIN_BYTES = 12_000; // sanity guard for black/empty files
+const SIGN_TTL_SECONDS = 60 * 60 * 24 * 14; // 14 days
 
 const CONTENT_TYPES: Record<string, string> = {
   jpg: 'image/jpeg',
@@ -46,7 +49,6 @@ function hasScheme(u: string) {
 }
 
 async function dataUriToFile(dataUri: string): Promise<string> {
-  // Writes a data: URI to a temp file
   const m = dataUri.match(/^data:([^;]+);base64,(.*)$/);
   if (!m) throw new Error('Invalid data URI');
   const ext = (m[1].split('/')[1] || 'jpg').replace('jpeg', 'jpg').toLowerCase();
@@ -68,30 +70,21 @@ async function dataUriToFile(dataUri: string): Promise<string> {
  */
 async function toLocalFile(src: string): Promise<string> {
   if (!src) throw new Error('no-src');
-
   let u = src.trim();
 
   // Bare tmp path (from view-shot) → prefix to file://
-  if (!hasScheme(u) && u.startsWith('/')) {
-    u = `file://${u}`;
-  }
+  if (!hasScheme(u) && u.startsWith('/')) u = `file://${u}`;
 
-  // file://
   if (/^file:\/\//i.test(u)) return u;
-
-  // data:
   if (/^data:/i.test(u)) return dataUriToFile(u);
 
-  // content:// (Android gallery, docs, etc.)
   if (Platform.OS === 'android' && /^content:\/\//i.test(u)) {
     const ext = guessExt(u) || 'jpg';
     const dest = `${FileSystem.cacheDirectory}thumb_${Date.now()}.${ext}`;
-    // FileSystem.copyAsync supports content:// -> file:// on Android
     await FileSystem.copyAsync({ from: u, to: dest });
     return dest;
   }
 
-  // http(s) → download to cache
   if (/^https?:\/\//i.test(u)) {
     const ext = guessExt(u);
     const dest = `${FileSystem.cacheDirectory}thumb_${Date.now()}.${ext}`;
@@ -99,14 +92,12 @@ async function toLocalFile(src: string): Promise<string> {
     return uri;
   }
 
-  // Fallback: try to treat as a local path (prefix file:// if missing)
   if (!hasScheme(u)) return `file://${u}`;
   throw new Error('Unsupported URI scheme');
 }
 
 async function getSize(uri: string): Promise<number> {
   const info = await FileSystem.getInfoAsync(uri, { size: true });
-  // In Expo SDKs, size can be undefined; coerce safely
   return (info as any)?.size ? Number((info as any).size) : 0;
 }
 
@@ -119,53 +110,70 @@ function safeSlug(input: string): string {
 }
 
 async function sha1(input: string): Promise<string> {
-  // Expo-safe hashing
   try {
     return await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA1, input);
   } catch {
-    // Fallback: hash-like slug
     return safeSlug(input).slice(0, 16) + '-' + Date.now().toString(36);
   }
 }
 
 /**
  * Delete older objects whose names start with the given prefix.
- * We list only under FOLDER and use `search` to keep it efficient.
  */
 async function deleteOlderWithPrefix(prefix: string) {
   const { data, error } = await supabase.storage
     .from(BUCKET)
-    .list(FOLDER, { limit: 1000, search: prefix, sortBy: { column: 'created_at', order: 'desc' } });
+    .list(FOLDER, {
+      limit: 1000,
+      search: prefix,
+      sortBy: { column: 'created_at', order: 'desc' },
+    });
 
   if (error || !data?.length) return;
 
-  // Keep most recent (already desc) and delete the rest
+  // Keep most recent (index 0), delete the rest
   const toDelete = data.slice(1).map((o) => `${FOLDER}/${o.name}`);
-  if (toDelete.length) {
-    await supabase.storage.from(BUCKET).remove(toDelete);
-  }
+  if (toDelete.length) await supabase.storage.from(BUCKET).remove(toDelete);
 }
 
-/** Convert base64 string to Uint8Array (RN/JS-safe) */
-function base64ToUint8Array(base64: string) {
-  const binary =
-    (globalThis.atob && globalThis.atob(base64)) ||
-    Buffer.from(base64, 'base64').toString('binary');
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+/**
+ * Convert local file:// to a Blob. If fetch(file://) fails or returns empty, fall back to base64.
+ */
+async function fileUriToBlob(localFileUri: string, fallbackContentType = 'image/jpeg'): Promise<Blob> {
+  try {
+    const res = await fetch(localFileUri);
+    const blob = await res.blob();
+    // @ts-ignore size is available at runtime
+    if (blob && (typeof blob.size !== 'number' || blob.size > 0)) return blob;
+    throw new Error('empty-blob');
+  } catch {
+    const base64 = await FileSystem.readAsStringAsync(localFileUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const byteChars = globalThis.atob
+      ? globalThis.atob(base64)
+      : Buffer.from(base64, 'base64').toString('binary');
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    const byteArray = new Uint8Array(byteNumbers);
+    return new Blob([byteArray], { type: fallbackContentType });
+  }
 }
 
 export async function ensureDurableThumb(
   src: string
-): Promise<{ publicUrl: string; bucketPath: string; uri?: string }> {
+): Promise<{
+  publicUrl: string;        // ⟵ will be a SIGNED URL for private buckets
+  bucketPath: string;
+  uri?: string;             // local file uri (for debugging)
+  signed?: boolean;         // true when publicUrl is signed
+}> {
   if (!src) throw new Error('No image src');
 
-  // Normalize to local file (handles http/https/content/data/bare tmp/etc.)
+  // Normalize to local file
   const local = await toLocalFile(src);
 
-  // Enforce minimum size (after we have a local file)
+  // Enforce minimum size
   const bytes = await getSize(local);
   if (bytes < MIN_BYTES) {
     throw new Error(`Image too small (${bytes} bytes)`);
@@ -177,19 +185,17 @@ export async function ensureDurableThumb(
   const filename = `${prefix}_${Date.now()}.${ext}`;
   const path = `${FOLDER}/${filename}`;
 
-  // Prepare Uint8Array from local file to avoid RN Blob/XHR issues
+  // Prepare Blob
   const contentType = pickContentType(src);
-  const base64 = await FileSystem.readAsStringAsync(local, { encoding: FileSystem.EncodingType.Base64 });
-  const uint8 = base64ToUint8Array(base64);
+  const blob =
+    /^https?:\/\//i.test(src)
+      ? await (await fetch(src)).blob()
+      : await fileUriToBlob(local, contentType);
 
-  // Upload (Uint8Array is supported by supabase-js in React Native)
+  // Upload
   const { error: upErr } = await supabase.storage
     .from(BUCKET)
-    .upload(path, uint8, {
-      contentType,
-      upsert: true,
-      cacheControl: '31536000',
-    });
+    .upload(path, blob, { contentType, upsert: true });
 
   if (upErr) {
     throw new Error(`upload-failed: ${upErr.message || String(upErr)}`);
@@ -198,19 +204,31 @@ export async function ensureDurableThumb(
   // Best-effort cleanup of older siblings
   deleteOlderWithPrefix(prefix).catch(() => {});
 
-  // Public URL
-  const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
-  const publicUrl = pub?.publicUrl || '';
+  // Prefer a **signed** URL (works with private buckets)
+  let signedUrl = '';
+  try {
+    const { data: signedData, error: signErr } = await supabase.storage
+      .from(BUCKET)
+      .createSignedUrl(path, SIGN_TTL_SECONDS);
 
-  if (!publicUrl) {
-    // As a fallback, construct from your Supabase URL (requires anon policy or signed URLs)
-    // @ts-ignore
-    const base = (supabase as any)?.storageUrl || '';
-    if (!base) throw new Error('No public URL available');
-    return { publicUrl: `${base}/${BUCKET}/${path}`, bucketPath: path, uri: local };
+    if (signErr) throw signErr;
+    signedUrl = signedData?.signedUrl || '';
+  } catch {
+    // Fallback for public buckets: getPublicUrl
+    const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
+    signedUrl = pub?.publicUrl || '';
   }
 
-  return { publicUrl, bucketPath: path, uri: local };
+  if (!signedUrl) {
+    throw new Error('No accessible URL returned from Supabase');
+  }
+
+  return {
+    publicUrl: signedUrl, // keep field name for backwards compatibility
+    bucketPath: path,
+    uri: local,
+    signed: true,
+  };
 }
 
 export default ensureDurableThumb;

@@ -1,11 +1,21 @@
 // screens/Profile.tsx
-// MessHall — Profile screen (robust save + avatar upload)
-// + SafeArea padding
-// + Tap-to-enlarge avatar (modal)
+// MessHall — Profile screen (robust save + avatar upload + signed/public URL fallback)
+// - Uses bucket 'avatars' with path `${userId}/avatar.jpg`
+// - Assumes DB column profiles.avatar_path (text) exists
+// - Adds targeted DEBUG logging to surface real storage/policy errors
 
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
-  View, Text, TextInput, Image, Pressable, Alert, ActivityIndicator, ScrollView, StyleSheet, Modal,
+  View,
+  Text,
+  TextInput,
+  Image,
+  Pressable,
+  Alert,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Modal,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -19,12 +29,40 @@ type ProfileRow = {
   handle?: string | null;
   bio?: string | null;
   tag?: string | null;
-  avatar_path?: string | null;
+  avatar_path?: string | null; // <-- DB column expected
   updated_at?: string | null;
   created_at?: string | null;
 };
 
 const AVATAR_BUCKET = 'avatars';
+// If your bucket is PRIVATE, keep TRUE (we'll create signed URL).
+// If bucket is PUBLIC, set this to FALSE to use getPublicUrl directly.
+const USE_SIGNED_URLS = true;
+
+/* ========================= DEBUG ONLY: helper to probe policies/paths ========================= */
+const debugStorageSelfTest = async (uid: string) => {
+  try {
+    const { data: listData, error: listErr } =
+      await supabase.storage.from(AVATAR_BUCKET).list(uid, { limit: 5 });
+    console.log('[DEBUG avatars list]', { listErr, hasItems: !!listData?.length });
+
+    const okPath = `${uid}/ok-${Date.now()}.txt`;
+    const okBytes = new TextEncoder().encode('hello');
+    const { error: okErr } = await supabase.storage
+      .from(AVATAR_BUCKET)
+      .upload(okPath, okBytes, { contentType: 'text/plain', upsert: true });
+    console.log('[DEBUG avatars upload uid/ok.txt]', { okPath, okErr });
+
+    const badPath = `full_name.txt`;
+    const { error: badErr } = await supabase.storage
+      .from(AVATAR_BUCKET)
+      .upload(badPath, okBytes, { contentType: 'text/plain', upsert: true });
+    console.log('[DEBUG avatars upload bad full_name.txt]', { badPath, badErr });
+  } catch (e) {
+    console.warn('[DEBUG debugStorageSelfTest exception]', e);
+  }
+};
+/* ======================= END DEBUG helper (remove when done debugging) ======================== */
 
 export default function Profile() {
   const { mode, setMode, isDark } = useThemeController();
@@ -45,14 +83,17 @@ export default function Profile() {
   const [pw1, setPw1] = useState('');
   const [pw2, setPw2] = useState('');
 
-  // fullscreen avatar viewer
   const [avatarModal, setAvatarModal] = useState(false);
 
   const makeAvatarUrl = useCallback(async (path?: string | null) => {
     if (!path) return '';
-    const { data: signed, error } =
-      await supabase.storage.from(AVATAR_BUCKET).createSignedUrl(path, 60 * 60);
-    if (!error && signed?.signedUrl) return signed.signedUrl;
+    if (USE_SIGNED_URLS) {
+      const { data, error } = await supabase.storage
+        .from(AVATAR_BUCKET)
+        .createSignedUrl(path, 60 * 60);
+      if (!error && data?.signedUrl) return data.signedUrl;
+      console.warn('[profile:signedUrl]', error);
+    }
     const { data: pub } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
     return pub?.publicUrl || '';
   }, []);
@@ -64,6 +105,7 @@ export default function Profile() {
     (async () => {
       try {
         setLoading(true);
+
         const { data: auth, error: authErr } = await supabase.auth.getUser();
         if (authErr) throw authErr;
         const me = auth.user;
@@ -84,6 +126,7 @@ export default function Profile() {
         if (error) throw error;
 
         if (!row) {
+          // Ensure a row exists
           const { error: insErr } = await supabase
             .from('profiles')
             .upsert({ id: me.id }, { onConflict: 'id' });
@@ -111,7 +154,9 @@ export default function Profile() {
       }
     })();
 
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [makeAvatarUrl]);
 
   // --------- Save profile ----------
@@ -119,13 +164,13 @@ export default function Profile() {
     if (!userId) return;
     setSaving(true);
     try {
-      const payload = {
+      const payload: ProfileRow = {
         id: userId,
         display_name: displayName.trim() || null,
         handle: handle.trim() || null,
         bio: bio.trim() || null,
         tag: tag.trim() || null,
-        avatar_path: avatarPath || null,
+        avatar_path: avatarPath || null, // ensure column exists in DB
         updated_at: new Date().toISOString(),
       };
 
@@ -152,6 +197,7 @@ export default function Profile() {
       }
 
       const res = await ImagePicker.launchImageLibraryAsync({
+        // FIX: deprecation — use MediaType.Images instead of MediaTypeOptions.Images
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 1,
         allowsEditing: true,
@@ -168,29 +214,62 @@ export default function Profile() {
         { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG }
       );
 
-      const blob = await (await fetch(manip.uri)).blob();
-      const filename = `${userId}/avatar.jpg`;
+      // DEBUG: log the computed filename & bucket
+      //const filename = `${userId}/avatar.jpg`; // matches policies
+      //console.log('[DEBUG avatar upload] will upload to', { bucket: AVATAR_BUCKET, filename, userId });
 
-      const { error: upErr } = await supabase.storage.from(AVATAR_BUCKET).upload(filename, blob, {
-        contentType: 'image/jpeg',
-        upsert: true,
-      });
-      if (upErr) throw upErr;
+      // FIX: Expo Blob may not implement blob.arrayBuffer()
+      // Use the fetch RESPONSE's arrayBuffer() instead (reliable in Expo).
+      const resp = await fetch(manip.uri);
+      const bytes = await resp.arrayBuffer();
+
+      const { error: upErr } = await supabase.storage
+        .from(AVATAR_BUCKET)
+        .upload(filename, bytes, {
+          contentType: 'image/jpeg',
+          upsert: true,
+        });
+
+      if (upErr) {
+        console.warn('[DEBUG avatar upload error]', upErr); // <--- see real Storage error
+        Alert.alert(
+          'Upload failed',
+          upErr.message ??
+            'Could not upload your photo. Check storage policies for the avatars bucket.'
+        );
+        return; // stop here if upload failed
+      }
+
+      // Generate URL (signed for private; public fallback otherwise)
+      const signed = USE_SIGNED_URLS
+        ? (await supabase.storage.from(AVATAR_BUCKET).createSignedUrl(filename, 3600)).data
+        : null;
+      if (USE_SIGNED_URLS && !signed?.signedUrl) {
+        console.warn('[DEBUG avatar signedUrl error] fallback to public URL');
+      }
+      const { data: pub } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(filename);
 
       setAvatarPath(filename);
-      setAvatarUrl(await makeAvatarUrl(filename));
+      setAvatarUrl(signed?.signedUrl || pub?.publicUrl || '');
 
+      // Persist path to profile
       const { error: profErr } = await supabase
         .from('profiles')
-        .upsert({ id: userId, avatar_path: filename, updated_at: new Date().toISOString() }, { onConflict: 'id' });
-      if (profErr) throw profErr;
+        .upsert(
+          { id: userId, avatar_path: filename, updated_at: new Date().toISOString() },
+          { onConflict: 'id' }
+        );
+      if (profErr) {
+        console.warn('[DEBUG profile:avatar upsert error]', profErr);
+        Alert.alert('Profile update failed', profErr.message ?? 'Could not save avatar path.');
+      }
     } catch (e: any) {
-      console.warn('[profile:avatar]', e);
+      console.warn('[DEBUG profile:avatar catch]', e);
       Alert.alert('Upload failed', e?.message ?? 'Could not update your photo. Try again.');
     } finally {
       setAvatarLoading(false);
     }
-  }, [makeAvatarUrl, userId]);
+  }, [userId]);
 
   // --------- Password change ----------
   const onChangePassword = useCallback(async () => {
@@ -200,7 +279,8 @@ export default function Profile() {
     try {
       const { error } = await supabase.auth.updateUser({ password: pw1 });
       if (error) throw error;
-      setPw1(''); setPw2('');
+      setPw1('');
+      setPw2('');
       Alert.alert('Password updated', 'Your password has been changed.');
     } catch (e: any) {
       console.warn('[profile:password]', e);
@@ -218,10 +298,16 @@ export default function Profile() {
 
   return (
     <SafeAreaView
-      style={{ flex: 1, backgroundColor: isDark ? '#0B0F19' : '#F9FAFB', paddingTop: Math.max(insets.top, 8) }}
+      style={{
+        flex: 1,
+        backgroundColor: isDark ? '#0B0F19' : '#F9FAFB',
+        paddingTop: Math.max(insets.top, 8),
+      }}
       edges={['top', 'left', 'right']}
     >
-      <ScrollView contentContainerStyle={[styles.container, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}>
+      <ScrollView
+        contentContainerStyle={[styles.container, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}
+      >
         <Text style={[styles.h1, { color: isDark ? '#E5E7EB' : '#111827' }]}>Profile</Text>
 
         {/* Avatar */}
@@ -236,6 +322,15 @@ export default function Profile() {
           <Pressable onPress={onPickAvatar} style={styles.btn}>
             {avatarLoading ? <ActivityIndicator /> : <Text style={styles.btnText}>Change photo</Text>}
           </Pressable>
+
+          {/* ========================= DEBUG ONLY: quick policy/path probe ========================= */}
+          <Pressable
+            onPress={() => userId && debugStorageSelfTest(userId)}
+            style={[styles.btn, { marginLeft: 8 }]}
+          >
+            <Text style={styles.btnText}>Debug storage</Text>
+          </Pressable>
+          {/* ======================= END DEBUG button (remove when done) ======================= */}
         </View>
 
         {/* Display Name */}
@@ -346,8 +441,13 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 12 },
 
   avatarWrap: {
-    width: 84, height: 84, borderRadius: 84 / 2, overflow: 'hidden',
-    borderWidth: 1, borderColor: '#1F2937', backgroundColor: '#111827',
+    width: 84,
+    height: 84,
+    borderRadius: 84 / 2,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#1F2937',
+    backgroundColor: '#111827',
   },
   avatar: { width: '100%', height: '100%' },
   avatarPlaceholder: { alignItems: 'center', justifyContent: 'center' },
@@ -375,11 +475,23 @@ const styles = StyleSheet.create({
   inputLight: { backgroundColor: '#FFFFFF', borderColor: '#E5E7EB', color: '#111827' },
   multiline: { minHeight: 80, textAlignVertical: 'top' },
 
-  btn: { backgroundColor: '#374151', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, alignSelf: 'flex-start' },
+  btn: {
+    backgroundColor: '#374151',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignSelf: 'flex-start',
+  },
   btnText: { color: '#F3F4F6', fontWeight: '600' },
   btnDisabled: { opacity: 0.6 },
 
-  saveBtn: { backgroundColor: '#4F46E5', paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 12 },
+  saveBtn: {
+    backgroundColor: '#4F46E5',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
   saveBtnText: { color: 'white', fontWeight: '700' },
 
   themeRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
