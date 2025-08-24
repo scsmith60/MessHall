@@ -2,7 +2,10 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "target": "ES2021",
-    "lib": ["ES2021", "DOM"],
+    "lib": [
+      "ES2021",
+      "DOM"
+    ],
     "jsx": "react-jsx",
     "strict": true,
     "allowJs": true,
@@ -10,11 +13,22 @@
     "noEmit": true,
     "resolveJsonModule": true,
     "moduleResolution": "node",
-    "types": ["react", "react-native"],
+    "types": [
+      "react",
+      "react-native"
+    ],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["*"]
+      "@/*": [
+        "*"
+      ]
     }
   },
-  "include": ["**/*.ts", "**/*.tsx", "plugins/*.js"]
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "plugins/*.js",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ]
 }

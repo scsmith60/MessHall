@@ -3,13 +3,15 @@
 // ✅ Loads by route param { id }
 // ✅ Hero image as blurred, dimmed background with gradient overlay
 // ✅ Foreground content stays readable; supports light/dark theme
-// ✅ Pull-to-refresh, share link, and defensive fallbacks
+// ✅ Pull-to-refresh, share link, defensive fallbacks
+// ✅ SafeArea padding + tap-to-enlarge cover image
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, Image, ScrollView, RefreshControl, StyleSheet, Pressable, Share, Platform,
+  View, Text, Image, ScrollView, RefreshControl, StyleSheet, Pressable, Share, Platform, Modal,
 } from 'react-native';
 import { useRoute, RouteProp, useNavigation } from '@react-navigation/native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
@@ -32,11 +34,15 @@ export default function Recipe() {
   const route = useRoute<RecipeRoute>();
   const nav = useNavigation();
   const { isDark } = useThemeController();
+  const insets = useSafeAreaInsets();
 
   const recipeId = route.params?.id;
   const [data, setData] = useState<RecipeRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // full-screen cover viewer
+  const [coverModal, setCoverModal] = useState(false);
 
   const bgImage = data?.thumb_url || undefined;
 
@@ -84,7 +90,10 @@ export default function Recipe() {
 
   // ---------- UI ----------
   return (
-    <View style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#FFFFFF' }]}>
+    <SafeAreaView
+      style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#FFFFFF' }]}
+      edges={['top', 'left', 'right']}
+    >
       {/* Hero background (blur + dim) */}
       <View style={styles.heroWrap} pointerEvents="none">
         {bgImage ? (
@@ -99,24 +108,30 @@ export default function Recipe() {
         )}
         {/* Dim + gradient overlay for readability */}
         <View style={styles.heroDim} />
-        <View style={[styles.heroGradTop]} />
+        <View style={[styles.heroGradTop, { paddingTop: insets.top }]} />
         <View style={[styles.heroGradBottom]} />
       </View>
 
       {/* Foreground */}
       <ScrollView
-        contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={isDark ? '#E5E7EB' : '#111827'} />}
+        contentContainerStyle={[styles.content, { paddingTop: 16 }]}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={isDark ? '#E5E7EB' : '#111827'}
+          />
+        }
       >
         {/* Header row */}
-        <View style={styles.headerRow}>
+        <View style={[styles.headerRow, { marginTop: 4 }]}>
           <Pressable onPress={() => nav.goBack()} style={styles.smallBtn}>
             <Text style={styles.smallBtnText}>‹ Back</Text>
           </Pressable>
 
           <View style={{ flex: 1 }} />
 
-          {/* 🔹 Edit button (navigates to RecipeEdit with id) */}
+          {/* Edit */}
           {recipeId ? (
             <Pressable
               onPress={() => nav.navigate('RecipeEdit' as never, { id: recipeId } as never)}
@@ -126,7 +141,7 @@ export default function Recipe() {
             </Pressable>
           ) : null}
 
-          {/* Share button (only if we have a source URL) */}
+          {/* Share */}
           {data?.source_url ? (
             <Pressable onPress={onShare} style={[styles.smallBtn, { marginLeft: 8 }]}>
               <Text style={styles.smallBtnText}>Share</Text>
@@ -140,9 +155,9 @@ export default function Recipe() {
         </Text>
 
         {data?.thumb_url ? (
-          <View style={styles.coverCard}>
+          <Pressable style={styles.coverCard} onPress={() => setCoverModal(true)}>
             <Image source={{ uri: data.thumb_url }} style={styles.cover} resizeMode="cover" />
-          </View>
+          </Pressable>
         ) : null}
 
         {/* Source link */}
@@ -177,9 +192,15 @@ export default function Recipe() {
         <View style={{ height: 48 }} />
       </ScrollView>
 
-      {/* Top overlay to ensure header text contrast on bright images (extra safety) */}
-      <View pointerEvents="none" style={styles.safeTop} />
-    </View>
+      {/* Full-screen cover modal */}
+      <Modal visible={coverModal} transparent animationType="fade" onRequestClose={() => setCoverModal(false)}>
+        <Pressable style={styles.coverBackdrop} onPress={() => setCoverModal(false)}>
+          {data?.thumb_url ? (
+            <Image source={{ uri: data.thumb_url }} style={styles.coverFullscreen} resizeMode="contain" />
+          ) : null}
+        </Pressable>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
@@ -193,12 +214,10 @@ const styles = StyleSheet.create({
   heroDim: {
     position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.35)',
   },
-  // Soft top gradient
+  // Soft top gradient (paddingTop is set with safe-area insets)
   heroGradTop: {
     position: 'absolute', top: 0, left: 0, right: 0, height: 140,
     backgroundColor: 'transparent',
-    // emulate gradient with layered opacities (no extra lib)
-    borderBottomWidth: 0,
   },
   // Soft bottom gradient (for long lists)
   heroGradBottom: {
@@ -206,7 +225,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.15)',
   },
 
-  content: { padding: 16, paddingTop: 24 },
+  content: { padding: 16 },
   headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   smallBtn: { paddingHorizontal: 10, paddingVertical: 8, backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 10 },
   smallBtnText: { color: '#F3F4F6', fontWeight: '700' },
@@ -219,6 +238,16 @@ const styles = StyleSheet.create({
   },
   cover: { width: '100%', height: 200 },
 
+  // Full-screen viewer
+  coverBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  coverFullscreen: { width: '100%', height: '80%', borderRadius: 12 },
+
   source: { marginBottom: 14, fontSize: 13 },
 
   sectionH: { fontSize: 18, fontWeight: '700', marginTop: 12, marginBottom: 6 },
@@ -230,6 +259,4 @@ const styles = StyleSheet.create({
   li: { fontSize: 15, marginBottom: 6, lineHeight: 20 },
   step: { fontSize: 15, marginBottom: 10, lineHeight: 22 },
   empty: { fontSize: 14, fontStyle: 'italic' },
-
-  safeTop: { position: 'absolute', top: 0, left: 0, right: 0, height: 30, backgroundColor: 'rgba(0,0,0,0.15)' },
 });

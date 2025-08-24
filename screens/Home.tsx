@@ -1,16 +1,15 @@
 // screens/Home.tsx
-// MessHall — Home feed
-// ✅ Loads current user's recipes (paginated, newest first)
-// ✅ Pull-to-refresh + infinite scroll
-// ✅ Local search filter by title/ingredient
-// ✅ Tap → Recipe, FAB → Add, menu → Sign Out
-// ✅ Light/Dark theming
+// MessHall — Home feed with avatar→Profile in header (long‑press avatar = Sign out)
+// + SafeArea header spacing
+// + Tap-to-enlarge recipe thumbnails
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, Text, FlatList, Image, Pressable, TextInput, ActivityIndicator, StyleSheet, RefreshControl, Alert,
+  View, Text, FlatList, Image, Pressable, TextInput, ActivityIndicator, StyleSheet,
+  RefreshControl, Alert, Modal,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
@@ -27,18 +26,28 @@ type RecipeRow = {
 };
 
 const PAGE_SIZE = 20;
+const AVATAR_SIZE = 36;
 
 export default function Home() {
   const nav = useNavigation<any>();
+  const insets = useSafeAreaInsets();
   const { isDark } = useThemeController();
 
   const [userId, setUserId] = useState<string | null>(null);
+
+  // profile bits for avatar
+  const [displayName, setDisplayName] = useState<string>('');
+  const [avatarUri, setAvatarUri] = useState<string>('');
+
   const [rows, setRows] = useState<RecipeRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [reachedEnd, setReachedEnd] = useState(false);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState('');
+
+  // fullscreen thumb
+  const [selectedThumb, setSelectedThumb] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
 
@@ -49,7 +58,6 @@ export default function Home() {
       const { data } = await supabase.auth.getUser();
       const me = data.user;
       if (!me) {
-        // Not signed in — kick to SignIn
         nav.reset({ index: 0, routes: [{ name: 'SignIn' as keyof RootStackParamList }] });
         return;
       }
@@ -57,6 +65,39 @@ export default function Home() {
     })().finally(() => setLoading(false));
     return () => { mountedRef.current = false; };
   }, [nav]);
+
+  // ------- Profile / Avatar fetch -------
+  useEffect(() => {
+    if (!userId) return;
+
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('display_name, full_name, avatar_url, avatar_path, handle')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const dn = (data?.display_name || data?.full_name || data?.handle || '').trim();
+        if (dn) setDisplayName(dn);
+
+        let uri = (data?.avatar_url as string) || '';
+        if (!uri && data?.avatar_path) {
+          const { data: signed, error: sErr } = await supabase
+            .storage
+            .from('avatars')
+            .createSignedUrl(String(data.avatar_path), 60 * 60); // 1h
+          if (!sErr && signed?.signedUrl) uri = signed.signedUrl;
+        }
+
+        if (mountedRef.current) setAvatarUri(uri || '');
+      } catch (e) {
+        console.warn('[home:avatar]', e);
+      }
+    })();
+  }, [userId]);
 
   // ------- Load page -------
   const fetchPage = useCallback(async (pageIndex: number) => {
@@ -115,9 +156,7 @@ export default function Home() {
       setRows((prev) => prev.concat(more));
       setPage(next);
       setReachedEnd(isEnd);
-    } catch (e) {
-      // swallow
-    }
+    } catch {/* noop */}
   }, [fetchPage, loading, page, reachedEnd, refreshing]);
 
   const filtered = useMemo(() => {
@@ -134,7 +173,6 @@ export default function Home() {
   const onSignOut = useCallback(async () => {
     try {
       await supabase.auth.signOut();
-      // Kick to SignIn
       nav.reset({ index: 0, routes: [{ name: 'SignIn' }] });
     } catch {}
   }, [nav]);
@@ -147,18 +185,28 @@ export default function Home() {
     nav.navigate('Add');
   }, [nav]);
 
+  const goProfile = useCallback(() => {
+    nav.navigate('Profile');
+  }, [nav]);
+
   // ------- Render -------
   const renderItem = useCallback(({ item }: { item: RecipeRow }) => {
     return (
-      <Pressable onPress={() => openRecipe(item.id)} style={[styles.card, isDark ? styles.cardDark : styles.cardLight]}>
-        <View style={styles.thumbWrap}>
+      <View style={[styles.card, isDark ? styles.cardDark : styles.cardLight]}>
+        {/* Thumbnail: press to enlarge */}
+        <Pressable
+          style={styles.thumbWrap}
+          onPress={() => item.thumb_url && setSelectedThumb(item.thumb_url!)}
+        >
           {item.thumb_url ? (
             <Image source={{ uri: item.thumb_url }} style={styles.thumb} resizeMode="cover" />
           ) : (
             <View style={[styles.thumb, styles.thumbFallback]} />
           )}
-        </View>
-        <View style={styles.meta}>
+        </Pressable>
+
+        {/* Meta: press to open recipe */}
+        <Pressable style={styles.meta} onPress={() => openRecipe(item.id)}>
           <Text style={[styles.title, { color: isDark ? '#F3F4F6' : '#111827' }]} numberOfLines={2}>
             {item.title || 'Untitled recipe'}
           </Text>
@@ -167,10 +215,29 @@ export default function Home() {
               {item.ingredients.slice(0, 3).join(' • ')}
             </Text>
           )}
-        </View>
-      </Pressable>
+        </Pressable>
+      </View>
     );
   }, [isDark, openRecipe]);
+
+  // Header avatar (tap → Profile, long‑press → Sign out)
+  const initials = (displayName || 'You').trim().split(/\s+/).map(s => s[0]?.toUpperCase()).slice(0,2).join('');
+  const Avatar = (
+    <Pressable
+      onPress={goProfile}
+      onLongPress={onSignOut}
+      hitSlop={8}
+      style={styles.avatarBtn}
+    >
+      {avatarUri ? (
+        <Image source={{ uri: avatarUri }} style={styles.avatarImg} />
+      ) : (
+        <View style={[styles.avatarImg, styles.avatarFallback, { backgroundColor: isDark ? '#374151' : '#E5E7EB' }]}>
+          <Text style={[styles.avatarInitials, { color: isDark ? '#E5E7EB' : '#111827' }]}>{initials}</Text>
+        </View>
+      )}
+    </Pressable>
+  );
 
   if (loading && !rows.length) {
     return (
@@ -181,14 +248,12 @@ export default function Home() {
   }
 
   return (
-    <View style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}>
-      {/* Top bar */}
-      <View style={styles.topbar}>
+    <SafeAreaView style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]} edges={['top', 'right', 'left']}>
+      {/* Top bar (respect safe area) */}
+      <View style={[styles.topbar, { paddingTop: Math.max(insets.top, 8) }]}>
         <Text style={[styles.brand, { color: isDark ? '#E5E7EB' : '#111827' }]}>MessHall</Text>
         <View style={{ flex: 1 }} />
-        <Pressable style={styles.topBtn} onPress={onSignOut}>
-          <Text style={styles.topBtnText}>Sign out</Text>
-        </Pressable>
+        {Avatar}
       </View>
 
       {/* Search */}
@@ -229,7 +294,20 @@ export default function Home() {
       <Pressable style={styles.fab} onPress={openAdd}>
         <Text style={styles.fabPlus}>＋</Text>
       </Pressable>
-    </View>
+
+      {/* Fullscreen thumbnail modal */}
+      <Modal visible={!!selectedThumb} transparent animationType="fade">
+        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedThumb(null)}>
+          {selectedThumb ? (
+            <Image
+              source={{ uri: selectedThumb }}
+              style={styles.fullscreenImage}
+              resizeMode="contain"
+            />
+          ) : null}
+        </Pressable>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
@@ -238,12 +316,20 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   topbar: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 16, paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
   },
   brand: { fontSize: 20, fontWeight: '800' },
-  topBtn: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#374151', borderRadius: 8 },
-  topBtnText: { color: '#F3F4F6', fontWeight: '700' },
+
+  avatarBtn: { paddingLeft: 8 },
+  avatarImg: {
+    width: AVATAR_SIZE, height: AVATAR_SIZE, borderRadius: AVATAR_SIZE / 2,
+    borderWidth: 1, borderColor: 'rgba(0,0,0,0.08)',
+  },
+  avatarFallback: { alignItems: 'center', justifyContent: 'center' },
+  avatarInitials: { fontSize: 12, fontWeight: '800' },
 
   searchWrap: { paddingHorizontal: 16, paddingBottom: 8 },
   search: {
@@ -286,4 +372,18 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   fabPlus: { color: 'white', fontSize: 28, fontWeight: '900', lineHeight: 28 },
+
+  // Modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  fullscreenImage: {
+    width: '100%',
+    height: '80%',
+    borderRadius: 12,
+  },
 });

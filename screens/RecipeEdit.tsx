@@ -1,7 +1,11 @@
 // screens/RecipeEdit.tsx
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TextInput, ScrollView, Pressable, ActivityIndicator, Alert, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import {
+  View, Text, TextInput, ScrollView, Pressable, ActivityIndicator, Alert,
+  StyleSheet, KeyboardAvoidingView, Platform
+} from 'react-native';
 import { useRoute, RouteProp, useNavigation } from '@react-navigation/native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
@@ -23,6 +27,7 @@ export default function RecipeEdit() {
   const nav = useNavigation<any>();
   const route = useRoute<R>();
   const { show } = useToast();
+  const insets = useSafeAreaInsets();
 
   const recipeId = route.params?.id;
   const [loading, setLoading] = useState(true);
@@ -38,7 +43,11 @@ export default function RecipeEdit() {
     (async () => {
       try {
         setLoading(true);
-        const { data, error } = await supabase.from('recipes').select('*').eq('id', recipeId).maybeSingle<RecipeRow>();
+        const { data, error } = await supabase
+          .from('recipes')
+          .select('*')
+          .eq('id', recipeId)
+          .maybeSingle<RecipeRow>();
         if (error) throw error;
         if (!alive) return;
         setTitle(data?.title || '');
@@ -83,85 +92,101 @@ export default function RecipeEdit() {
   const canSave = useMemo(() => !!title.trim() && !saving, [saving, title]);
 
   if (loading) {
-    return <View style={[styles.center, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}><ActivityIndicator /></View>;
+    return (
+      <View style={[styles.center, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}>
+        <ActivityIndicator />
+      </View>
+    );
   }
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={[styles.h1, { color: isDark ? '#E5E7EB' : '#111827' }]}>Edit Recipe</Text>
+    <SafeAreaView
+      style={{ flex: 1, backgroundColor: isDark ? '#0B0F19' : '#F9FAFB', paddingTop: Math.max(insets.top, 8) }}
+      edges={['top', 'left', 'right']}
+    >
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}
+      >
+        <ScrollView contentContainerStyle={[styles.container, { paddingBottom: 32 }]}>
+          <Text style={[styles.h1, { color: isDark ? '#E5E7EB' : '#111827' }]}>Edit Recipe</Text>
 
-        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Title</Text>
-        <TextInput
-          style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-          value={title}
-          onChangeText={setTitle}
-          placeholder="Recipe title"
-          placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-        />
-
-        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Source URL</Text>
-        <TextInput
-          style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-          value={sourceUrl}
-          onChangeText={setSourceUrl}
-          placeholder="https://example.com"
-          autoCapitalize="none"
-          keyboardType="url"
-          placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-        />
-
-        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Ingredients</Text>
-        {(!ingredients.length ? [''] : ingredients).map((v, i) => (
+          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Title</Text>
           <TextInput
-            key={`ing-${i}`}
             style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-            value={v}
-            onChangeText={(t) => {
-              const copy = ingredients.slice();
-              if (i === copy.length) copy.push('');
-              copy[i] = t;
-              const trimmed = copy.filter((x, idx) => (idx === copy.length - 1 ? true : x.trim() !== '' || idx < copy.length - 1));
-              setIngredients(trimmed);
-            }}
-            placeholder={i === 0 ? '• 1/4 tsp onion powder' : '• add another'}
-            multiline
+            value={title}
+            onChangeText={setTitle}
+            placeholder="Recipe title"
             placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
           />
-        ))}
-        <Pressable onPress={() => setIngredients([...ingredients, ''])} style={styles.addLine}>
-          <Text style={styles.addLineText}>+ Add ingredient</Text>
-        </Pressable>
 
-        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Steps</Text>
-        {(!steps.length ? [''] : steps).map((v, i) => (
+          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Source URL</Text>
           <TextInput
-            key={`step-${i}`}
             style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-            value={v}
-            onChangeText={(t) => {
-              const copy = steps.slice();
-              if (i === copy.length) copy.push('');
-              copy[i] = t;
-              const trimmed = copy.filter((x, idx) => (idx === copy.length - 1 ? true : x.trim() !== '' || idx < copy.length - 1));
-              setSteps(trimmed);
-            }}
-            placeholder={i === 0 ? '1) Do the thing' : `${i + 1}) add another`}
-            multiline
+            value={sourceUrl}
+            onChangeText={setSourceUrl}
+            placeholder="https://example.com"
+            autoCapitalize="none"
+            keyboardType="url"
             placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
           />
-        ))}
-        <Pressable onPress={() => setSteps([...steps, ''])} style={styles.addLine}>
-          <Text style={styles.addLineText}>+ Add step</Text>
-        </Pressable>
 
-        <Pressable style={[styles.saveBtn, !canSave && styles.btnDisabled]} onPress={save} disabled={!canSave}>
-          {saving ? <ActivityIndicator /> : <Text style={styles.saveBtnText}>Save</Text>}
-        </Pressable>
+          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Ingredients</Text>
+          {(!ingredients.length ? [''] : ingredients).map((v, i) => (
+            <TextInput
+              key={`ing-${i}`}
+              style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+              value={v}
+              onChangeText={(t) => {
+                const copy = ingredients.slice();
+                if (i === copy.length) copy.push('');
+                copy[i] = t;
+                const trimmed = copy.filter((x, idx) =>
+                  (idx === copy.length - 1 ? true : x.trim() !== '' || idx < copy.length - 1)
+                );
+                setIngredients(trimmed);
+              }}
+              placeholder={i === 0 ? '• 1/4 tsp onion powder' : '• add another'}
+              multiline
+              placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
+            />
+          ))}
+          <Pressable onPress={() => setIngredients([...ingredients, ''])} style={styles.addLine}>
+            <Text style={styles.addLineText}>+ Add ingredient</Text>
+          </Pressable>
 
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </KeyboardAvoidingView>
+          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Steps</Text>
+          {(!steps.length ? [''] : steps).map((v, i) => (
+            <TextInput
+              key={`step-${i}`}
+              style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+              value={v}
+              onChangeText={(t) => {
+                const copy = steps.slice();
+                if (i === copy.length) copy.push('');
+                copy[i] = t;
+                const trimmed = copy.filter((x, idx) =>
+                  (idx === copy.length - 1 ? true : x.trim() !== '' || idx < copy.length - 1)
+                );
+                setSteps(trimmed);
+              }}
+              placeholder={i === 0 ? '1) Do the thing' : `${i + 1}) add another`}
+              multiline
+              placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
+            />
+          ))}
+          <Pressable onPress={() => setSteps([...steps, ''])} style={styles.addLine}>
+            <Text style={styles.addLineText}>+ Add step</Text>
+          </Pressable>
+
+          <Pressable style={[styles.saveBtn, !canSave && styles.btnDisabled]} onPress={save} disabled={!canSave}>
+            {saving ? <ActivityIndicator /> : <Text style={styles.saveBtnText}>Save</Text>}
+          </Pressable>
+
+          <View style={{ height: 40 }} />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 

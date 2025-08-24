@@ -1,18 +1,15 @@
 // screens/Profile.tsx
-// MessHall — Profile screen
-// ✅ Avatar pick → compress → upload (Supabase Storage 'avatars' bucket)
-// ✅ Public avatar URL resolution
-// ✅ Profile fields: displayName, handle, bio, tag
-// ✅ Theme selector (light/dark/system)
-// ✅ Password change with validation
-// ✅ Defensive error handling + RN-safe blob upload
+// MessHall — Profile screen (robust save + avatar upload)
+// + SafeArea padding
+// + Tap-to-enlarge avatar (modal)
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
-  View, Text, TextInput, Image, Pressable, Alert, ActivityIndicator, ScrollView, StyleSheet,
+  View, Text, TextInput, Image, Pressable, Alert, ActivityIndicator, ScrollView, StyleSheet, Modal,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 
@@ -22,7 +19,7 @@ type ProfileRow = {
   handle?: string | null;
   bio?: string | null;
   tag?: string | null;
-  avatar_path?: string | null; // storage path: e.g., "u/<hash>_timestamp.jpg"
+  avatar_path?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
 };
@@ -31,6 +28,7 @@ const AVATAR_BUCKET = 'avatars';
 
 export default function Profile() {
   const { mode, setMode, isDark } = useThemeController();
+  const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -42,10 +40,22 @@ export default function Profile() {
   const [bio, setBio] = useState('');
   const [tag, setTag] = useState('');
   const [avatarPath, setAvatarPath] = useState<string | null>(null);
-  const [avatarUrl, setAvatarUrl] = useState<string>(''); // public
+  const [avatarUrl, setAvatarUrl] = useState<string>(''); // signed (or public) URL
 
   const [pw1, setPw1] = useState('');
   const [pw2, setPw2] = useState('');
+
+  // fullscreen avatar viewer
+  const [avatarModal, setAvatarModal] = useState(false);
+
+  const makeAvatarUrl = useCallback(async (path?: string | null) => {
+    if (!path) return '';
+    const { data: signed, error } =
+      await supabase.storage.from(AVATAR_BUCKET).createSignedUrl(path, 60 * 60);
+    if (!error && signed?.signedUrl) return signed.signedUrl;
+    const { data: pub } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
+    return pub?.publicUrl || '';
+  }, []);
 
   // --------- Load user + profile ----------
   useEffect(() => {
@@ -54,10 +64,10 @@ export default function Profile() {
     (async () => {
       try {
         setLoading(true);
-        const { data: auth } = await supabase.auth.getUser();
+        const { data: auth, error: authErr } = await supabase.auth.getUser();
+        if (authErr) throw authErr;
         const me = auth.user;
         if (!me) {
-          setLoading(false);
           Alert.alert('Sign in required', 'Please sign in to edit your profile.');
           return;
         }
@@ -65,40 +75,44 @@ export default function Profile() {
 
         setUserId(me.id);
 
-        const { data: rows, error } = await supabase
+        const { data: row, error } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', me.id)
-          .limit(1)
           .maybeSingle<ProfileRow>();
 
         if (error) throw error;
 
-        const row = rows || ({} as ProfileRow);
+        if (!row) {
+          const { error: insErr } = await supabase
+            .from('profiles')
+            .upsert({ id: me.id }, { onConflict: 'id' });
+          if (insErr) throw insErr;
 
-        setDisplayName((row.display_name ?? '').trim());
-        setHandle((row.handle ?? '').trim());
-        setBio((row.bio ?? '').trim());
-        setTag((row.tag ?? '').trim());
-        setAvatarPath(row.avatar_path ?? null);
-
-        // Resolve public URL if we have a path
-        if (row.avatar_path) {
-          const { data: pub } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(row.avatar_path);
-          setAvatarUrl(pub?.publicUrl || '');
-        } else {
+          setDisplayName('');
+          setHandle('');
+          setBio('');
+          setTag('');
+          setAvatarPath(null);
           setAvatarUrl('');
+        } else {
+          setDisplayName((row.display_name ?? '').trim());
+          setHandle((row.handle ?? '').trim());
+          setBio((row.bio ?? '').trim());
+          setTag((row.tag ?? '').trim());
+          setAvatarPath(row.avatar_path ?? null);
+          setAvatarUrl(await makeAvatarUrl(row.avatar_path));
         }
       } catch (e: any) {
-        console.warn('[profile:load]', e?.message || e);
-        Alert.alert('Load failed', 'Could not load your profile.');
+        console.warn('[profile:load]', e);
+        Alert.alert('Load failed', e?.message ?? 'Could not load your profile.');
       } finally {
         mounted && setLoading(false);
       }
     })();
 
     return () => { mounted = false; };
-  }, []);
+  }, [makeAvatarUrl]);
 
   // --------- Save profile ----------
   const saveProfile = useCallback(async () => {
@@ -120,18 +134,12 @@ export default function Profile() {
 
       Alert.alert('Saved', 'Your profile has been updated.');
     } catch (e: any) {
-      console.warn('[profile:save]', e?.message || e);
-      Alert.alert('Save failed', 'Please try again.');
+      console.warn('[profile:save]', e);
+      Alert.alert('Save failed', e?.message ?? 'Could not save your profile.');
     } finally {
       setSaving(false);
     }
   }, [avatarPath, bio, displayName, handle, tag, userId]);
-
-  // --------- Theme ----------
-  const themeLabel = useMemo(() => {
-    if (mode === 'system') return 'System';
-    return mode === 'dark' ? 'Dark' : 'Light';
-  }, [mode]);
 
   // --------- Avatar pick + upload ----------
   const onPickAvatar = useCallback(async () => {
@@ -153,7 +161,6 @@ export default function Profile() {
 
       setAvatarLoading(true);
 
-      // Compress to a square JPEG to reduce upload failures over flaky networks
       const asset = res.assets[0];
       const manip = await ImageManipulator.manipulateAsync(
         asset.uri,
@@ -161,59 +168,43 @@ export default function Profile() {
         { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG }
       );
 
-      // RN-safe blob upload path (fixes "network request failed" seen with other methods)
       const blob = await (await fetch(manip.uri)).blob();
-      const filename = `u/${userId}_${Date.now()}.jpg`;
+      const filename = `${userId}/avatar.jpg`;
 
-      // Upload (upsert true lets users overwrite)
       const { error: upErr } = await supabase.storage.from(AVATAR_BUCKET).upload(filename, blob, {
         contentType: 'image/jpeg',
         upsert: true,
       });
       if (upErr) throw upErr;
 
-      // Store path on profile & refresh public URL
       setAvatarPath(filename);
-      const { data: pub } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(filename);
-      setAvatarUrl(pub?.publicUrl || '');
+      setAvatarUrl(await makeAvatarUrl(filename));
 
-      // Persist the avatar path change immediately (nice UX)
       const { error: profErr } = await supabase
         .from('profiles')
-        .update({ avatar_path: filename, updated_at: new Date().toISOString() })
-        .eq('id', userId);
+        .upsert({ id: userId, avatar_path: filename, updated_at: new Date().toISOString() }, { onConflict: 'id' });
       if (profErr) throw profErr;
     } catch (e: any) {
-      console.warn('[profile:avatar]', e?.message || e);
-      Alert.alert('Upload failed', 'Could not update your photo. Try again.');
+      console.warn('[profile:avatar]', e);
+      Alert.alert('Upload failed', e?.message ?? 'Could not update your photo. Try again.');
     } finally {
       setAvatarLoading(false);
     }
-  }, [userId]);
+  }, [makeAvatarUrl, userId]);
 
   // --------- Password change ----------
   const onChangePassword = useCallback(async () => {
-    if (!pw1 || !pw2) {
-      Alert.alert('Missing password', 'Enter your new password twice.');
-      return;
-    }
-    if (pw1 !== pw2) {
-      Alert.alert('Mismatch', 'Passwords do not match.');
-      return;
-    }
-    if (pw1.length < 8) {
-      Alert.alert('Too short', 'Use at least 8 characters.');
-      return;
-    }
+    if (!pw1 || !pw2) return Alert.alert('Missing password', 'Enter your new password twice.');
+    if (pw1 !== pw2) return Alert.alert('Mismatch', 'Passwords do not match.');
+    if (pw1.length < 8) return Alert.alert('Too short', 'Use at least 8 characters.');
     try {
       const { error } = await supabase.auth.updateUser({ password: pw1 });
       if (error) throw error;
-      setPw1('');
-      setPw2('');
+      setPw1(''); setPw2('');
       Alert.alert('Password updated', 'Your password has been changed.');
     } catch (e: any) {
-      console.warn('[profile:password]', e?.message || e);
-      Alert.alert('Update failed', 'Could not update your password.');
+      console.warn('[profile:password]', e);
+      Alert.alert('Update failed', e?.message ?? 'Could not update your password.');
     }
   }, [pw1, pw2]);
 
@@ -226,109 +217,121 @@ export default function Profile() {
   }
 
   return (
-    <ScrollView contentContainerStyle={[styles.container, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}>
-      <Text style={[styles.h1, { color: isDark ? '#E5E7EB' : '#111827' }]}>Profile</Text>
+    <SafeAreaView
+      style={{ flex: 1, backgroundColor: isDark ? '#0B0F19' : '#F9FAFB', paddingTop: Math.max(insets.top, 8) }}
+      edges={['top', 'left', 'right']}
+    >
+      <ScrollView contentContainerStyle={[styles.container, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}>
+        <Text style={[styles.h1, { color: isDark ? '#E5E7EB' : '#111827' }]}>Profile</Text>
 
-      {/* Avatar */}
-      <View style={styles.row}>
-        <View style={styles.avatarWrap}>
-          {avatarUrl ? (
-            <Image source={{ uri: avatarUrl }} style={styles.avatar} />
-          ) : (
-            <View style={[styles.avatar, styles.avatarPlaceholder]} />
-          )}
+        {/* Avatar */}
+        <View style={styles.row}>
+          <Pressable style={styles.avatarWrap} onPress={() => avatarUrl && setAvatarModal(true)}>
+            {avatarUrl ? (
+              <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+            ) : (
+              <View style={[styles.avatar, styles.avatarPlaceholder]} />
+            )}
+          </Pressable>
+          <Pressable onPress={onPickAvatar} style={styles.btn}>
+            {avatarLoading ? <ActivityIndicator /> : <Text style={styles.btnText}>Change photo</Text>}
+          </Pressable>
         </View>
-        <Pressable onPress={onPickAvatar} style={styles.btn}>
-          {avatarLoading ? <ActivityIndicator /> : <Text style={styles.btnText}>Change photo</Text>}
+
+        {/* Display Name */}
+        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Display name</Text>
+        <TextInput
+          style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+          value={displayName}
+          onChangeText={setDisplayName}
+          placeholder="Your name"
+          placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
+        />
+
+        {/* Handle */}
+        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Handle</Text>
+        <TextInput
+          style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+          value={handle}
+          onChangeText={setHandle}
+          placeholder="@yourhandle"
+          autoCapitalize="none"
+          placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
+        />
+
+        {/* Bio */}
+        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Bio</Text>
+        <TextInput
+          style={[styles.input, styles.multiline, isDark ? styles.inputDark : styles.inputLight]}
+          value={bio}
+          onChangeText={setBio}
+          placeholder="Tell people a bit about you"
+          multiline
+          placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
+        />
+
+        {/* Tag */}
+        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Tag</Text>
+        <TextInput
+          style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+          value={tag}
+          onChangeText={setTag}
+          placeholder="#bbq #keto #weeknight"
+          autoCapitalize="none"
+          placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
+        />
+
+        {/* Theme selector */}
+        <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Theme</Text>
+        <View style={styles.themeRow}>
+          <Pressable style={[styles.chip, mode === 'system' && styles.chipActive]} onPress={() => setMode('system')}>
+            <Text style={[styles.chipText, mode === 'system' && styles.chipTextActive]}>System</Text>
+          </Pressable>
+          <Pressable style={[styles.chip, mode === 'light' && styles.chipActive]} onPress={() => setMode('light')}>
+            <Text style={[styles.chipText, mode === 'light' && styles.chipTextActive]}>Light</Text>
+          </Pressable>
+          <Pressable style={[styles.chip, mode === 'dark' && styles.chipActive]} onPress={() => setMode('dark')}>
+            <Text style={[styles.chipText, mode === 'dark' && styles.chipTextActive]}>Dark</Text>
+          </Pressable>
+        </View>
+
+        {/* Save */}
+        <Pressable style={[styles.saveBtn, saving && styles.btnDisabled]} onPress={saveProfile} disabled={saving}>
+          {saving ? <ActivityIndicator /> : <Text style={styles.saveBtnText}>Save Profile</Text>}
         </Pressable>
-      </View>
 
-      {/* Display Name */}
-      <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Display name</Text>
-      <TextInput
-        style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-        value={displayName}
-        onChangeText={setDisplayName}
-        placeholder="Your name"
-        placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-      />
-
-      {/* Handle */}
-      <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Handle</Text>
-      <TextInput
-        style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-        value={handle}
-        onChangeText={setHandle}
-        placeholder="@yourhandle"
-        autoCapitalize="none"
-        placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-      />
-
-      {/* Bio */}
-      <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Bio</Text>
-      <TextInput
-        style={[styles.input, styles.multiline, isDark ? styles.inputDark : styles.inputLight]}
-        value={bio}
-        onChangeText={setBio}
-        placeholder="Tell people a bit about you"
-        multiline
-        placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-      />
-
-      {/* Tag */}
-      <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Tag</Text>
-      <TextInput
-        style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-        value={tag}
-        onChangeText={setTag}
-        placeholder="#bbq #keto #weeknight"
-        autoCapitalize="none"
-        placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-      />
-
-      {/* Theme selector */}
-      <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Theme</Text>
-      <View style={styles.themeRow}>
-        <Pressable style={[styles.chip, mode === 'system' && styles.chipActive]} onPress={() => setMode('system')}>
-          <Text style={[styles.chipText, mode === 'system' && styles.chipTextActive]}>System</Text>
+        {/* Password change */}
+        <Text style={[styles.h2, { color: isDark ? '#E5E7EB' : '#111827' }]}>Change Password</Text>
+        <TextInput
+          style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+          value={pw1}
+          onChangeText={setPw1}
+          placeholder="New password"
+          secureTextEntry
+          placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
+        />
+        <TextInput
+          style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+          value={pw2}
+          onChangeText={setPw2}
+          placeholder="Confirm new password"
+          secureTextEntry
+          placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
+        />
+        <Pressable style={styles.btn} onPress={onChangePassword}>
+          <Text style={styles.btnText}>Update Password</Text>
         </Pressable>
-        <Pressable style={[styles.chip, mode === 'light' && styles.chipActive]} onPress={() => setMode('light')}>
-          <Text style={[styles.chipText, mode === 'light' && styles.chipTextActive]}>Light</Text>
+
+        <View style={{ height: 48 }} />
+      </ScrollView>
+
+      {/* Fullscreen avatar modal */}
+      <Modal visible={avatarModal} transparent animationType="fade" onRequestClose={() => setAvatarModal(false)}>
+        <Pressable style={styles.avatarBackdrop} onPress={() => setAvatarModal(false)}>
+          {avatarUrl ? <Image source={{ uri: avatarUrl }} style={styles.avatarFullscreen} resizeMode="contain" /> : null}
         </Pressable>
-        <Pressable style={[styles.chip, mode === 'dark' && styles.chipActive]} onPress={() => setMode('dark')}>
-          <Text style={[styles.chipText, mode === 'dark' && styles.chipTextActive]}>Dark</Text>
-        </Pressable>
-      </View>
-
-      {/* Save */}
-      <Pressable style={[styles.saveBtn, saving && styles.btnDisabled]} onPress={saveProfile} disabled={saving}>
-        {saving ? <ActivityIndicator /> : <Text style={styles.saveBtnText}>Save Profile</Text>}
-      </Pressable>
-
-      {/* Password change */}
-      <Text style={[styles.h2, { color: isDark ? '#E5E7EB' : '#111827' }]}>Change Password</Text>
-      <TextInput
-        style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-        value={pw1}
-        onChangeText={setPw1}
-        placeholder="New password"
-        secureTextEntry
-        placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-      />
-      <TextInput
-        style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-        value={pw2}
-        onChangeText={setPw2}
-        placeholder="Confirm new password"
-        secureTextEntry
-        placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-      />
-      <Pressable style={styles.btn} onPress={onChangePassword}>
-        <Text style={styles.btnText}>Update Password</Text>
-      </Pressable>
-
-      <View style={{ height: 48 }} />
-    </ScrollView>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
@@ -348,6 +351,16 @@ const styles = StyleSheet.create({
   },
   avatar: { width: '100%', height: '100%' },
   avatarPlaceholder: { alignItems: 'center', justifyContent: 'center' },
+
+  // Fullscreen avatar viewer
+  avatarBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  avatarFullscreen: { width: '100%', height: '80%', borderRadius: 12 },
 
   label: { marginTop: 12, marginBottom: 6, fontSize: 13 },
 

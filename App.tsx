@@ -7,6 +7,7 @@
 // - Safe-area + Theme + Toast providers
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import 'react-native-gesture-handler';
 import { AppState, AppStateStatus } from 'react-native';
 import * as Linking from 'expo-linking';
 import { ShareIntentProvider, useShareIntentContext } from 'expo-share-intent';
