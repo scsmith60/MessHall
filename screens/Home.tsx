@@ -19,7 +19,7 @@ type RecipeRow = {
   user_id: string;
   title: string | null;
   source_url: string | null;
-  thumb_url: string | null;
+  thumb_path: string | null;
   ingredients: string[] | null;
   steps: string[] | null;
   created_at?: string | null;
@@ -196,10 +196,17 @@ export default function Home() {
         {/* Thumbnail: press to enlarge */}
         <Pressable
           style={styles.thumbWrap}
-          onPress={() => item.thumb_url && setSelectedThumb(item.thumb_url!)}
+          onPress={() => item.thumb_path && setSelectedThumb(item.thumb_path)}
         >
-          {item.thumb_url ? (
-            <Image source={{ uri: item.thumb_url }} style={styles.thumb} resizeMode="cover" />
+          {item.thumb_path ? (
+            <Image
+              source={{ uri: item.thumb_path }}
+              style={styles.thumb}
+              resizeMode="cover"
+              onError={(e) => {
+                console.warn('[home:thumb:error]', item.id, e?.nativeEvent?.error);
+              }}
+            />
           ) : (
             <View style={[styles.thumb, styles.thumbFallback]} />
           )}

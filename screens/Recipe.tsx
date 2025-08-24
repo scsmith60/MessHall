@@ -1,6 +1,6 @@
 // screens/Recipe.tsx
 // MessHall — Recipe detail (normalized reads)
-// - Loads base recipe + related rows from recipe_ingredients & recipe_steps
+// - Loads base recipe + related rows from recipe_ingredients & recipe_steps (via separate queries)
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -14,19 +14,19 @@ import type { RootStackParamList } from '../App';
 
 type RecipeRoute = RouteProp<RootStackParamList, 'Recipe'>;
 
-type IngredientRow = { ingredient_text: string; position: number | null };
-type StepRow = { step_text: string; position: number | null };
-
-type RecipeJoined = {
+// DB row shapes
+type RecipeBaseRow = {
   id: string;
   user_id: string;
   title: string | null;
   source_url: string | null;
-  thumb_url: string | null;
-  recipe_ingredients: IngredientRow[] | null;
-  recipe_steps: StepRow[] | null;
+  thumb_url: string | null; // aliased from thumb_path
 };
 
+type IngredientRow = { raw: string; pos: number | null };
+type StepRow = { step_text: string; position: number | null };
+
+// UI shape
 type RecipeForUI = {
   id: string;
   user_id: string;
@@ -53,42 +53,44 @@ export default function Recipe() {
     if (!recipeId) return;
     setLoading(true);
     try {
-      const { data: row, error } = await supabase
+      // 1) Base recipe (alias thumb_path -> thumb_url)
+      const { data: base, error: baseErr } = await supabase
         .from('recipes')
-        .select(`
-          id, user_id, title, source_url, thumb_url,
-          recipe_ingredients ( ingredient_text, position ),
-          recipe_steps ( step_text, position )
-        `)
+        .select('id, user_id, title, source_url, thumb_url:thumb_path')
         .eq('id', recipeId)
-        .single<RecipeJoined>();
-      if (error) throw error;
+        .single<RecipeBaseRow>();
+      if (baseErr) throw baseErr;
 
-      const ingredients =
-        (row.recipe_ingredients ?? [])
-          .slice()
-          .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-          .map(r => r.ingredient_text)
-          .filter(Boolean);
+      // 2) Children (no nested select required)
+      const [{ data: ing, error: ingErr }, { data: stp, error: stpErr }] = await Promise.all([
+        supabase
+          .from('recipe_ingredients')
+          .select('raw, pos')
+          .eq('recipe_id', recipeId)
+          .order('pos', { ascending: true }) as any,
+        supabase
+          .from('recipe_steps')
+          .select('step_text, position')
+          .eq('recipe_id', recipeId)
+          .order('position', { ascending: true }) as any,
+      ]);
 
-      const steps =
-        (row.recipe_steps ?? [])
-          .slice()
-          .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-          .map(r => r.step_text)
-          .filter(Boolean);
+      // If steps table doesn't exist yet, stpErr will be set; we just show none.
+      const ingredients = (ing as IngredientRow[] | null | undefined)?.map(r => r.raw).filter(Boolean) ?? [];
+      const steps = (stp as StepRow[] | null | undefined)?.map(r => r.step_text).filter(Boolean) ?? [];
 
       setData({
-        id: row.id,
-        user_id: row.user_id,
-        title: row.title,
-        source_url: row.source_url,
-        thumb_url: row.thumb_url,
+        id: base.id,
+        user_id: base.user_id,
+        title: base.title,
+        source_url: base.source_url,
+        thumb_url: base.thumb_url,
         ingredients,
         steps,
       });
     } catch (e) {
       console.warn('[recipe:load]', e);
+      // keep previous UI if any; errors already logged
     } finally {
       setLoading(false);
     }

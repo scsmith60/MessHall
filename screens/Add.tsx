@@ -32,7 +32,6 @@ import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
 
 // ===== DEBUG SWITCH =====
-// Toggle this to false to remove on-screen debug panel and most logs.
 const DEBUG_THUMBS = true;
 
 // ---- Optional helpers ----
@@ -79,13 +78,7 @@ function bustIfSafe(url: string): string {
   }
 }
 
-/** Thumb with debug: avoids Android black rendering by:
- *  - No overflow clipping on parent
- *  - Border radius applied to Image itself
- *  - getSize() preflight + prefetch
- *  - HEAD / Range GET probe for signed URLs
- *  - On-screen debug panel when DEBUG_THUMBS
- */
+/** Thumb with debug */
 function Thumb({
   uri,
   onPress,
@@ -98,7 +91,6 @@ function Thumb({
   const [ok, setOk] = useState<boolean | null>(null);
   const [displayUri, setDisplayUri] = useState(uri);
 
-  // ---- DEBUG STATE (comment out if desired) ----
   const [dbg, setDbg] = useState<{
     isSigned: boolean;
     getSizeOK?: boolean;
@@ -114,7 +106,6 @@ function Thumb({
     onErrorEvt?: any;
   }>({ isSigned: isSupabaseSigned(uri) });
 
-  // Update display URL with safe cache-busting when URI changes (but not for signed)
   useEffect(() => {
     setOk(null);
     const signed = isSupabaseSigned(uri);
@@ -124,12 +115,10 @@ function Thumb({
     setDbg((d) => ({ ...d, isSigned: signed }));
   }, [uri]);
 
-  // Preflight: getSize + prefetch + HEAD/Range probe
   useEffect(() => {
     let cancelled = false;
 
     async function run() {
-      // --- getSize ---
       try {
         await new Promise<void>((resolve, reject) => {
           Image.getSize(
@@ -146,11 +135,8 @@ function Thumb({
             }
           );
         });
-      } catch {
-        // continue; some servers still work even if getSize fails (CORS)
-      }
+      } catch {}
 
-      // --- prefetch ---
       try {
         const pf = await Image.prefetch(displayUri);
         if (DEBUG_THUMBS) console.log('[Thumb] prefetch', pf);
@@ -160,7 +146,6 @@ function Thumb({
         if (!cancelled) setDbg((d) => ({ ...d, prefetchOK: false, prefetchErr: e?.message || String(e) }));
       }
 
-      // --- HEAD or tiny Range GET (some backends block HEAD) ---
       try {
         let status = 0, ct = '', len = '';
         let res = await fetch(displayUri, { method: 'HEAD' });
@@ -173,7 +158,6 @@ function Thumb({
           if (!cancelled) setOk(true);
           return;
         }
-        // fallback to a tiny GET (Range)
         res = await fetch(displayUri, { method: 'GET', headers: { Range: 'bytes=0-0' } as any });
         status = res.status;
         ct = res.headers.get('content-type') || '';
@@ -188,7 +172,6 @@ function Thumb({
       } catch (e: any) {
         if (DEBUG_THUMBS) console.warn('[Thumb] HEAD/Range FAIL', e?.message || e);
         if (!cancelled) setDbg((d) => ({ ...d, headErr: e?.message || String(e) }));
-        // don't mark as hard fail yet; RN Image may still load
         if (!cancelled && dbg.getSizeOK) setOk(true);
       }
     }
@@ -202,21 +185,18 @@ function Thumb({
 
   return (
     <Pressable onPress={onPress} style={{ marginTop: 12 }}>
-      {/* Loading */}
       {ok === null && (
         <View style={[styles.thumb, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111' }]}>
           <ActivityIndicator />
         </View>
       )}
-
-      {/* Success */}
       {ok === true && (
         <Image
           source={{ uri: displayUri }}
           style={[
             styles.thumb,
             { borderRadius: 12, backgroundColor: '#111' },
-            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#4ade80' } : null, // DEBUG: green border on success
+            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#4ade80' } : null,
           ]}
           resizeMode="cover"
           resizeMethod="resize"
@@ -228,21 +208,17 @@ function Thumb({
           }}
         />
       )}
-
-      {/* Failure */}
       {ok === false && (
         <View
           style={[
             styles.thumb,
             { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111', borderRadius: 12 },
-            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#f87171' } : null, // DEBUG: red border on fail
+            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#f87171' } : null,
           ]}
         >
           <Text style={{ color: '#fff' }}>Preview unavailable</Text>
         </View>
       )}
-
-      {/* ===== DEBUG PANEL (comment out this block when done) ===== */}
       {DEBUG_THUMBS && (
         <View style={{ marginTop: 6, padding: 8, backgroundColor: '#0b1221', borderRadius: 8 }}>
           <Text style={{ color: '#93c5fd', fontWeight: '700', marginBottom: 4 }}>Thumbnail Debug</Text>
@@ -263,7 +239,6 @@ function Thumb({
           {dbg.onErrorEvt ? <Text style={{ color: '#fca5a5' }}>imageError: {JSON.stringify(dbg.onErrorEvt)}</Text> : null}
         </View>
       )}
-      {/* ===== END DEBUG PANEL ===== */}
     </Pressable>
   );
 }
@@ -565,7 +540,7 @@ export default function Add() {
         return;
       }
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaType,
         quality: 0.9,
       });
       if (res.canceled || !res.assets?.length) return;
@@ -646,68 +621,66 @@ export default function Add() {
   }, []);
 
   const saveRecipe = useCallback(async () => {
-  if (!title.trim()) {
-    Alert.alert('Missing title', 'Please add a recipe title.');
-    return;
-  }
-  setSaving(true);
-  try {
-    const user = (await supabase.auth.getUser()).data.user;
-    if (!user) {
-      Alert.alert('Sign in required', 'Please sign in to save recipes.');
+    if (!title.trim()) {
+      Alert.alert('Missing title', 'Please add a recipe title.');
       return;
     }
+    setSaving(true);
+    try {
+      const user = (await supabase.auth.getUser()).data.user;
+      if (!user) {
+        Alert.alert('Sign in required', 'Please sign in to save recipes.');
+        return;
+      }
 
-    // 1) Create the base recipe row (no ingredients/steps here)
-    const base = {
-      user_id: user.id,
-      title: title.trim(),
-      source_url: looksLikeUrl(url) ? url.trim() : null,
-      thumb_path: thumbUrl || null,
-      created_at: new Date().toISOString(),
-    };
+      // 1) Create the base recipe row
+      const base = {
+        user_id: user.id,
+        title: title.trim(),
+        source_url: looksLikeUrl(url) ? url.trim() : null,
+        thumb_path: thumbUrl || null, // <-- matches your schema
+        created_at: new Date().toISOString(),
+      };
 
-    const { data: created, error: createErr } = await supabase
-      .from('recipes')
-      .insert(base)
-      .select('id')
-      .single();
+      const { data: created, error: createErr } = await supabase
+        .from('recipes')
+        .insert(base)
+        .select('id')
+        .single();
 
-    if (createErr) throw createErr;
-    const newId = created.id as string;
+      if (createErr) throw createErr;
+      const newId = created.id as string;
 
-    // 2) Insert ingredients as rows
-    const ingRows = (ingredients || [])
-      .map(s => s?.trim())
-      .filter(Boolean)
-      .map((ingredient_text, idx) => ({ recipe_id: newId, ingredient_text, position: idx }));
+      // 2) Insert ingredients as rows (raw/pos)
+      const ingRows = (ingredients || [])
+        .map(s => s?.trim())
+        .filter(Boolean)
+        .map((raw, idx) => ({ recipe_id: newId, raw, pos: idx }));
 
-    if (ingRows.length) {
-      const { error: insIngErr } = await supabase.from('recipe_ingredients').insert(ingRows);
-      if (insIngErr) throw insIngErr;
+      if (ingRows.length) {
+        const { error: insIngErr } = await supabase.from('recipe_ingredients').insert(ingRows);
+        if (insIngErr) throw insIngErr;
+      }
+
+      // 3) Insert steps as rows (step_text/position)
+      const stepRows = (steps || [])
+        .map(s => s?.trim())
+        .filter(Boolean)
+        .map((step_text, idx) => ({ recipe_id: newId, step_text, position: idx }));
+
+      if (stepRows.length) {
+        const { error: insStepErr } = await supabase.from('recipe_steps').insert(stepRows);
+        if (insStepErr) throw insStepErr;
+      }
+
+      Alert.alert('Saved', 'Your recipe has been saved.');
+      // Optionally: nav.navigate('Recipe' as never, { id: newId } as never);
+    } catch (e: any) {
+      Alert.alert('Save failed', e?.message || 'Please try again.');
+    } finally {
+      setSaving(false);
     }
-
-    // 3) Insert steps as rows (requires recipe_steps table)
-    const stepRows = (steps || [])
-      .map(s => s?.trim())
-      .filter(Boolean)
-      .map((step_text, idx) => ({ recipe_id: newId, step_text, position: idx }));
-
-    if (stepRows.length) {
-      const { error: insStepErr } = await supabase.from('recipe_steps').insert(stepRows);
-      if (insStepErr) throw insStepErr;
-    }
-
-    Alert.alert('Saved', 'Your recipe has been saved.');
-    // optional: navigate to detail
-    // nav.navigate('Recipe' as never, { id: newId } as never);
-  } catch (e: any) {
-    Alert.alert('Save failed', e?.message || 'Please try again.');
-  } finally {
-    setSaving(false);
-  }
-}, [ingredients, steps, thumbUrl, title, url]);
-
+  }, [ingredients, steps, thumbUrl, title, url]);
 
   const canEnrich = useMemo(() => looksLikeUrl(url) && !loading, [url, loading]);
 
@@ -896,7 +869,6 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
 
     btnDisabled: { opacity: 0.6 },
 
-    // Note: we do NOT clip here (no overflow:'hidden') to avoid Android black rendering
     thumbWrap: {
       marginTop: 12,
       borderWidth: 1,
@@ -905,10 +877,8 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
       borderRadius: 12,
       padding: 0,
     },
-    // The radius is applied on the Image itself
     thumb: { width: '100%', height: 180 },
 
-    // Fullscreen thumb modal
     thumbBackdrop: {
       flex: 1,
       backgroundColor: 'rgba(0,0,0,0.9)',
@@ -944,7 +914,6 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
     },
     saveBtnText: { color: '#ffffff', fontWeight: '700' },
 
-    // Modal shell reused by AutoSnap
     modalScrim: {
       flex: 1,
       backgroundColor: '#0009',
