@@ -328,28 +328,39 @@ export default function Add() {
   }, []);
 
   const pickImage = useCallback(async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission needed', 'Enable Photos permission to pick a thumbnail.');
-      return;
-    }
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.9,
-    });
-    if (res.canceled || !res.assets?.length) return;
-    const localUri = res.assets[0].uri;
     try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Enable Photos permission to pick a thumbnail.');
+        return;
+      }
+
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.9,
+        allowsMultipleSelection: false,
+      });
+      if (res.canceled || !res.assets?.length) return;
+
+      const localUri = res.assets[0].uri; // may be content:// or file://
+      setLoading(true);
+
       if (ensureDurableThumb) {
-        setLoading(true);
-        const out = await ensureDurableThumb(localUri);
-        setThumbUrl(out.publicUrl || out.uri || localUri);
+        try {
+          const out = await ensureDurableThumb(localUri);
+          setThumbUrl(out.publicUrl || out.uri || localUri);
+        } catch (e: any) {
+          console.warn('[add:pickImage ensureDurableThumb]', e);
+          const msg = typeof e?.message === 'string' ? e.message : String(e);
+          Alert.alert('Image error', `Could not prepare the image.\n\n${msg}`);
+        }
       } else {
         setThumbUrl(localUri);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('[add:pickImage]', e);
-      Alert.alert('Image error', 'Could not prepare the image.');
+      const msg = typeof e?.message === 'string' ? e.message : String(e);
+      Alert.alert('Image error', `Could not prepare the image.\n\n${msg}`);
     } finally {
       setLoading(false);
     }
