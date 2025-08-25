@@ -3,6 +3,7 @@
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import 'react-native-gesture-handler';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AppState, AppStateStatus } from 'react-native';
 import * as Linking from 'expo-linking';
 import { ShareIntentProvider, useShareIntentContext } from 'expo-share-intent';
@@ -198,16 +199,18 @@ function ThemeGate({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <ThemeProvider>
-        <ToastProvider>
-          <ShareIntentProvider>
-            <ThemeGate>
-              <AppInner />
-            </ThemeGate>
-          </ShareIntentProvider>
-        </ToastProvider>
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider>
+          <ToastProvider>
+            <ShareIntentProvider>
+              <ThemeGate>
+                <AppInner />
+              </ThemeGate>
+            </ShareIntentProvider>
+          </ToastProvider>
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

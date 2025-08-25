@@ -1,9 +1,10 @@
 // screens/RecipeEdit.tsx
-// MessHall — Edit screen with EXACT Add screen Enrich/AutoSnap pipeline
+// MessHall — Edit screen with EXACT Add screen Enrich/AutoSnap pipeline + Delete
 // - Paste / Enrich / Pick Image actions (same UX as Add)
 // - TikTok robust thumb + AutoSnap WebView capture (same offsets & injection)
 // - Durable upload via ensureDurableThumb; stores bucket path when available
 // - Resolves storage paths to signed preview URLs
+// - Delete: confirms, deletes children, recipe row, and storage object if needed
 // - Does NOT auto-save: enrich just fills fields & thumb; user taps Save
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -489,11 +490,13 @@ export default function RecipeEdit() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // These will be filled by Enrich (same as Add); users can tweak then Save
   const [url, setUrl] = useState<string>('');            // use as "source_url" as well
   const [title, setTitle] = useState('');
   const [thumbUrl, setThumbUrl] = useState<string>('');  // preview uri (signed or direct)
+  const [thumbPathRaw, setThumbPathRaw] = useState<string>(''); // DB value to clean up storage
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<string[]>([]);
 
@@ -520,6 +523,7 @@ export default function RecipeEdit() {
         setUrl(base?.source_url || '');
 
         const path = base?.thumb_path || '';
+        setThumbPathRaw(path || '');
         const resolved = await toDisplayUrl(path || '');
         if (!alive) return;
         setThumbUrl(resolved || '');
@@ -574,10 +578,10 @@ export default function RecipeEdit() {
       setImgBusy(true);
       if (ensureDurableThumb) {
         const out = await ensureDurableThumb(localUri);
-        // update DB to stable path if present, and refresh preview
         const bucketPath = out.bucketPath || '';
         const preview = out.signedUrl || out.publicUrl || out.uri || localUri;
         await supabase.from('recipes').update({ thumb_path: bucketPath || preview, updated_at: new Date().toISOString() }).eq('id', recipeId);
+        setThumbPathRaw(bucketPath || preview);
         setThumbUrl(preview);
       } else {
         setThumbUrl(localUri);
@@ -612,11 +616,11 @@ export default function RecipeEdit() {
           if (ensureDurableThumb) {
             const { publicUrl, signedUrl, uri, bucketPath } = await ensureDurableThumb(meta.image);
             finalThumb = signedUrl || publicUrl || uri || meta.image;
-            // Update DB thumb_path immediately to stable bucket path when possible
             await supabase.from('recipes').update({
               thumb_path: bucketPath || finalThumb,
               updated_at: new Date().toISOString(),
             }).eq('id', recipeId);
+            setThumbPathRaw(bucketPath || finalThumb);
           } else finalThumb = meta.image;
         } else if (isTikTokUrl(theUrl)) {
           try {
@@ -630,6 +634,7 @@ export default function RecipeEdit() {
                   thumb_path: bucketPath || finalThumb,
                   updated_at: new Date().toISOString(),
                 }).eq('id', recipeId);
+                setThumbPathRaw(bucketPath || finalThumb);
               } else finalThumb = tikThumb;
             }
           } catch {}
@@ -700,6 +705,47 @@ export default function RecipeEdit() {
       setSaving(false);
     }
   }, [ingredients, nav, recipeId, steps, title, url]);
+
+  // ===== Delete (confirm → delete children → delete row → storage cleanup) =====
+  const isStoragePath = (p?: string | null) => !!p && !/^https?:\/\//i.test(p || '');
+
+  const deleteRecipeDeep = useCallback(async () => {
+    if (!recipeId) return;
+
+    setDeleting(true);
+    try {
+      // delete children first
+      await supabase.from('recipe_ingredients').delete().eq('recipe_id', recipeId);
+      await supabase.from('recipe_steps').delete().eq('recipe_id', recipeId);
+
+      // delete recipe row
+      await supabase.from('recipes').delete().eq('id', recipeId);
+
+      // clean up storage if thumb is in our bucket
+      if (isStoragePath(thumbPathRaw)) {
+        const clean = String(thumbPathRaw).replace(new RegExp(`^${DURABLE_BUCKET}/?`, 'i'), '');
+        await supabase.storage.from(DURABLE_BUCKET).remove([clean]);
+      }
+
+      Alert.alert('Deleted', 'Recipe deleted.');
+      nav.goBack();
+    } catch (e: any) {
+      Alert.alert('Delete failed', e?.message || 'Please try again.');
+    } finally {
+      setDeleting(false);
+    }
+  }, [nav, recipeId, thumbPathRaw]);
+
+  const confirmDelete = useCallback(() => {
+    Alert.alert(
+      'Delete recipe?',
+      `This will permanently delete “${title || 'Untitled'}”.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: deleteRecipeDeep },
+      ]
+    );
+  }, [deleteRecipeDeep, title]);
 
   const canEnrich = useMemo(() => looksLikeUrl(url) && !imgBusy, [url, imgBusy]);
   const canSave = useMemo(() => !!title.trim() && !saving, [saving, title]);
@@ -817,9 +863,17 @@ export default function RecipeEdit() {
             </Pressable>
           </View>
 
-          {/* Save */}
+          {/* Save / Delete */}
           <Pressable style={[styles.saveBtn, !canSave && styles.btnDisabled]} onPress={save} disabled={!canSave}>
             {saving ? <ActivityIndicator /> : <Text style={styles.saveBtnText}>Save</Text>}
+          </Pressable>
+
+          <Pressable
+            style={[styles.deleteBtn, (saving || deleting) && styles.btnDisabled]}
+            onPress={confirmDelete}
+            disabled={saving || deleting}
+          >
+            {deleting ? <ActivityIndicator /> : <Text style={styles.deleteBtnText}>Delete Recipe</Text>}
           </Pressable>
 
           <View style={{ height: 40 }} />
@@ -841,6 +895,7 @@ export default function RecipeEdit() {
                   thumb_path: out.bucketPath || preview,
                   updated_at: new Date().toISOString(),
                 }).eq('id', recipeId);
+                setThumbPathRaw(out.bucketPath || preview);
                 setThumbUrl(preview);
               } else {
                 setThumbUrl(durableUrl);
@@ -871,7 +926,7 @@ export default function RecipeEdit() {
   );
 }
 
-// ====== Styles (themed; copied from Add, plus a few) ======
+// ====== Styles (themed; copied from Add, plus destructive) ======
 const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
   StyleSheet.create({
     flex: { flex: 1, backgroundColor: c.bg },
@@ -939,6 +994,15 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
       marginTop: 18,
     },
     saveBtnText: { color: '#ffffff', fontWeight: '700' },
+
+    deleteBtn: {
+      backgroundColor: '#ef4444',
+      paddingVertical: 12,
+      borderRadius: 12,
+      alignItems: 'center',
+      marginTop: 10,
+    },
+    deleteBtnText: { color: '#ffffff', fontWeight: '800' },
 
     modalScrim: {
       flex: 1,

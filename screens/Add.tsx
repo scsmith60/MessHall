@@ -5,6 +5,7 @@
 // - Prefetch + getSize preflight; HEAD/Range check for signed URL reachability
 // - Auto WebView screenshot fallback + TikTok robust thumb
 // - SafeArea padding + tap-to-enlarge thumbnail
+// - *** Title extraction hardening: prefers JSON-LD/OG/Twitter/TikTok SIGI_STATE, cleans site slogans, avoids numeric slugs
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -33,6 +34,165 @@ import type { RootStackParamList } from '../App';
 
 // ===== DEBUG SWITCH =====
 const DEBUG_THUMBS = true;
+
+/** --- Title extraction helpers (inline so this file "just works") --- */
+const BAD_TITLES = new Set<string>([
+  'TikTok – Make Your Day',
+  'TikTok - Make Your Day',
+  'TikTok',
+  'YouTube',
+  'Instagram',
+  'Login • Instagram',
+  'Pinterest',
+]);
+
+function cleanTitle(t?: string) {
+  if (!t) return '';
+  let out = t.trim();
+  // strip " | Site" / " - Site" style suffixes
+  out = out.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food Network|NYT Cooking).*/i, '');
+  // collapse whitespace
+  return out.replace(/\s{2,}/g, ' ').trim();
+}
+
+function isMostlyDigitsOrJunk(s: string) {
+  const trimmed = s.trim();
+  if (!trimmed) return true;
+  if (/^\d+$/.test(trimmed)) return true;                   // pure digits
+  if (/^[0-9_-]+$/.test(trimmed)) return true;              // digits/underscores/dashes
+  if (/^[0-9a-f]{16,}$/i.test(trimmed)) return true;        // hex-ish IDs
+  const letters = (trimmed.match(/[A-Za-z]/g) || []).length;
+  const ratio = letters / trimmed.length;
+  if (ratio < 0.25) return true;                            // not enough letters
+  return false;
+}
+
+function isBadTitle(t?: string) {
+  if (!t) return true;
+  const c = cleanTitle(t);
+  if (!c) return true;
+  if (BAD_TITLES.has(c)) return true;
+  if (c.length < 3) return true;
+  if (isMostlyDigitsOrJunk(c)) return true;
+  return false;
+}
+
+function fallbackTitleFromUrl(u: string) {
+  try {
+    const { pathname } = new URL(u);
+    const last = pathname.split('/').filter(Boolean).pop() || '';
+    const cleaned = decodeURIComponent(last.replace(/[-_]+/g, ' ')).trim();
+    if (!cleaned || isMostlyDigitsOrJunk(cleaned)) return ''; // refuse numeric/ID slugs
+    return cleaned.replace(/\b\w/g, c => c.toUpperCase());
+  } catch { return ''; }
+}
+
+function pickMetaContent(html: string, name: string) {
+  const re = new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]*>`, 'i');
+  const m = html.match(re);
+  if (!m) return '';
+  const tag = m[0];
+  const cm = tag.match(/content=["']([^"']+)["']/i);
+  return cm?.[1]?.trim() || '';
+}
+function pickLinkRel(html: string, rel: string) {
+  const re = new RegExp(`<link[^>]+rel=["']${rel}["'][^>]*>`, 'i');
+  const m = html.match(re);
+  if (!m) return '';
+  const tag = m[0];
+  const hm = tag.match(/href=["']([^"']+)["']/i);
+  return hm?.[1]?.trim() || '';
+}
+function pickTitleTag(html: string) {
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return m?.[1]?.replace(/\s+/g, ' ').trim() || '';
+}
+function safeJSON<T = any>(str?: string | null): T | undefined {
+  if (!str) return;
+  try { return JSON.parse(str); } catch { return; }
+}
+
+function extractFromJSONLD(html: string) {
+  const scripts = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const s of scripts) {
+    const json = safeJSON<any>(s[1]);
+    if (!json) continue;
+    const arr = Array.isArray(json) ? json : [json];
+    for (const node of arr) {
+      const name = (node?.name || node?.headline || '').toString().trim();
+      if (name) return name;
+      if (node?.['@graph']) {
+        for (const g of node['@graph']) {
+          const gn = (g?.name || g?.headline || '').toString().trim();
+          if (gn) return gn;
+        }
+      }
+    }
+  }
+  return '';
+}
+
+function extractDescCandidates(html: string) {
+  const descs = [
+    pickMetaContent(html, 'og:description'),
+    pickMetaContent(html, 'twitter:description'),
+  ].filter(Boolean);
+  const best = descs.find(d => !isBadTitle(d)) || '';
+  return cleanTitle(best);
+}
+
+function extractFromTikTokSIGI(html: string) {
+  const m = html.match(/<script[^>]+id=["']SIGI_STATE["'][^>]*>([\s\S]*?)<\/script>/i);
+  const json = safeJSON<any>(m?.[1]);
+  if (!json) return '';
+  const itemModule = json?.ItemModule;
+  if (itemModule && typeof itemModule === 'object') {
+    const first: any = Object.values(itemModule)[0];
+    const desc = (first?.desc || '').toString().trim();
+    if (!isBadTitle(desc)) return desc; // prefer non-junk caption
+  }
+  return '';
+}
+
+async function fetchAndExtractTitle(rawUrl: string): Promise<{ title?: string; canonical?: string }> {
+  try {
+    const res = await fetch(rawUrl, { redirect: 'follow' });
+    const finalUrl = (res as any)?.url || rawUrl;
+    const html = await res.text();
+
+    const canonical = pickLinkRel(html, 'canonical') || pickMetaContent(html, 'og:url') || finalUrl;
+
+    // Try title sources
+    let t =
+      extractFromJSONLD(html) ||
+      pickMetaContent(html, 'og:title') ||
+      pickMetaContent(html, 'twitter:title') ||
+      pickTitleTag(html) ||
+      '';
+
+    t = cleanTitle(t);
+
+    // If bad, try TikTok SIGI desc or general meta descriptions
+    if (isBadTitle(t)) {
+      const tk = extractFromTikTokSIGI(html);
+      if (!isBadTitle(tk)) t = tk;
+    }
+    if (isBadTitle(t)) {
+      const desc = extractDescCandidates(html);
+      if (!isBadTitle(desc)) t = desc;
+    }
+
+    // As absolute last resort, use slug — but only if not junk
+    if (isBadTitle(t)) {
+      const slug = fallbackTitleFromUrl(finalUrl);
+      if (!isBadTitle(slug)) t = slug;
+    }
+
+    return { title: isBadTitle(t) ? undefined : t, canonical };
+  } catch {
+    return {};
+  }
+}
 
 // ---- Optional helpers ----
 let ensureDurableThumb:
@@ -368,11 +528,11 @@ function AutoSnapModal({
     timerRef.current = setTimeout(async () => {
       if (gotDirectThumbRef.current) { setSnapping(false); return; }
       try {
-        const uri: string = await viewShotRef.current?.capture?.({
+        const uri: string = await (viewShotRef.current?.capture?.({
           format: 'jpg',
           quality: 0.95,
           result: 'tmpfile',
-        });
+        }) as Promise<string>);
         if (uri) await finishWithUrl(uri);
       } catch (e) {
         if (DEBUG_THUMBS) console.warn('[autosnap] capture failed', e);
@@ -571,6 +731,16 @@ export default function Add() {
         if (fetchMeta) meta = await fetchMeta(theUrl);
         else meta = { title: theUrl.replace(/^https?:\/\//i, '').slice(0, 60) };
 
+        // --- TITLE: robust selection with junk/ID guards
+        let nextTitle = cleanTitle(meta.title || '');
+        if (isBadTitle(nextTitle)) {
+          const { title: better, canonical } = await fetchAndExtractTitle(theUrl);
+          if (better && !isBadTitle(better)) nextTitle = better;
+          if (canonical && canonical !== theUrl) setUrl(canonical); // adopt canonical for future enriches
+        }
+        // If still bad, do NOT force a numeric slug — leave empty so the user can type
+        if (isBadTitle(nextTitle)) nextTitle = '';
+
         const cleanedIngredients = uniq(meta.ingredients || []);
         const cleanedSteps = uniq(meta.steps || []);
 
@@ -595,7 +765,7 @@ export default function Add() {
           } catch {}
         }
 
-        setTitle(meta.title || '');
+        setTitle(nextTitle || '');
         if (finalThumb) setThumbUrl(finalThumb);
         setIngredients(cleanedIngredients);
         setSteps(cleanedSteps);

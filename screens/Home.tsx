@@ -3,6 +3,7 @@
 // + SafeArea header spacing
 // + Tap-to-enlarge recipe thumbnails
 // + FIX: no hooks inside renderItem; SignedThumb component resolves storage paths to signed URLs
+// + NEW: swipe left/right to Delete with confirmation (and deep cleanup)
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -14,6 +15,9 @@ import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context'
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
+
+// Gesture-handler swipe row
+import { Swipeable, RectButton } from 'react-native-gesture-handler';
 
 type RecipeRow = {
   id: string;
@@ -33,6 +37,7 @@ const AVATAR_SIZE = 36;
 const BUCKET = 'recipe-thumbs';
 const PREVIEW_TTL = 60 * 60; // 1h
 const isHttp = (s?: string) => !!s && /^https?:\/\//i.test(s!);
+const isStoragePath = (p?: string | null) => !!p && !/^https?:\/\//i.test(p || '');
 
 async function toDisplayUrl(pathOrUrl?: string | null): Promise<string> {
   if (!pathOrUrl) return '';
@@ -81,6 +86,66 @@ function SignedThumb({
         <View style={{ width: '100%', height: '100%', backgroundColor: '#111827' }} />
       )}
     </Pressable>
+  );
+}
+
+// Row with Swipeable (kept hook-free in renderItem by splitting out)
+function RecipeRowItem({
+  item,
+  isDark,
+  onOpen,
+  onEnlarge,
+  onDeletePress,
+}: {
+  item: RecipeRow;
+  isDark: boolean;
+  onOpen: (id: string) => void;
+  onEnlarge: (path: string) => void;
+  onDeletePress: (item: RecipeRow) => void;
+}) {
+  const renderRightActions = () => (
+    <RectButton
+      onPress={() => onDeletePress(item)}
+      style={[styles.swipeAction, { backgroundColor: '#ef4444', justifyContent: 'center', alignItems: 'flex-end' }]}
+    >
+      <Text style={styles.swipeText}>Delete</Text>
+    </RectButton>
+  );
+  const renderLeftActions = () => (
+    <RectButton
+      onPress={() => onDeletePress(item)}
+      style={[styles.swipeAction, { backgroundColor: '#ef4444', justifyContent: 'center' }]}
+    >
+      <Text style={styles.swipeText}>Delete</Text>
+    </RectButton>
+  );
+
+  return (
+    <Swipeable renderRightActions={renderRightActions} renderLeftActions={renderLeftActions} overshootLeft={false} overshootRight={false}>
+      <View style={[styles.card, isDark ? styles.cardDark : styles.cardLight]}>
+        {/* Thumbnail: press to enlarge */}
+        <SignedThumb
+          pathOrUrl={item.thumb_path}
+          style={styles.thumbWrap}
+          onPress={() => item.thumb_path && onEnlarge(item.thumb_path)}
+          onError={(e) => {
+            console.warn('[home:thumb:error]', item.id, e?.nativeEvent?.error);
+          }}
+        />
+
+        {/* Meta: press to open recipe */}
+        <Pressable style={styles.meta} onPress={() => onOpen(item.id)}>
+          <Text style={[styles.title, { color: isDark ? '#F3F4F6' : '#111827' }]} numberOfLines={2}>
+            {item.title || 'Untitled recipe'}
+          </Text>
+          {!!item.ingredients?.length && (
+            <Text style={[styles.sub, { color: isDark ? '#9CA3AF' : '#6B7280' }]} numberOfLines={1}>
+              {item.ingredients.slice(0, 3).join(' • ')}
+            </Text>
+          )}
+        </Pressable>
+      </View>
+    </Swipeable>
   );
 }
 
@@ -257,34 +322,52 @@ export default function Home() {
     nav.navigate('Profile');
   }, [nav]);
 
+  // Deep delete + storage cleanup
+  const actuallyDelete = useCallback(async (r: RecipeRow) => {
+    try {
+      // delete children first
+      await supabase.from('recipe_ingredients').delete().eq('recipe_id', r.id);
+      await supabase.from('recipe_steps').delete().eq('recipe_id', r.id);
+
+      // delete recipe row
+      await supabase.from('recipes').delete().eq('id', r.id);
+
+      // delete storage object if it's a bucket path
+      if (isStoragePath(r.thumb_path)) {
+        const clean = String(r.thumb_path).replace(new RegExp(`^${BUCKET}/?`, 'i'), '');
+        await supabase.storage.from(BUCKET).remove([clean]);
+      }
+
+      // update UI
+      setRows((prev) => prev.filter((x) => x.id !== r.id));
+    } catch (e: any) {
+      Alert.alert('Delete failed', e?.message || 'Please try again.');
+    }
+  }, []);
+
+  const confirmDelete = useCallback((r: RecipeRow) => {
+    Alert.alert(
+      'Delete recipe?',
+      `This will permanently delete “${r.title || 'Untitled'}”.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => actuallyDelete(r) },
+      ]
+    );
+  }, [actuallyDelete]);
+
   // ------- Render -------
   const renderItem = useCallback(({ item }: { item: RecipeRow }) => {
     return (
-      <View style={[styles.card, isDark ? styles.cardDark : styles.cardLight]}>
-        {/* Thumbnail: press to enlarge */}
-        <SignedThumb
-          pathOrUrl={item.thumb_path}
-          style={styles.thumbWrap}
-          onPress={() => item.thumb_path && setSelectedThumbPath(item.thumb_path)}
-          onError={(e) => {
-            console.warn('[home:thumb:error]', item.id, e?.nativeEvent?.error);
-          }}
-        />
-
-        {/* Meta: press to open recipe */}
-        <Pressable style={styles.meta} onPress={() => openRecipe(item.id)}>
-          <Text style={[styles.title, { color: isDark ? '#F3F4F6' : '#111827' }]} numberOfLines={2}>
-            {item.title || 'Untitled recipe'}
-          </Text>
-          {!!item.ingredients?.length && (
-            <Text style={[styles.sub, { color: isDark ? '#9CA3AF' : '#6B7280' }]} numberOfLines={1}>
-              {item.ingredients.slice(0, 3).join(' • ')}
-            </Text>
-          )}
-        </Pressable>
-      </View>
+      <RecipeRowItem
+        item={item}
+        isDark={isDark}
+        onOpen={openRecipe}
+        onEnlarge={(p) => setSelectedThumbPath(p)}
+        onDeletePress={confirmDelete}
+      />
     );
-  }, [isDark, openRecipe]);
+  }, [confirmDelete, isDark, openRecipe]);
 
   // Header avatar (tap → Profile, long‑press → Sign out)
   const initials = (displayName || 'You').trim().split(/\s+/).map(s => s[0]?.toUpperCase()).slice(0,2).join('');
@@ -448,5 +531,18 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '80%',
     borderRadius: 12,
+  },
+
+  // Swipe actions
+  swipeAction: {
+    width: 96,
+    height: '100%',
+    paddingHorizontal: 12,
+  },
+  swipeText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 15,
+    paddingHorizontal: 8,
   },
 });
