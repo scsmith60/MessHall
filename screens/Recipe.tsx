@@ -1,6 +1,8 @@
 // screens/Recipe.tsx
 // MessHall — Recipe detail (normalized reads)
-// - Loads base recipe + related rows from recipe_ingredients & recipe_steps (via separate queries)
+// - Loads base recipe + related rows
+// - Resolves recipes.thumb_path (bucket path or URL) → signed URL for all images
+//   (parity with Add/Edit/Home; no need to re-add a recipe)
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -11,31 +13,33 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
+import { resolveThumbUrl } from '../lib/thumb';     // ⟵ NEW
+import ThumbImage from '../components/ThumbImage';  // ⟵ NEW
 
 type RecipeRoute = RouteProp<RootStackParamList, 'Recipe'>;
 
-// DB row shapes
 type RecipeBaseRow = {
   id: string;
   user_id: string;
   title: string | null;
   source_url: string | null;
-  thumb_url: string | null; // aliased from thumb_path
+  thumb_path: string | null; // storage path or URL
 };
 
 type IngredientRow = { raw: string; pos: number | null };
 type StepRow = { step_text: string; position: number | null };
 
-// UI shape
 type RecipeForUI = {
   id: string;
   user_id: string;
   title: string | null;
   source_url: string | null;
-  thumb_url: string | null;
+  thumb_path: string | null;
   ingredients: string[];
   steps: string[];
 };
+
+const dbg = (...a: any[]) => console.log('DBG[recipe]:', ...a); // DEBUG (comment later)
 
 export default function Recipe() {
   const route = useRoute<RecipeRoute>();
@@ -49,19 +53,20 @@ export default function Recipe() {
   const [refreshing, setRefreshing] = useState(false);
   const [coverModal, setCoverModal] = useState(false);
 
+  // Signed URL for blurred hero background (we resolve once so we can blur it)
+  const [heroUri, setHeroUri] = useState<string>('');
+
   const fetchRecipe = useCallback(async () => {
     if (!recipeId) return;
     setLoading(true);
     try {
-      // 1) Base recipe (alias thumb_path -> thumb_url)
       const { data: base, error: baseErr } = await supabase
         .from('recipes')
-        .select('id, user_id, title, source_url, thumb_url:thumb_path')
+        .select('id, user_id, title, source_url, thumb_path')
         .eq('id', recipeId)
         .single<RecipeBaseRow>();
       if (baseErr) throw baseErr;
 
-      // 2) Children (no nested select required)
       const [{ data: ing, error: ingErr }, { data: stp, error: stpErr }] = await Promise.all([
         supabase
           .from('recipe_ingredients')
@@ -75,28 +80,49 @@ export default function Recipe() {
           .order('position', { ascending: true }) as any,
       ]);
 
-      // If steps table doesn't exist yet, stpErr will be set; we just show none.
+      if (ingErr) throw ingErr;
+      // stpErr can be ignored if table doesn’t exist
+
       const ingredients = (ing as IngredientRow[] | null | undefined)?.map(r => r.raw).filter(Boolean) ?? [];
       const steps = (stp as StepRow[] | null | undefined)?.map(r => r.step_text).filter(Boolean) ?? [];
 
-      setData({
+      const ui: RecipeForUI = {
         id: base.id,
         user_id: base.user_id,
         title: base.title,
         source_url: base.source_url,
-        thumb_url: base.thumb_url,
+        thumb_path: base.thumb_path || null,
         ingredients,
         steps,
-      });
-    } catch (e) {
-      console.warn('[recipe:load]', e);
-      // keep previous UI if any; errors already logged
+      };
+      setData(ui);
+      dbg('loaded thumb_path=', ui.thumb_path);
+    } catch (e: any) {
+      console.warn('[recipe:load]', e?.message || e);
     } finally {
       setLoading(false);
     }
   }, [recipeId]);
 
   useEffect(() => { fetchRecipe(); }, [fetchRecipe]);
+
+  // Resolve hero background whenever thumb_path changes
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const p = data?.thumb_path;
+      if (!p) { if (alive) setHeroUri(''); return; }
+      try {
+        const url = await resolveThumbUrl(p);
+        if (alive) setHeroUri(url);
+        dbg('hero resolved →', url ? 'ok' : 'empty');
+      } catch (e: any) {
+        console.log('[recipe:hero:resolve]', e?.message || e);
+        if (alive) setHeroUri('');
+      }
+    })();
+    return () => { alive = false; };
+  }, [data?.thumb_path]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -112,14 +138,13 @@ export default function Recipe() {
   }, [data]);
 
   const heroTitle = useMemo(() => data?.title?.trim() || 'Recipe', [data]);
-  const bgImage = data?.thumb_url || undefined;
 
   return (
     <SafeAreaView style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#FFFFFF' }]} edges={['top','left','right']}>
       {/* BG */}
       <View style={styles.heroWrap} pointerEvents="none">
-        {bgImage ? (
-          <Image source={{ uri: bgImage }} style={styles.heroImage} resizeMode="cover"
+        {heroUri ? (
+          <Image source={{ uri: heroUri }} style={styles.heroImage} resizeMode="cover"
                  blurRadius={Platform.OS === 'android' ? 15 : 20}/>
         ) : (<View style={[styles.heroFallback, { backgroundColor: isDark ? '#0B0F19' : '#F3F4F6' }]} />)}
         <View style={styles.heroDim} />
@@ -155,9 +180,10 @@ export default function Recipe() {
           {heroTitle}
         </Text>
 
-        {data?.thumb_url ? (
+        {/* Cover image (resolves storage path → URL) */}
+        {data?.thumb_path ? (
           <Pressable style={styles.coverCard} onPress={() => setCoverModal(true)}>
-            <Image source={{ uri: data.thumb_url }} style={styles.cover} resizeMode="cover" />
+            <ThumbImage path={data.thumb_path} style={styles.cover} resizeMode="cover" debugKey="recipe-cover" />
           </Pressable>
         ) : null}
 
@@ -195,8 +221,8 @@ export default function Recipe() {
       {/* Full-screen cover */}
       <Modal visible={coverModal} transparent animationType="fade" onRequestClose={() => setCoverModal(false)}>
         <Pressable style={styles.coverBackdrop} onPress={() => setCoverModal(false)}>
-          {data?.thumb_url ? (
-            <Image source={{ uri: data.thumb_url }} style={styles.coverFullscreen} resizeMode="contain" />
+          {data?.thumb_path ? (
+            <ThumbImage path={data.thumb_path} style={styles.coverFullscreen} resizeMode="contain" debugKey="recipe-modal" />
           ) : null}
         </Pressable>
       </Modal>

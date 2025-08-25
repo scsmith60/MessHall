@@ -2,6 +2,7 @@
 // MessHall — Home feed with avatar→Profile in header (long‑press avatar = Sign out)
 // + SafeArea header spacing
 // + Tap-to-enlarge recipe thumbnails
+// + Uses ThumbImage (path → signed URL) for recipe thumbs
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -13,13 +14,14 @@ import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context'
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
+import ThumbImage from '../components/ThumbImage'; // ⟵ NEW
 
 type RecipeRow = {
   id: string;
   user_id: string;
   title: string | null;
   source_url: string | null;
-  thumb_path: string | null;
+  thumb_path: string | null; // storage path or URL
   ingredients: string[] | null;
   steps: string[] | null;
   created_at?: string | null;
@@ -46,7 +48,7 @@ export default function Home() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState('');
 
-  // fullscreen thumb
+  // fullscreen thumb (stores the same path the DB has)
   const [selectedThumb, setSelectedThumb] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
@@ -199,13 +201,10 @@ export default function Home() {
           onPress={() => item.thumb_path && setSelectedThumb(item.thumb_path)}
         >
           {item.thumb_path ? (
-            <Image
-              source={{ uri: item.thumb_path }}
+            <ThumbImage
+              path={item.thumb_path}
               style={styles.thumb}
-              resizeMode="cover"
-              onError={(e) => {
-                console.warn('[home:thumb:error]', item.id, e?.nativeEvent?.error);
-              }}
+              debugKey={item.id} // DEBUG aid
             />
           ) : (
             <View style={[styles.thumb, styles.thumbFallback]} />
@@ -306,10 +305,11 @@ export default function Home() {
       <Modal visible={!!selectedThumb} transparent animationType="fade">
         <Pressable style={styles.modalBackdrop} onPress={() => setSelectedThumb(null)}>
           {selectedThumb ? (
-            <Image
-              source={{ uri: selectedThumb }}
+            <ThumbImage
+              path={selectedThumb}
               style={styles.fullscreenImage}
               resizeMode="contain"
+              debugKey="home-modal"
             />
           ) : null}
         </Pressable>
