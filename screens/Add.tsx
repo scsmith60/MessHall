@@ -1,9 +1,8 @@
 // screens/Add.tsx
 // MessHall — Add screen (themed, TikTok auto-snap)
-// - Prefetch + getSize preflight; HEAD/Range check for signed URL reachability
-// - Auto WebView screenshot fallback + TikTok robust thumb
-// - SafeArea padding + tap-to-enlarge thumbnail
-// - Title extraction debugger (shows every signal used to compute title)
+// - Title extraction: use TikTok caption via offsetParent (WebView), fallback to JSON-LD/OG/Twitter/SIGI
+// - Smart caption→title scrubber (cuts off Ingredients/Steps/Times/etc.; strips “more”, hashtags, urls)
+// - Title debugger panel (thumbnail debugger removed)
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -31,10 +30,8 @@ import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
 
 // ===== DEBUG SWITCHES =====
-// Turn OFF the old thumbnail debugger UI
-const DEBUG_THUMBS = false;
-// Turn ON the new title debugger UI
-const DEBUG_TITLE = true;
+const DEBUG_THUMBS = false; // OFF
+const DEBUG_TITLE = true;   // ON
 
 /** --- Title extraction helpers --- */
 const BAD_TITLES = new Set<string>([
@@ -51,9 +48,52 @@ function cleanTitle(t?: string) {
   if (!t) return '';
   let out = t.trim();
   out = out.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food Network|NYT Cooking).*/i, '');
-  out = out.replace(/\s{2,}/g, ' ').trim();
   out = out.replace(/[–—-]\s*$/,'').trim();
+  out = out.replace(/\s{2,}/g, ' ').trim();
   return out;
+}
+
+// “AI-ish” scrubber: convert a long caption block into a clean title.
+function captionToTitle(raw?: string) {
+  if (!raw) return '';
+  let s = (raw || '').replace(/\r/g, ' ').replace(/\t/g, ' ').replace(/ +/g, ' ').trim();
+
+  // strip URLs, hashtags, handles, emojis
+  s = s
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/[#@][\w_]+/g, '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  // remove leading "more" that TikTok sometimes prefixes
+  s = s.replace(/^\s*more[:\-]?\s*/i, '').trim();
+
+  // cut at blocks that clearly indicate non-title content
+  const CUT_WORDS = [
+    'ingredients', 'ingredient',
+    'directions', 'instructions', 'method', 'steps',
+    'prep time', 'cook time', 'total time', 'servings',
+    'tips', 'yields', 'calories', 'kcal',
+  ];
+  const lower = s.toLowerCase();
+  let cutIdx = -1;
+  for (const w of CUT_WORDS) {
+    const i = lower.indexOf(w);
+    if (i >= 0 && (cutIdx === -1 || i < cutIdx)) cutIdx = i;
+  }
+  if (cutIdx > 0) s = s.slice(0, cutIdx).trim();
+
+  // prefer first line / first sentence-ish
+  s = (s.split('\n')[0] || s).trim();
+  s = (s.split(/(?<=\.)\s+/)[0] || s).trim();
+
+  // collapse decorative separators
+  s = s.replace(/[•·|]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+
+  if (s.length > 120) s = s.slice(0, 117).trim() + '…';
+
+  return cleanTitle(s);
 }
 
 function fallbackTitleFromUrl(u: string) {
@@ -89,6 +129,15 @@ function safeJSON<T = any>(str?: string | null): T | undefined {
   if (!str) return;
   try { return JSON.parse(str); } catch { return; }
 }
+function decodeEntities(s: string) {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+function stripTags(s: string) { return s.replace(/<[^>]*>/g, ''); }
 
 function extractFromJSONLD(html: string) {
   const scripts = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
@@ -110,23 +159,13 @@ function extractFromJSONLD(html: string) {
   return '';
 }
 
-function cleanCaptionToTitle(desc: string) {
-  if (!desc) return '';
-  let s = desc.replace(/\r/g, '').split('\n').filter(Boolean)[0] || desc;
-  s = s.split(/ingredients\s*:/i)[0] || s;
-  s = s.replace(/[#@][\w_]+/g, '').replace(/https?:\/\/\S+/g, '').trim();
-  s = cleanTitle(s);
-  if (s.length > 120) s = s.slice(0, 117).trim() + '…';
-  return s;
-}
-
 function extractDescCandidates(html: string) {
   const descs = [
     pickMetaContent(html, 'og:description'),
     pickMetaContent(html, 'twitter:description'),
-  ].filter(Boolean);
-  const best = descs.find(Boolean) || '';
-  return cleanCaptionToTitle(best);
+  ].filter(Boolean) as string[];
+  const best = descs[0] || '';
+  return captionToTitle(best);
 }
 
 function extractFromTikTokSIGI(html: string) {
@@ -137,16 +176,36 @@ function extractFromTikTokSIGI(html: string) {
   if (itemModule && typeof itemModule === 'object') {
     const first: any = Object.values(itemModule)[0];
     const desc = (first?.desc || '').toString().trim();
-    const cleaned = cleanCaptionToTitle(desc);
+    const cleaned = captionToTitle(desc);
     if (cleaned) return cleaned;
   }
   const seo = json?.SEOState || json?.ShareMeta || json?.app || {};
   const shareTitle = (seo?.metaParams?.title || seo?.shareMeta?.title || '').toString().trim();
-  if (shareTitle) return cleanCaptionToTitle(shareTitle);
+  if (shareTitle) return captionToTitle(shareTitle);
   return '';
 }
 
-/** Title debugger payload returned by fetchAndExtractTitle */
+/** Visible TikTok caption (static HTML guess; true source comes via offsetParent WebView below) */
+function extractTikTokDataE2E(html: string) {
+  const keys = ['new-desc-span','browse-video-desc','video-desc','search-video-desc','search-video-title'];
+  for (const k of keys) {
+    const re = new RegExp(`<([a-z0-9]+)([^>]*?data-e2e=["']${k}["'][^>]*)>([\\s\\S]*?)<\\/\\1>`,'i');
+    const m = html.match(re);
+    if (m?.[3]) {
+      const text = captionToTitle(decodeEntities(stripTags(m[3])));
+      if (text) return text;
+    }
+  }
+  const reAny = /<([a-z0-9]+)([^>]*?data-e2e=["'][^"']*(desc|title)[^"']*["'][^>]*)>([\s\S]*?)<\/\1>/i;
+  const mm = html.match(reAny);
+  if (mm?.[4]) {
+    const text = captionToTitle(decodeEntities(stripTags(mm[4])));
+    if (text) return text;
+  }
+  return '';
+}
+
+/** Title debugger payload */
 type TitleDebug = {
   finalUrl?: string;
   canonical?: string;
@@ -155,7 +214,9 @@ type TitleDebug = {
   ogTitle?: string;
   twitterTitle?: string;
   titleTag?: string;
-  tiktokCaption?: string;
+  tiktokCaption?: string;           // from SIGI
+  tiktokDataE2E?: string;           // from static HTML
+  tiktokFromOffsetParent?: string;  // from WebView offsetParent.innerText
   metaDescriptionTitle?: string;
   slugTitle?: string;
   picked?: string;
@@ -177,23 +238,35 @@ async function fetchAndExtractTitle(rawUrl: string): Promise<{ title?: string; c
     debug.twitterTitle = pickMetaContent(html, 'twitter:title');
     debug.titleTag = pickTitleTag(html);
 
-    let t =
-      debug.jsonLdName ||
-      debug.ogTitle ||
-      debug.twitterTitle ||
-      debug.titleTag ||
-      '';
+    // Prefer visible caption first (static guess)
+    debug.tiktokDataE2E = extractTikTokDataE2E(html);
+    let t = debug.tiktokDataE2E;
+
+    // Then meta stacks
+    if (!t) {
+      t =
+        debug.jsonLdName ||
+        debug.ogTitle ||
+        debug.twitterTitle ||
+        debug.titleTag ||
+        '';
+    }
 
     t = cleanTitle(t);
 
+    // Then TikTok JSON payload
     if (!t || BAD_TITLES.has(t)) {
       debug.tiktokCaption = extractFromTikTokSIGI(html);
       if (debug.tiktokCaption) t = debug.tiktokCaption;
     }
+
+    // Meta description cleaned
     if (!t || BAD_TITLES.has(t)) {
       debug.metaDescriptionTitle = extractDescCandidates(html);
       if (debug.metaDescriptionTitle) t = debug.metaDescriptionTitle;
     }
+
+    // Slug fallback
     if (!t || BAD_TITLES.has(t)) {
       debug.slugTitle = fallbackTitleFromUrl(finalUrl);
       if (debug.slugTitle) t = debug.slugTitle;
@@ -250,7 +323,7 @@ function bustIfSafe(url: string): string {
   }
 }
 
-/** Thumb (thumbnail debugger UI disabled) */
+/** Thumb (debugger removed) */
 function Thumb({
   uri,
   onPress,
@@ -265,27 +338,19 @@ function Thumb({
 
   useEffect(() => {
     setOk(null);
-    const signed = isSupabaseSigned(uri);
-    const next = signed ? uri : bustIfSafe(uri);
+    const next = isSupabaseSigned(uri) ? uri : bustIfSafe(uri);
     setDisplayUri(next);
   }, [uri]);
 
   useEffect(() => {
     let cancelled = false;
-
     async function run() {
       try {
         await new Promise<void>((resolve, reject) => {
           Image.getSize(
             displayUri,
-            () => {
-              if (!cancelled) setOk(true);
-              resolve();
-            },
-            () => {
-              if (!cancelled) setOk(false);
-              reject(null);
-            }
+            () => { if (!cancelled) setOk(true); resolve(); },
+            () => { if (!cancelled) setOk(false); reject(null); }
           );
         });
       } catch {}
@@ -318,12 +383,7 @@ function Thumb({
         />
       )}
       {ok === false && (
-        <View
-          style={[
-            styles.thumb,
-            { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111', borderRadius: 12 },
-          ]}
-        >
+        <View style={[styles.thumb, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111', borderRadius: 12 }]}>
           <Text style={{ color: '#fff' }}>Preview unavailable</Text>
         </View>
       )}
@@ -332,6 +392,7 @@ function Thumb({
 }
 
 // ===== AutoSnap Modal (WebView + ViewShot) =====
+type AutoSnapPurpose = 'thumb' | 'title' | 'both';
 type AutoSnapModalProps = {
   visible: boolean;
   url: string;
@@ -340,6 +401,8 @@ type AutoSnapModalProps = {
   colors: ReturnType<typeof useThemeController>['colors'];
   styles: ReturnType<typeof makeStyles>;
   delayMs?: number;
+  onTitleFound?: (title: string) => void;
+  purpose?: AutoSnapPurpose; // NEW
 };
 
 function AutoSnapModal({
@@ -350,6 +413,8 @@ function AutoSnapModal({
   colors,
   styles,
   delayMs = 1200,
+  onTitleFound,
+  purpose = 'both',
 }: AutoSnapModalProps) {
   const [WebViewComp, setWebViewComp] = useState<any>(null);
   const [ViewShotComp, setViewShotComp] = useState<any>(null);
@@ -394,8 +459,13 @@ function AutoSnapModal({
     );
   }
 
+  const wantThumb = purpose !== 'title';
+
+  // Injected script: always posts TITLE via offsetParent; THUMB only when wanted
   const injectedJS = `
     (function() {
+      function pm(tag, val){ try{ window.ReactNativeWebView.postMessage(tag + '|' + val); }catch(e){} }
+
       var meta = document.querySelector('meta[name="viewport"]');
       if (!meta) { meta = document.createElement('meta'); meta.name='viewport'; document.head.appendChild(meta); }
       meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0';
@@ -403,32 +473,47 @@ function AutoSnapModal({
       const st = document.createElement('style');
       st.innerHTML = \`
         html, body { margin:0!important; padding:0!important; background:#fff!important; overflow:hidden!important; }
-        header, footer, .tiktok-top, .tiktok-header, .tiktok-footer,
         [data-e2e="banner"], [data-e2e="openAppButton"], .download-app,
         .login-guide, .app-open, .bottomSheet, .sticky, .sidebar, .share,
-        [data-e2e="interest-selection"], [data-e2e="cookie-banner"], [role="dialog"]
-        { display:none!important; visibility:hidden!important; pointer-events:none!important; }
-        #app, .app, .container, main { margin:0!important; padding:0!important; }
-        body { transform: scale(1.08); transform-origin: 58% 48%; }
+        [data-e2e="interest-selection"], [data-e2e="cookie-banner"], [role="dialog"] { display:none!important; }
       \`;
       document.documentElement.appendChild(st);
 
-      function pm(tag, val){ try{ window.ReactNativeWebView.postMessage(tag + '|' + val); }catch(e){} }
-      var canon = document.querySelector('link[rel="canonical"]')?.href;
-      if (canon && /^https?:/.test(canon)) pm('CANONICAL', canon);
+      // TITLE via offsetParent of caption
+      function postTitleFromCaption(){
+        const sels = [
+          '[data-e2e="new-desc-span"]',
+          '[data-e2e="browse-video-desc"]',
+          '[data-e2e="video-desc"]',
+          '[data-e2e="search-video-desc"]',
+          '[data-e2e="search-video-title"]'
+        ];
+        let el = null;
+        for (const s of sels) { el = document.querySelector(s); if (el) break; }
+        if (!el) {
+          el = Array.from(document.querySelectorAll('[data-e2e]')).find(n => /desc|title/i.test(n.getAttribute('data-e2e')||''));
+        }
+        if (!el) return;
+        const host = el.offsetParent || el.parentElement || el;
+        const text = (host.innerText || host.textContent || '').trim();
+        if (text) pm('TITLE', text);
+      }
+      try { postTitleFromCaption(); } catch(e) {}
 
-      var og = document.querySelector('meta[property="og:image"]')?.content;
-      if (og) pm('THUMB', og);
-      var tw = document.querySelector('meta[name="twitter:image"]')?.content;
-      if (tw) pm('THUMB', tw);
-
-      var vid = document.querySelector('video');
-      var poster = vid && vid.getAttribute('poster');
-      if (poster) pm('THUMB', poster);
-
-      var imgs = Array.from(document.images || []).map(i=>i.src).filter(Boolean);
-      var candidates = imgs.filter(s => /(p16-sign|p19-sign|object-storage|imagecdn|img.tiktokcdn)/.test(s));
-      if (candidates[0]) pm('THUMB', candidates[0]);
+      ${wantThumb ? `
+        var canon = document.querySelector('link[rel="canonical"]')?.href;
+        if (canon && /^https?:/.test(canon)) pm('CANONICAL', canon);
+        var og = document.querySelector('meta[property="og:image"]')?.content;
+        if (og) pm('THUMB', og);
+        var tw = document.querySelector('meta[name="twitter:image"]')?.content;
+        if (tw) pm('THUMB', tw);
+        var vid = document.querySelector('video');
+        var poster = vid && vid.getAttribute('poster');
+        if (poster) pm('THUMB', poster);
+        var imgs = Array.from(document.images || []).map(i=>i.src).filter(Boolean);
+        var candidates = imgs.filter(s => /(p16-sign|p19-sign|object-storage|imagecdn|img.tiktokcdn)/.test(s));
+        if (candidates[0]) pm('THUMB', candidates[0]);
+      ` : ''}
     })();
   `;
 
@@ -440,28 +525,21 @@ function AutoSnapModal({
       } else {
         onDone(src);
       }
-    } catch {
-      onDone(src);
-    }
+    } catch { onDone(src); }
   };
 
   const handleLoadEnd = () => {
+    if (!wantThumb) return; // when purpose is "title", skip screenshot work
     if (snapping) return;
     setSnapping(true);
     timerRef.current = setTimeout(async () => {
       if (gotDirectThumbRef.current) { setSnapping(false); return; }
       try {
         const uri: string = await (viewShotRef.current?.capture?.({
-          format: 'jpg',
-          quality: 0.95,
-          result: 'tmpfile',
+          format: 'jpg', quality: 0.95, result: 'tmpfile',
         }) as Promise<string>);
         if (uri) await finishWithUrl(uri);
-      } catch {
-        onCancel();
-      } finally {
-        setSnapping(false);
-      }
+      } catch { onCancel(); } finally { setSnapping(false); }
     }, delayMs);
   };
 
@@ -471,7 +549,7 @@ function AutoSnapModal({
     <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
       <View style={styles.modalScrim}>
         <View style={styles.modalCard}>
-          <Text style={styles.modalTitle}>Preparing preview…</Text>
+          <Text style={styles.modalTitle}>{wantThumb ? 'Preparing preview…' : 'Finding title…'}</Text>
 
           <ViewShotComp
             ref={viewShotRef}
@@ -494,7 +572,7 @@ function AutoSnapModal({
 
                   if (data.startsWith('CANONICAL|')) {
                     const canon = data.slice(10);
-                    if (canon) {
+                    if (canon && wantThumb) {
                       try {
                         const tikThumb = await fetchTikTokThumbRobust(canon);
                         if (tikThumb) {
@@ -505,7 +583,7 @@ function AutoSnapModal({
                       } catch {}
                     }
                   }
-                  if (data.startsWith('THUMB|')) {
+                  if (data.startsWith('THUMB|') && wantThumb) {
                     const src = data.slice(6);
                     if (src) {
                       gotDirectThumbRef.current = true;
@@ -513,26 +591,27 @@ function AutoSnapModal({
                       await finishWithUrl(src);
                     }
                   }
+                  if (data.startsWith('TITLE|')) {
+                    const txt = data.slice(6).trim();
+                    if (txt && onTitleFound) onTitleFound(txt);
+                    if (!wantThumb) onCancel(); // close quickly if title-only
+                  }
                 }}
                 userAgent={'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'}
-                style={{
-                  width: 420,
-                  height: 560,
-                  backgroundColor: '#fff',
-                  marginLeft: -30,
-                  marginTop: -40,
-                  borderRadius: 12,
-                }}
+                style={{ width: 420, height: 560, backgroundColor: '#fff', marginLeft: -30, marginTop: -40, borderRadius: 12 }}
               />
             </View>
           </ViewShotComp>
 
-          <View style={{ marginTop: 10, alignItems: 'center' }}>
-            {snapping ? <ActivityIndicator /> : null}
-          </View>
+          {wantThumb ? (
+            <View style={{ marginTop: 10, alignItems: 'center' }}>
+              {snapping ? <ActivityIndicator /> : null}
+            </View>
+          ) : null}
+
           <View style={styles.actionsRow}>
             <Pressable style={styles.btnNeutral} onPress={onCancel}>
-              <Text style={styles.btnNeutralText}>Cancel</Text>
+              <Text style={styles.btnNeutralText}>Close</Text>
             </Pressable>
           </View>
         </View>
@@ -561,6 +640,7 @@ export default function Add() {
   const [autoEnrichOnMount] = useState<boolean>(looksLikeUrl(initialSharedUrl));
 
   const [autoSnapVisible, setAutoSnapVisible] = useState(false);
+  const [autoSnapPurpose, setAutoSnapPurpose] = useState<AutoSnapPurpose>('both'); // NEW
   const [thumbModal, setThumbModal] = useState(false);
   const userTouchedUrlRef = useRef(false);
 
@@ -576,7 +656,9 @@ export default function Add() {
       if (looksLikeUrl(incoming)) {
         (async () => {
           const res = await doEnrich(incoming);
-          if (res?.ok && !res.hadImage) setAutoSnapVisible(true);
+          // if enrich didn’t get a clean title, open title-only modal even if we already have an image
+          if (isTikTokUrl(incoming)) maybeOpenTitleModal();
+          if (res?.ok && !res.hadImage) { setAutoSnapPurpose('both'); setAutoSnapVisible(true); }
         })();
       }
     }
@@ -595,13 +677,26 @@ export default function Add() {
       setLoading(true);
       try {
         const res = await doEnrich(url);
-        if (!cancelled && res && !res.hadImage) setAutoSnapVisible(true);
+        if (!cancelled) {
+          if (isTikTokUrl(url)) maybeOpenTitleModal();
+          if (res && !res.hadImage) { setAutoSnapPurpose('both'); setAutoSnapVisible(true); }
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
   }, [autoEnrichOnMount]);
+
+  const maybeOpenTitleModal = useCallback(() => {
+    // open WebView title capture if the current title is empty, generic,
+    // or looks polluted (contains "ingredients"/"instructions"/starts with "more")
+    const polluted = /ingredients|instructions|directions|method/i.test(title) || /^\s*more\b/i.test(title);
+    if (!title || BAD_TITLES.has(title) || polluted) {
+      setAutoSnapPurpose('title');
+      setAutoSnapVisible(true);
+    }
+  }, [title]);
 
   const pasteFromClipboard = useCallback(async () => {
     const text = await Clipboard.getStringAsync();
@@ -610,12 +705,13 @@ export default function Add() {
       setUrl(clipped);
       if (looksLikeUrl(clipped)) {
         const res = await doEnrich(clipped);
-        if (res?.ok && !res.hadImage) setAutoSnapVisible(true);
+        if (isTikTokUrl(clipped)) maybeOpenTitleModal();
+        if (res?.ok && !res.hadImage) { setAutoSnapPurpose('both'); setAutoSnapVisible(true); }
       }
     } else {
       Alert.alert('Clipboard empty', 'Copy a link first, then tap Paste.');
     }
-  }, []);
+  }, [maybeOpenTitleModal]);
 
   const pickImage = useCallback(async () => {
     try {
@@ -624,10 +720,7 @@ export default function Add() {
         Alert.alert('Permission needed', 'Enable Photos permission to pick a thumbnail.');
         return;
       }
-      const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaType,
-        quality: 0.9,
-      });
+      const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaType, quality: 0.9 });
       if (res.canceled || !res.assets?.length) return;
       const localUri = res.assets[0].uri;
       setLoading(true);
@@ -660,16 +753,14 @@ export default function Add() {
 
         // Deep extraction + debugger
         const { title: better, canonical, debug } = await fetchAndExtractTitle(theUrl);
-        if (debug) setTitleDebug({
-          ...debug,
-          metaTitle: meta.title || '',
-        });
+        if (debug) setTitleDebug({ ...debug, metaTitle: meta.title || '' });
 
         if (!nextTitle || BAD_TITLES.has(nextTitle)) {
           if (better) nextTitle = better;
           if (canonical && canonical !== theUrl) setUrl(canonical);
         }
         if (!nextTitle) nextTitle = fallbackTitleFromUrl(theUrl) || theUrl;
+        nextTitle = captionToTitle(nextTitle); // ensure scrub
 
         const cleanedIngredients = uniq(meta.ingredients || []);
         const cleanedSteps = uniq(meta.steps || []);
@@ -808,7 +899,9 @@ export default function Add() {
               style={[styles.btnNeutral, !canEnrich && styles.btnDisabled]}
               onPress={async () => {
                 const res = await doEnrich(url);
-                if (res?.ok && !res.hadImage) setAutoSnapVisible(true);
+                // open title-only modal if needed even when thumb already found
+                if (isTikTokUrl(url)) maybeOpenTitleModal();
+                if (res?.ok && !res.hadImage) { setAutoSnapPurpose('both'); setAutoSnapVisible(true); }
               }}
               disabled={!canEnrich}
             >
@@ -845,7 +938,9 @@ export default function Add() {
               <Text style={styles.titleDebugLine}>og:title: {titleDebug.ogTitle || '-'}</Text>
               <Text style={styles.titleDebugLine}>twitter:title: {titleDebug.twitterTitle || '-'}</Text>
               <Text style={styles.titleDebugLine}>&lt;title&gt; tag: {titleDebug.titleTag || '-'}</Text>
-              <Text style={styles.titleDebugLine}>TikTok caption/share: {titleDebug.tiktokCaption || '-'}</Text>
+              <Text style={styles.titleDebugLine}>TikTok SIGI caption: {titleDebug.tiktokCaption || '-'}</Text>
+              <Text style={styles.titleDebugLine}>TikTok data‑e2e text: {titleDebug.tiktokDataE2E || '-'}</Text>
+              <Text style={styles.titleDebugLine}>TikTok offsetParent text: {titleDebug.tiktokFromOffsetParent || '-'}</Text>
               <Text style={styles.titleDebugLine}>meta description cleaned: {titleDebug.metaDescriptionTitle || '-'}</Text>
               <Text style={styles.titleDebugLine}>slug fallback: {titleDebug.slugTitle || '-'}</Text>
               <Text style={[styles.titleDebugLine, { color: '#93c5fd' }]}>PICKED: {titleDebug.picked || '-'}</Text>
@@ -919,11 +1014,19 @@ export default function Add() {
           url={url}
           colors={colors}
           styles={styles}
+          purpose={autoSnapPurpose}
           onDone={(durableUrl) => {
             setThumbUrl(durableUrl);
             setAutoSnapVisible(false);
           }}
           onCancel={() => setAutoSnapVisible(false)}
+          onTitleFound={(txt) => {
+            const cleaned = captionToTitle(txt);
+            if (cleaned) {
+              setTitle(cleaned);
+              setTitleDebug(prev => ({ ...(prev||{}), tiktokFromOffsetParent: cleaned, picked: cleaned }));
+            }
+          }}
         />
 
         {/* Fullscreen thumbnail viewer */}
