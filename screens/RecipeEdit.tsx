@@ -1,23 +1,30 @@
 // screens/RecipeEdit.tsx
-// MessHall — Edit screen with DEBUG + durable thumb parity (uses recipe-thumbs)
-// - Camera/Library: ensureDurableThumb(localUri); on upload error → fallback to signed upload
-// - Import/Fetch:   ensureDurableThumb(url) OR server-side refresh (edge) → fallback HEAD+download→signed upload
-// - Preview: signed URL from recipe-thumbs when thumb_path is a storage path
-// - Cleanup: deletes old storage object after successful replace
-// - ImagePicker mediaTypes helper works across old/new Expo SDKs
+// MessHall — Edit screen with EXACT Add screen Enrich/AutoSnap pipeline
+// - Paste / Enrich / Pick Image actions (same UX as Add)
+// - TikTok robust thumb + AutoSnap WebView capture (same offsets & injection)
+// - Durable upload via ensureDurableThumb; stores bucket path when available
+// - Resolves storage paths to signed preview URLs
+// - Does NOT auto-save: enrich just fills fields & thumb; user taps Save
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TextInput, ScrollView, Pressable, ActivityIndicator, Alert,
-  StyleSheet, KeyboardAvoidingView, Platform, Image
+  StyleSheet, KeyboardAvoidingView, Platform, Image, Modal
 } from 'react-native';
 import { useRoute, RouteProp, useNavigation } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
+
+// TikTok helpers (same as Add)
+import { isTikTokUrl, fetchTikTokThumbRobust } from '../lib/tiktokThumb';
+
+// ===== DEBUG SWITCH (same as Add) =====
+const DEBUG_THUMBS = true;
 
 type R = RouteProp<RootStackParamList, 'Recipe'>;
 
@@ -29,24 +36,53 @@ type RecipeBase = {
 };
 
 const DURABLE_BUCKET = 'recipe-thumbs';
-const DURABLE_FOLDER = 'u';
 const PREVIEW_TTL = 60 * 60 * 24 * 14; // 14 days
 
-// ===== DEBUG =====
-const dbg = (...a: any[]) => console.log('DBG[edit]:', ...a);
-const j = (x: any) => { try { return JSON.stringify(x); } catch { return String(x); } };
+// ---- Durable helper (same import pattern as Add) ----
+let ensureDurableThumb:
+  | undefined
+  | ((src: string) => Promise<{ publicUrl: string; signedUrl?: string; bucketPath?: string; uri?: string }>);
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = require('../lib/ensureDurableThumb');
+  ensureDurableThumb = mod.ensureDurableThumb || mod.default;
+} catch {}
 
-// ===== ImagePicker mediaTypes helper =====
-const getMediaImages = () => {
-  const anyIP: any = ImagePicker as any;
-  if (anyIP?.MediaType?.Images) return anyIP.MediaType.Images; // new API (no warning)
-  if (anyIP?.MediaTypeOptions?.Images) return anyIP.MediaTypeOptions.Images; // old API (may warn)
-  return undefined; // avoid "undefined.Images" crash
+// ---- Optional fetchMeta (same as Add) ----
+type MetaResult = {
+  title?: string;
+  image?: string;
+  ingredients?: string[];
+  steps?: string[];
+  source?: string;
 };
+let fetchMeta: undefined | ((url: string) => Promise<MetaResult>);
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  fetchMeta = require('../lib/fetch_meta').fetchMeta || require('../lib/fetch_meta').default;
+} catch {}
 
-// ===== Helpers =====
+// ====== Shared helpers (identical to Add) ======
+const looksLikeUrl = (s?: string) => !!s && /^https?:\/\/[^\s]+/i.test((s || '').trim());
+const uniq = (arr: string[]) => Array.from(new Set(arr.map((s) => s.trim()).filter(Boolean)));
+
+const isSupabaseSigned = (u: string) => /\/storage\/v1\/object\/sign\//.test(u);
+function bustIfSafe(url: string): string {
+  if (!url || isSupabaseSigned(url)) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.set('_t', String(Date.now()));
+    return u.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}_t=${Date.now()}`;
+  }
+}
+
 const isHttp = (s?: string) => !!s && /^https?:\/\//i.test(s!);
-const isLikelyImageUrl = (u: string) => /\.(jpg|jpeg|png|webp|gif|bmp|avif|heic|heif)(\?|#|$)/i.test(u);
+const isLikelyImageUrl = (u: string) =>
+  /\.(jpg|jpeg|png|webp|gif|bmp|avif|heic|heif)(\?|#|$)/i.test(u);
+
 const base64ToUint8 = (b64: string) => {
   const binary = global.atob ? global.atob(b64) : Buffer.from(b64, 'base64').toString('binary');
   const len = binary.length;
@@ -69,37 +105,383 @@ const getExtAndCT = (uri: string) => {
   return { ext, ct };
 };
 
-// ===== Durable helper from your lib (same as Add) =====
-let ensureDurableThumb:
-  | undefined
-  | ((src: string, opts?: any) => Promise<{ publicUrl: string; bucketPath: string; uri?: string; signed?: boolean }>);
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const mod = require('../lib/ensureDurableThumb');
-  ensureDurableThumb = mod.ensureDurableThumb || mod.default;
-  dbg('ensureDurableThumb present:', !!ensureDurableThumb);
-} catch {
-  dbg('ensureDurableThumb not found at ../lib/ensureDurableThumb');
-}
-
-// ===== Remove previous storage object if we own it (avoid dirty bucket) =====
-async function removeOldThumbIfOwned(prev?: string | null, next?: string | null) {
-  try {
-    if (!prev || !next || prev === next) return;
-    if (/^https?:\/\//i.test(prev)) return; // don't delete external URLs
-
-    // Normalize: allow “recipe-thumbs/…” or bare “u/…”
-    const clean = String(prev).replace(new RegExp(`^${DURABLE_BUCKET}/?`, 'i'), '');
-    const res = await supabase.storage.from(DURABLE_BUCKET).remove([clean]);
-    if (res.error) dbg('removeOldThumbIfOwned error:', res.error.message);
-    else dbg('removeOldThumbIfOwned removed:', clean);
-  } catch (e: any) {
-    dbg('removeOldThumbIfOwned exception:', e?.message || e);
+// Build a signed preview from a storage path
+async function toDisplayUrl(pathOrUrl?: string | null): Promise<string> {
+  if (!pathOrUrl) return '';
+  if (isHttp(pathOrUrl)) return pathOrUrl;
+  const clean = pathOrUrl.replace(new RegExp(`^${DURABLE_BUCKET}/?`, 'i'), '');
+  const { data, error } = await supabase.storage.from(DURABLE_BUCKET).createSignedUrl(clean, PREVIEW_TTL);
+  if (error) {
+    return supabase.storage.from(DURABLE_BUCKET).getPublicUrl(clean).data?.publicUrl || '';
   }
+  return data?.signedUrl || '';
 }
 
+/** Thumb with debug (copied from Add) */
+function Thumb({
+  uri,
+  onPress,
+  styles,
+}: {
+  uri: string;
+  onPress: () => void;
+  styles: ReturnType<typeof makeStyles>;
+}) {
+  const [ok, setOk] = useState<boolean | null>(null);
+  const [displayUri, setDisplayUri] = useState(uri);
+
+  const [dbg, setDbg] = useState<{
+    isSigned: boolean;
+    getSizeOK?: boolean;
+    getSizeErr?: string;
+    width?: number;
+    height?: number;
+    prefetchOK?: boolean;
+    prefetchErr?: string;
+    headStatus?: number;
+    headCT?: string;
+    headLen?: string;
+    headErr?: string;
+    onErrorEvt?: any;
+  }>({ isSigned: isSupabaseSigned(uri) });
+
+  useEffect(() => {
+    setOk(null);
+    const signed = isSupabaseSigned(uri);
+    const next = signed ? uri : bustIfSafe(uri);
+    if (DEBUG_THUMBS) console.log('[Thumb] new uri', { uri, signed, displayUri: next });
+    setDisplayUri(next);
+    setDbg((d) => ({ ...d, isSigned: signed }));
+  }, [uri]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          Image.getSize(
+            displayUri,
+            (w, h) => {
+              if (DEBUG_THUMBS) console.log('[Thumb] getSize OK', { w, h, displayUri });
+              if (!cancelled) setDbg((d) => ({ ...d, getSizeOK: true, width: w, height: h }));
+              resolve();
+            },
+            (err) => {
+              if (DEBUG_THUMBS) console.warn('[Thumb] getSize FAIL', err);
+              if (!cancelled) setDbg((d) => ({ ...d, getSizeOK: false, getSizeErr: String(err) }));
+              reject(err);
+            }
+          );
+        });
+      } catch {}
+
+      try {
+        const pf = await Image.prefetch(displayUri);
+        if (DEBUG_THUMBS) console.log('[Thumb] prefetch', pf);
+        if (!cancelled) setDbg((d) => ({ ...d, prefetchOK: !!pf }));
+      } catch (e: any) {
+        if (DEBUG_THUMBS) console.warn('[Thumb] prefetch FAIL', e?.message || e);
+        if (!cancelled) setDbg((d) => ({ ...d, prefetchOK: false, prefetchErr: e?.message || String(e) }));
+      }
+
+      try {
+        let status = 0, ct = '', len = '';
+        let res = await fetch(displayUri, { method: 'HEAD' });
+        status = res.status;
+        ct = res.headers.get('content-type') || '';
+        len = res.headers.get('content-length') || '';
+        if (DEBUG_THUMBS) console.log('[Thumb] HEAD', status, ct, len);
+        if (!cancelled) setDbg((d) => ({ ...d, headStatus: status, headCT: ct, headLen: len }));
+        if (status >= 200 && status < 400) {
+          if (!cancelled) setOk(true);
+          return;
+        }
+        res = await fetch(displayUri, { method: 'GET', headers: { Range: 'bytes=0-0' } as any });
+        status = res.status;
+        ct = res.headers.get('content-type') || '';
+        len = res.headers.get('content-length') || '';
+        if (DEBUG_THUMBS) console.log('[Thumb] Range GET', status, ct, len);
+        if (!cancelled) setDbg((d) => ({ ...d, headStatus: status, headCT: ct, headLen: len }));
+        if (status >= 200 && status < 400) {
+          if (!cancelled) setOk(true);
+        } else {
+          if (!cancelled) setOk(false);
+        }
+      } catch (e: any) {
+        if (DEBUG_THUMBS) console.warn('[Thumb] HEAD/Range FAIL', e?.message || e);
+        if (!cancelled) setDbg((d) => ({ ...d, headErr: e?.message || String(e) }));
+        if (!cancelled && dbg.getSizeOK) setOk(true);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayUri]);
+
+  return (
+    <Pressable onPress={onPress} style={{ marginTop: 12 }}>
+      {ok === null && (
+        <View style={[styles.thumb, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111' }]}>
+          <ActivityIndicator />
+        </View>
+      )}
+      {ok === true && (
+        <Image
+          source={{ uri: displayUri }}
+          style={[
+            styles.thumb,
+            { borderRadius: 12, backgroundColor: '#111' },
+            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#4ade80' } : null,
+          ]}
+          resizeMode="cover"
+          resizeMethod="resize"
+          fadeDuration={0}
+          onError={(e) => {
+            if (DEBUG_THUMBS) console.warn('[Thumb:onError]', e?.nativeEvent);
+            setOk(false);
+          }}
+        />
+      )}
+      {ok === false && (
+        <View
+          style={[
+            styles.thumb,
+            { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111', borderRadius: 12 },
+            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#f87171' } : null,
+          ]}
+        >
+          <Text style={{ color: '#fff' }}>Preview unavailable</Text>
+        </View>
+      )}
+    </Pressable>
+  );
+}
+
+// ===== AutoSnap Modal (copied from Add; exact offsets & logic) =====
+type AutoSnapModalProps = {
+  visible: boolean;
+  url: string;
+  onDone: (durableUrl: string) => void;
+  onCancel: () => void;
+  colors: ReturnType<typeof useThemeController>['colors'];
+  styles: ReturnType<typeof makeStyles>;
+  delayMs?: number;
+};
+
+function AutoSnapModal({
+  visible,
+  url,
+  onDone,
+  onCancel,
+  colors,
+  styles,
+  delayMs = 1200,
+}: AutoSnapModalProps) {
+  const [WebViewComp, setWebViewComp] = useState<any>(null);
+  const [ViewShotComp, setViewShotComp] = useState<any>(null);
+  const [snapping, setSnapping] = useState(false);
+  const viewShotRef = useRef<any>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const gotDirectThumbRef = useRef(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const modWV = await import('react-native-webview');
+        const WV = (modWV as any).WebView || (modWV as any).default;
+        setWebViewComp(() => WV || null);
+      } catch (e) {
+        if (DEBUG_THUMBS) console.warn('[autosnap] webview import failed', e);
+      }
+      try {
+        const modVS = await import('react-native-view-shot');
+        const VS = (modVS as any).ViewShot || (modVS as any).default;
+        setViewShotComp(() => VS || null);
+      } catch (e) {
+        if (DEBUG_THUMBS) console.warn('[autosnap] view-shot import failed', e);
+      }
+    })();
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, []);
+
+  if (!visible) return null;
+
+  if (!WebViewComp || !ViewShotComp) {
+    return (
+      <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
+        <View style={styles.modalScrim}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Preview unavailable</Text>
+            <Text style={{ color: colors.mutedText, marginBottom: 12 }}>
+              Please install react-native-webview and react-native-view-shot.
+            </Text>
+            <Pressable style={styles.btnNeutral} onPress={onCancel}>
+              <Text style={styles.btnNeutralText}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  const injectedJS = `
+    (function() {
+      var meta = document.querySelector('meta[name="viewport"]');
+      if (!meta) { meta = document.createElement('meta'); meta.name='viewport'; document.head.appendChild(meta); }
+      meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0';
+
+      const st = document.createElement('style');
+      st.innerHTML = \`
+        html, body { margin:0!important; padding:0!important; background:#fff!important; overflow:hidden!important; }
+        header, footer, .tiktok-top, .tiktok-header, .tiktok-footer,
+        [data-e2e="banner"], [data-e2e="openAppButton"], .download-app,
+        .login-guide, .app-open, .bottomSheet, .sticky, .sidebar, .share,
+        [data-e2e="interest-selection"], [data-e2e="cookie-banner"], [role="dialog"]
+        { display:none!important; visibility:hidden!important; pointer-events:none!important; }
+        #app, .app, .container, main { margin:0!important; padding:0!important; }
+        body { transform: scale(1.08); transform-origin: 58% 48%; }
+      \`;
+      document.documentElement.appendChild(st);
+
+      function pm(tag, val){ try{ window.ReactNativeWebView.postMessage(tag + '|' + val); }catch(e){} }
+      var canon = document.querySelector('link[rel="canonical"]')?.href;
+      if (canon && /^https?:/.test(canon)) pm('CANONICAL', canon);
+
+      var og = document.querySelector('meta[property="og:image"]')?.content;
+      if (og) pm('THUMB', og);
+      var tw = document.querySelector('meta[name="twitter:image"]')?.content;
+      if (tw) pm('THUMB', tw);
+
+      var vid = document.querySelector('video');
+      var poster = vid && vid.getAttribute('poster');
+      if (poster) pm('THUMB', poster);
+
+      var imgs = Array.from(document.images || []).map(i=>i.src).filter(Boolean);
+      var candidates = imgs.filter(s => /(p16-sign|p19-sign|object-storage|imagecdn|img.tiktokcdn)/.test(s));
+      if (candidates[0]) pm('THUMB', candidates[0]);
+    })();
+  `;
+
+  const finishWithUrl = async (src: string) => {
+    try {
+      if (ensureDurableThumb) {
+        const out = await ensureDurableThumb(src);
+        onDone(out.signedUrl || out.publicUrl || out.uri || src);
+      } else {
+        onDone(src);
+      }
+    } catch (e) {
+      if (DEBUG_THUMBS) console.warn('[autosnap] finishWithUrl error', e);
+      onDone(src);
+    }
+  };
+
+  const handleLoadEnd = () => {
+    if (snapping) return;
+    setSnapping(true);
+    timerRef.current = setTimeout(async () => {
+      if (gotDirectThumbRef.current) { setSnapping(false); return; }
+      try {
+        const uri: string = await viewShotRef.current?.capture?.({
+          format: 'jpg',
+          quality: 0.95,
+          result: 'tmpfile',
+        });
+        if (uri) await finishWithUrl(uri);
+      } catch (e) {
+        if (DEBUG_THUMBS) console.warn('[autosnap] capture failed', e);
+        onCancel();
+      } finally {
+        setSnapping(false);
+      }
+    }, delayMs);
+  };
+
+  const vw = 360, vh = 460;
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
+      <View style={styles.modalScrim}>
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Preparing preview…</Text>
+
+          <ViewShotComp
+            ref={viewShotRef}
+            style={{ width: vw, height: vh, borderRadius: 12, alignSelf: 'center' }}
+            options={{ format: 'jpg', quality: 0.95 }}
+            collapsable={false}
+          >
+            <View style={{ width: vw, height: vh, borderRadius: 12 }} renderToHardwareTextureAndroid collapsable={false}>
+              <WebViewComp
+                source={{ uri: url }}
+                onLoadEnd={handleLoadEnd}
+                injectedJavaScript={injectedJS}
+                javaScriptEnabled
+                domStorageEnabled
+                overScrollMode="never"
+                androidHardwareAccelerationDisabled
+                onMessage={async (e: any) => {
+                  const data: string = e?.nativeEvent?.data || '';
+                  if (!data) return;
+
+                  if (data.startsWith('CANONICAL|')) {
+                    const canon = data.slice(10);
+                    if (canon) {
+                      try {
+                        const tikThumb = await fetchTikTokThumbRobust(canon);
+                        if (tikThumb) {
+                          gotDirectThumbRef.current = true;
+                          if (timerRef.current) clearTimeout(timerRef.current);
+                          await finishWithUrl(tikThumb);
+                        }
+                      } catch {}
+                    }
+                  }
+                  if (data.startsWith('THUMB|')) {
+                    const src = data.slice(6);
+                    if (src) {
+                      gotDirectThumbRef.current = true;
+                      if (timerRef.current) clearTimeout(timerRef.current);
+                      await finishWithUrl(src);
+                    }
+                  }
+                }}
+                userAgent={'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'}
+                style={{
+                  width: 420,
+                  height: 560,
+                  backgroundColor: '#fff',
+                  marginLeft: -30,
+                  marginTop: -40,
+                  borderRadius: 12,
+                }}
+              />
+            </View>
+          </ViewShotComp>
+
+          <View style={{ marginTop: 10, alignItems: 'center' }}>
+            {snapping ? <ActivityIndicator /> : null}
+          </View>
+          <View style={styles.actionsRow}>
+            <Pressable style={styles.btnNeutral} onPress={onCancel}>
+              <Text style={styles.btnNeutralText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+// ===== MAIN (Edit) =====
 export default function RecipeEdit() {
-  const { isDark } = useThemeController();
+  const { colors, getThemedInputProps } = useThemeController();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+
   const nav = useNavigation<any>();
   const route = useRoute<R>();
   const insets = useSafeAreaInsets();
@@ -108,78 +490,42 @@ export default function RecipeEdit() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // These will be filled by Enrich (same as Add); users can tweak then Save
+  const [url, setUrl] = useState<string>('');            // use as "source_url" as well
   const [title, setTitle] = useState('');
-  const [sourceUrl, setSourceUrl] = useState('');
+  const [thumbUrl, setThumbUrl] = useState<string>('');  // preview uri (signed or direct)
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<string[]>([]);
 
-  const [thumbPath, setThumbPath] = useState<string>('');       // DB value (bucketPath or URL)
-  const [thumbPreview, setThumbPreview] = useState<string>(''); // signed URL or direct URL
-  const [thumbUrlInput, setThumbUrlInput] = useState<string>('');
+  const [autoSnapVisible, setAutoSnapVisible] = useState(false);
+  const [thumbModal, setThumbModal] = useState(false);
   const [imgBusy, setImgBusy] = useState(false);
 
-  // ===== Quick storage sanity check (DEBUG only) =====
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await supabase.storage.from(DURABLE_BUCKET).list(DURABLE_FOLDER, { limit: 1 });
-        dbg('storage sanity list:', res.error?.message || 'ok', res.data?.length || 0);
-      } catch (e: any) {
-        dbg('storage sanity exception:', e?.message || e);
-      }
-    })();
-  }, []);
-
-  // ===== Resolve preview any time thumbPath changes =====
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!thumbPath) { setThumbPreview(''); return; }
-
-      if (isHttp(thumbPath)) {
-        if (!cancelled) setThumbPreview(thumbPath);
-        return;
-      }
-      // treat as storage path (relative inside recipe-thumbs)
-      const clean = thumbPath.replace(new RegExp(`^${DURABLE_BUCKET}/?`, 'i'), '');
-      try {
-        const signed = await supabase.storage.from(DURABLE_BUCKET).createSignedUrl(clean, PREVIEW_TTL);
-        if (!cancelled) {
-          if (signed.error) {
-            dbg('preview signed error=', signed.error.message);
-            const { data } = supabase.storage.from(DURABLE_BUCKET).getPublicUrl(clean);
-            setThumbPreview(data?.publicUrl || '');
-          } else {
-            setThumbPreview(signed.data?.signedUrl || '');
-          }
-        }
-      } catch (e: any) {
-        dbg('preview resolution error', e?.message || e);
-        const { data } = supabase.storage.from(DURABLE_BUCKET).getPublicUrl(clean);
-        if (!cancelled) setThumbPreview(data?.publicUrl || '');
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [thumbPath]);
-
-  // ===== LOAD =====
+  // ===== LOAD existing recipe =====
   useEffect(() => {
     let alive = true;
     (async () => {
       if (!recipeId) return;
       try {
         setLoading(true);
-        dbg('load start recipeId=', recipeId);
-
         const { data: base, error } = await supabase
           .from('recipes')
           .select('id, title, source_url, thumb_path')
           .eq('id', recipeId)
           .single<RecipeBase>();
-        dbg('select recipes error=', error?.message || 'none');
         if (error) throw error;
 
-        const [{ data: ing, error: ingErr }, { data: stp, error: stpErr }] = await Promise.all([
+        // populate fields
+        setTitle(base?.title || '');
+        setUrl(base?.source_url || '');
+
+        const path = base?.thumb_path || '';
+        const resolved = await toDisplayUrl(path || '');
+        if (!alive) return;
+        setThumbUrl(resolved || '');
+
+        // children
+        const [{ data: ing }, { data: stp }] = await Promise.all([
           supabase
             .from('recipe_ingredients')
             .select('raw, pos')
@@ -191,21 +537,11 @@ export default function RecipeEdit() {
             .eq('recipe_id', recipeId)
             .order('position', { ascending: true }) as any,
         ]);
-        dbg('children errs ing=', ingErr?.message || 'none', ' stp=', stpErr?.message || 'none');
-        if (ingErr) throw ingErr;
-
         if (!alive) return;
 
-        setTitle(base?.title || '');
-        setSourceUrl(base?.source_url || '');
-        const tp = base?.thumb_path || '';
-        setThumbPath(tp); // preview resolves via effect
-
-        setThumbUrlInput('');
         setIngredients(((ing as { raw: string }[]) ?? []).map(r => r.raw).filter(Boolean));
         setSteps(((stp as { step_text: string }[]) ?? []).map(r => r.step_text).filter(Boolean));
       } catch (e: any) {
-        dbg('LOAD ERROR', e?.message || e);
         Alert.alert('Load failed', e?.message || 'Try again.');
         nav.goBack();
       } finally {
@@ -215,283 +551,131 @@ export default function RecipeEdit() {
     return () => { alive = false; };
   }, [nav, recipeId]);
 
-  // ===== Fallback: Signed upload directly to recipe-thumbs (used for fallback branches) =====
-  const uploadLocalUriWithSignedUrl = useCallback(async (localUri: string) => {
-    if (!recipeId) throw new Error('Missing recipe id');
-    const { ext, ct } = getExtAndCT(localUri);
-    const storageRel = `${DURABLE_FOLDER}/recipes/${recipeId}/${Date.now()}.${ext}`;
-    dbg('signed upload start', { localUri, storageRel, ct });
+  // ===== Paste / Pick Image (same behaviors as Add) =====
+  const pasteFromClipboard = useCallback(async () => {
+    const text = await Clipboard.getStringAsync();
+    if (text) setUrl(text.trim());
+    else Alert.alert('Clipboard empty', 'Copy a link first, then tap Paste.');
+  }, []);
 
-    const signed = await supabase.storage.from(DURABLE_BUCKET).createSignedUploadUrl(storageRel);
-    dbg('createSignedUploadUrl err=', signed.error?.message || 'none');
-    if (signed.error) throw signed.error;
-    const { token } = signed.data;
-
-    const b64 = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
-    const bytes = base64ToUint8(b64);
-    dbg('read local file bytes=', bytes.byteLength);
-
-    const up = await supabase.storage.from(DURABLE_BUCKET).uploadToSignedUrl(storageRel, token, bytes, { contentType: ct });
-    dbg('uploadToSignedUrl err=', up.error?.message || 'none');
-    if (up.error) throw up.error;
-
-    // cleanup: remove old object if owned
-    const prev = thumbPath;
-
-    const { error: recErr } = await supabase
-      .from('recipes')
-      .update({ thumb_path: storageRel, updated_at: new Date().toISOString() })
-      .eq('id', recipeId);
-    dbg('update recipe err=', recErr?.message || 'none');
-    if (recErr) throw recErr;
-
-    await removeOldThumbIfOwned(prev, storageRel);
-
-    setThumbPath(storageRel); // effect will refresh preview
-    setThumbUrlInput('');
-  }, [recipeId, thumbPath]);
-
-  // ===== Camera/Library — ensureDurableThumb(localUri) with fallback =====
-  const onChooseImage = useCallback(() => {
-    dbg('onChooseImage pressed');
-    Alert.alert(
-      'Select Image',
-      'Choose an image source',
-      [
-        {
-          text: 'Camera',
-          onPress: async () => {
-            dbg('Camera chosen');
-            const perm = await ImagePicker.requestCameraPermissionsAsync();
-            dbg('Camera permission=', perm.granted);
-            if (!perm.granted) { Alert.alert('Permission needed', 'Enable Camera.'); return; }
-            try {
-              const res = await ImagePicker.launchCameraAsync({
-                mediaTypes: getMediaImages(),
-                allowsEditing: true,
-                aspect: [4, 3],
-                quality: 0.9,
-              });
-              dbg('launchCameraAsync result=', j({ canceled: res.canceled, assets: res.assets?.length || 0 }));
-              if (res.canceled || !res.assets?.length) return;
-
-              const localUri = res.assets[0].uri;
-              setImgBusy(true);
-
-              try {
-                if (!ensureDurableThumb) throw new Error('no-durable-helper');
-                dbg('ensureDurableThumb(localUri) start');
-                const out = await ensureDurableThumb(localUri);
-                const val = out.bucketPath || out.publicUrl || localUri;
-                dbg('ensureDurableThumb OK ->', val);
-                const prev = thumbPath;
-                await supabase.from('recipes').update({ thumb_path: val, updated_at: new Date().toISOString() }).eq('id', recipeId);
-                await removeOldThumbIfOwned(prev, val);
-                setThumbPath(val);
-              } catch (e: any) {
-                dbg('ensureDurableThumb(localUri) FAILED:', e?.message || e);
-                // Fallback: signed upload to recipe-thumbs
-                try {
-                  await uploadLocalUriWithSignedUrl(localUri);
-                  Alert.alert('Image updated', 'Photo saved (fallback path).');
-                } catch (e2: any) {
-                  dbg('fallback signed upload FAILED:', e2?.message || e2);
-                  Alert.alert('Upload failed', e2?.message || 'Could not upload photo.');
-                }
-              }
-            } finally {
-              setImgBusy(false);
-            }
-          }
-        },
-        {
-          text: 'Photo Library',
-          onPress: async () => {
-            dbg('Library chosen');
-            const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-            dbg('Library permission=', perm.granted);
-            if (!perm.granted) { Alert.alert('Permission needed', 'Enable Photos.'); return; }
-            try {
-              const res = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: getMediaImages(),
-                quality: 0.9,
-              });
-              dbg('launchImageLibraryAsync result=', j({ canceled: res.canceled, assets: res.assets?.length || 0 }));
-              if (res.canceled || !res.assets?.length) return;
-
-              const localUri = res.assets[0].uri;
-              setImgBusy(true);
-
-              try {
-                if (!ensureDurableThumb) throw new Error('no-durable-helper');
-                dbg('ensureDurableThumb(localUri) start');
-                const out = await ensureDurableThumb(localUri);
-                const val = out.bucketPath || out.publicUrl || localUri;
-                dbg('ensureDurableThumb OK ->', val);
-                const prev = thumbPath;
-                await supabase.from('recipes').update({ thumb_path: val, updated_at: new Date().toISOString() }).eq('id', recipeId);
-                await removeOldThumbIfOwned(prev, val);
-                setThumbPath(val);
-              } catch (e: any) {
-                dbg('ensureDurableThumb(localUri) FAILED:', e?.message || e);
-                // Fallback: signed upload to recipe-thumbs
-                try {
-                  await uploadLocalUriWithSignedUrl(localUri);
-                  Alert.alert('Image updated', 'Image saved (fallback path).');
-                } catch (e2: any) {
-                  dbg('fallback signed upload FAILED:', e2?.message || e2);
-                  Alert.alert('Upload failed', e2?.message || 'Could not upload image.');
-                }
-              }
-            } finally {
-              setImgBusy(false);
-            }
-          }
-        },
-        { text: 'Cancel', style: 'cancel' }
-      ]
-    );
-  }, [recipeId, uploadLocalUriWithSignedUrl, thumbPath]);
-
-  // ===== Server-side: refresh from source page (Edge Function) =====
-  const refreshFromSource = useCallback(async (pageUrl: string) => {
-    dbg('refreshFromSource', pageUrl);
-    const url = (pageUrl || '').trim();
-    if (!isHttp(url)) { Alert.alert('Invalid URL', 'Enter a valid http(s) URL.'); return; }
-
+  const pickImage = useCallback(async () => {
     try {
-      setImgBusy(true);
-      const prev = thumbPath;
-
-      // Prefer your dedicated refresh function (server does og:image/screenshot + upload + DB update)
-      const fx = await supabase.functions.invoke('refresh-recipe-thumb', {
-        body: { recipeId, url },
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Enable Photos permission to pick a thumbnail.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaType,
+        quality: 0.9,
       });
-
-      if (fx.error) {
-        dbg('refresh-recipe-thumb error:', fx.error.message || fx.error);
-        throw new Error(fx.error.message || 'Edge function error');
-      }
-
-      const out: any = fx.data || {};
-      const newPath = out.bucketPath || out.path || '';
-      if (!newPath) throw new Error('No bucketPath returned from refresh function');
-
-      // Ensure DB has the new path (function already updates DB, but do it idempotently here)
-      await supabase.from('recipes').update({ thumb_path: newPath, updated_at: new Date().toISOString() }).eq('id', recipeId);
-
-      await removeOldThumbIfOwned(prev, newPath);
-
-      setThumbPath(newPath);
-      setThumbUrlInput('');
-      Alert.alert('Image updated', 'Fetched from source.');
-    } catch (e: any) {
-      dbg('refreshFromSource FAIL:', e?.message || e);
-      Alert.alert('Fetch failed', e?.message || 'Could not refresh from source.');
-    } finally {
-      setImgBusy(false);
-    }
-  }, [recipeId, thumbPath]);
-
-  // ===== Import URL (page or image) =====
-  const importFromUrl = useCallback(async (url: string) => {
-    const input = (url || '').trim();
-    dbg('importFromUrl', input);
-    if (!isHttp(input)) { Alert.alert('Invalid URL', 'Enter a valid http(s) URL.'); return; }
-
-    try {
+      if (res.canceled || !res.assets?.length) return;
+      const localUri = res.assets[0].uri;
       setImgBusy(true);
-
-      // 1) Direct image URL and durable helper exists → prefer durable pipeline
-      if (isLikelyImageUrl(input) && ensureDurableThumb) {
-        dbg('likely image URL → ensureDurableThumb first');
-        try {
-          const out = await ensureDurableThumb(input);
-          const val = out.bucketPath || out.publicUrl || input;
-          const prev = thumbPath;
-          await supabase.from('recipes').update({ thumb_path: val, updated_at: new Date().toISOString() }).eq('id', recipeId);
-          await removeOldThumbIfOwned(prev, val);
-          setThumbPath(val);
-          setThumbUrlInput('');
-          Alert.alert('Image updated', 'Imported from URL.');
-          return;
-        } catch (e: any) {
-          dbg('ensureDurableThumb(imageURL) failed; will fallback', e?.message || e);
-        }
-      }
-
-      // 2) Page URL → server-side refresh (Edge Fn)
-      if (!isLikelyImageUrl(input)) {
-        await refreshFromSource(input);
-        return;
-      }
-
-      // 3) Final client fallback: for direct image, download → signed upload
-      try {
-        const head = await fetch(input, { method: 'HEAD' });
-        const ct = head.headers.get('content-type') || '';
-        dbg('HEAD status=', head.status, 'ct=', ct);
-        if (!head.ok || !/^image\//i.test(ct)) {
-          throw new Error('That link is a web page. Use Fetch from Source, or paste a direct image URL.');
-        }
-        const tmp = FileSystem.cacheDirectory + `mh_${Date.now()}.bin`;
-        const dl = await FileSystem.downloadAsync(input, tmp);
-        dbg('downloadAsync status=', dl.status, 'uri=', dl.uri);
-        if (dl.status >= 200 && dl.status < 400) {
-          await uploadLocalUriWithSignedUrl(dl.uri);
-          setThumbUrlInput('');
-          Alert.alert('Image updated', 'Imported by downloading image.');
-          return;
-        }
-      } catch (e: any) {
-        dbg('HEAD/download fallback failed', e?.message || e);
-        throw e;
-      }
-
-      // 4) Last attempt: durable helper (sometimes handles redirects)
       if (ensureDurableThumb) {
-        const out = await ensureDurableThumb(input, { allowPage: true });
-        const val = out.bucketPath || out.publicUrl || input;
-        const prev = thumbPath;
-        await supabase.from('recipes').update({ thumb_path: val, updated_at: new Date().toISOString() }).eq('id', recipeId);
-        await removeOldThumbIfOwned(prev, val);
-        setThumbPath(val);
-        setThumbUrlInput('');
-        Alert.alert('Image updated', 'Imported via durable helper.');
-        return;
+        const out = await ensureDurableThumb(localUri);
+        // update DB to stable path if present, and refresh preview
+        const bucketPath = out.bucketPath || '';
+        const preview = out.signedUrl || out.publicUrl || out.uri || localUri;
+        await supabase.from('recipes').update({ thumb_path: bucketPath || preview, updated_at: new Date().toISOString() }).eq('id', recipeId);
+        setThumbUrl(preview);
+      } else {
+        setThumbUrl(localUri);
       }
-
-      throw new Error('No importer handled this URL. Use Fetch from Source or paste a direct image URL.');
     } catch (e: any) {
-      dbg('importFromUrl ERROR', e?.message || e);
-      Alert.alert('Import failed', e?.message || 'Could not fetch image from the URL.');
+      Alert.alert('Image error', e?.message || 'Could not prepare the image.');
     } finally {
       setImgBusy(false);
     }
-  }, [recipeId, uploadLocalUriWithSignedUrl, refreshFromSource, thumbPath]);
+  }, [recipeId]);
 
-  const fetchFromSource = useCallback(async () => {
-    const u = (sourceUrl || '').trim();
-    dbg('fetchFromSource', u);
-    if (!isHttp(u)) { Alert.alert('No Source URL', 'Add a valid Source URL.'); return; }
-    await refreshFromSource(u);
-  }, [refreshFromSource, sourceUrl]);
+  // ===== doEnrich (identical logic to Add; fills fields, sets thumb) =====
+  const doEnrich = useCallback(
+    async (theUrl: string): Promise<{ ok: boolean; hadImage: boolean }> => {
+      if (!looksLikeUrl(theUrl)) {
+        Alert.alert('Invalid link', 'Please paste a valid recipe URL (https://…)');
+        return { ok: false, hadImage: false };
+      }
+      setImgBusy(true);
+      try {
+        let meta: MetaResult = {};
+        if (fetchMeta) meta = await fetchMeta(theUrl);
+        else meta = { title: theUrl.replace(/^https?:\/\//i, '').slice(0, 60) };
 
-  // ===== Save =====
+        const cleanedIngredients = uniq(meta.ingredients || []);
+        const cleanedSteps = uniq(meta.steps || []);
+
+        let finalThumb = '';
+        let hadImage = !!meta.image;
+
+        if (meta.image) {
+          if (ensureDurableThumb) {
+            const { publicUrl, signedUrl, uri, bucketPath } = await ensureDurableThumb(meta.image);
+            finalThumb = signedUrl || publicUrl || uri || meta.image;
+            // Update DB thumb_path immediately to stable bucket path when possible
+            await supabase.from('recipes').update({
+              thumb_path: bucketPath || finalThumb,
+              updated_at: new Date().toISOString(),
+            }).eq('id', recipeId);
+          } else finalThumb = meta.image;
+        } else if (isTikTokUrl(theUrl)) {
+          try {
+            const tikThumb = await fetchTikTokThumbRobust(theUrl);
+            if (tikThumb) {
+              hadImage = true;
+              if (ensureDurableThumb) {
+                const { publicUrl, signedUrl, uri, bucketPath } = await ensureDurableThumb(tikThumb);
+                finalThumb = signedUrl || publicUrl || uri || tikThumb;
+                await supabase.from('recipes').update({
+                  thumb_path: bucketPath || finalThumb,
+                  updated_at: new Date().toISOString(),
+                }).eq('id', recipeId);
+              } else finalThumb = tikThumb;
+            }
+          } catch {}
+        }
+
+        // Fill UI fields (user can tweak before Save)
+        setTitle(meta.title || title || '');
+        setUrl(theUrl);
+        if (finalThumb) setThumbUrl(finalThumb);
+        if (cleanedIngredients.length) setIngredients(cleanedIngredients);
+        if (cleanedSteps.length) setSteps(cleanedSteps);
+
+        return { ok: true, hadImage };
+      } catch {
+        Alert.alert('Enrich failed', 'Could not pull details from the link.');
+        return { ok: false, hadImage: false };
+      } finally {
+        setImgBusy(false);
+      }
+    },
+    [recipeId, title]
+  );
+
+  // ===== Import URL button (same as Add's Enrich button behavior) =====
+  const onEnrichPress = useCallback(async () => {
+    const res = await doEnrich(url);
+    if (res?.ok && !res.hadImage) setAutoSnapVisible(true);
+  }, [doEnrich, url]);
+
+  // ===== Save updates (title/source_url/ingredients/steps) =====
   const save = useCallback(async () => {
     if (!title.trim()) { Alert.alert('Missing title', 'Please add a recipe title.'); return; }
     setSaving(true);
     try {
+      // Base fields
       const { error: upErr } = await supabase
         .from('recipes')
         .update({
           title: title.trim(),
-          source_url: sourceUrl.trim() || null,
+          source_url: looksLikeUrl(url) ? url.trim() : null,
           updated_at: new Date().toISOString(),
         })
         .eq('id', recipeId);
       if (upErr) throw upErr;
 
+      // Replace children
       const ingRows = (ingredients || []).map(s => s?.trim()).filter(Boolean).map((raw, idx) => ({ recipe_id: recipeId, raw, pos: idx }));
       const { error: delIngErr } = await supabase.from('recipe_ingredients').delete().eq('recipe_id', recipeId);
       if (delIngErr) throw delIngErr;
@@ -515,13 +699,14 @@ export default function RecipeEdit() {
     } finally {
       setSaving(false);
     }
-  }, [ingredients, nav, recipeId, sourceUrl, steps, title]);
+  }, [ingredients, nav, recipeId, steps, title, url]);
 
+  const canEnrich = useMemo(() => looksLikeUrl(url) && !imgBusy, [url, imgBusy]);
   const canSave = useMemo(() => !!title.trim() && !saving, [saving, title]);
 
   if (loading) {
     return (
-      <View style={[styles.center, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}>
+      <View style={[styles.center, { backgroundColor: colors.bg }]}>
         <ActivityIndicator />
       </View>
     );
@@ -529,121 +714,108 @@ export default function RecipeEdit() {
 
   return (
     <SafeAreaView
-      style={{ flex: 1, backgroundColor: isDark ? '#0B0F19' : '#F9FAFB', paddingTop: Math.max(insets.top, 8) }}
+      style={{ flex: 1, backgroundColor: colors.bg, paddingTop: Math.max(insets.top, 8) }}
       edges={['top', 'left', 'right']}
     >
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#F9FAFB' }]}
+        style={[styles.flex, { backgroundColor: colors.bg }]}
       >
         <ScrollView contentContainerStyle={[styles.container, { paddingBottom: 32 }]}>
-          <Text style={[styles.h1, { color: isDark ? '#E5E7EB' : '#111827' }]}>Edit Recipe</Text>
+          <Text style={[styles.h1, { color: colors.text }]}>Edit Recipe</Text>
 
-          {/* Thumbnail */}
-          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Thumbnail</Text>
-          <View style={[styles.thumbWrap, { borderColor: isDark ? '#1F2937' : '#E5E7EB', backgroundColor: isDark ? '#0F172A' : '#FFFFFF' }]}>
-            {thumbPreview ? (
-              <Image source={{ uri: thumbPreview }} style={styles.thumbImg} />
-            ) : (
-              <View style={styles.thumbPlaceholder}><Text style={{ color: isDark ? '#6B7280' : '#9CA3AF' }}>No image yet</Text></View>
-            )}
-          </View>
+          {/* URL (same as Add) */}
+          <Text style={styles.label}>Recipe URL</Text>
+          <TextInput
+            {...getThemedInputProps()}
+            style={[getThemedInputProps().style, styles.input]}
+            placeholder="Paste or edit the recipe link"
+            value={url}
+            onChangeText={setUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+          />
 
-          <View style={styles.thumbActionsRow}>
-            <Pressable onPress={onChooseImage} style={[styles.smallBtn, styles.smallBtnPrimary]} disabled={imgBusy}>
-              {imgBusy ? <ActivityIndicator /> : <Text style={styles.smallBtnText}>Choose Image</Text>}
+          {/* Actions (Paste / Enrich / Pick Image) */}
+          <View style={styles.actionsRow}>
+            <Pressable style={styles.btnNeutral} onPress={pasteFromClipboard}>
+              <Text style={styles.btnNeutralText}>Paste</Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.btnNeutral, !canEnrich && styles.btnDisabled]}
+              onPress={onEnrichPress}
+              disabled={!canEnrich}
+            >
+              {imgBusy ? <ActivityIndicator size="small" color={colors.tint} /> : <Text style={styles.btnNeutralText}>Enrich</Text>}
+            </Pressable>
+
+            <Pressable style={styles.btnNeutral} onPress={pickImage} disabled={imgBusy}>
+              <Text style={styles.btnNeutralText}>Pick Image</Text>
             </Pressable>
           </View>
 
-          {/* Import URL + Fetch from Source */}
-          <TextInput
-            style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-            value={thumbUrlInput}
-            onChangeText={setThumbUrlInput}
-            placeholder="Paste image URL or page (https://...)"
-            autoCapitalize="none"
-            keyboardType="url"
-            placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-          />
-          <Pressable onPress={() => importFromUrl(thumbUrlInput)} style={[styles.smallBtn, styles.smallBtnGhost]} disabled={imgBusy || !thumbUrlInput.trim()}>
-            <Text style={[styles.smallBtnText, { color: isDark ? '#E5E7EB' : '#111827' }]}>Import From URL</Text>
-          </Pressable>
-
-          <Pressable onPress={() => refreshFromSource(sourceUrl)} style={[styles.smallBtn, styles.smallBtnGhost]} disabled={imgBusy || !sourceUrl.trim()}>
-            <Text style={[styles.smallBtnText, { color: isDark ? '#E5E7EB' : '#111827' }]}>Fetch from Source URL</Text>
-          </Pressable>
-
           {/* Title */}
-          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Title</Text>
+          <Text style={styles.label}>Title</Text>
           <TextInput
-            style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+            {...getThemedInputProps()}
+            style={[getThemedInputProps().style, styles.input]}
+            placeholder="Recipe title"
             value={title}
             onChangeText={setTitle}
-            placeholder="Recipe title"
-            placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
           />
 
-          {/* Source URL */}
-          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Source URL</Text>
-          <TextInput
-            style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-            value={sourceUrl}
-            onChangeText={setSourceUrl}
-            placeholder="https://example.com"
-            autoCapitalize="none"
-            keyboardType="url"
-            placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-          />
+          {/* Thumbnail (tap to enlarge) */}
+          {thumbUrl ? <Thumb uri={thumbUrl} onPress={() => setThumbModal(true)} styles={styles} /> : null}
 
           {/* Ingredients */}
-          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Ingredients</Text>
-          {(!ingredients.length ? [''] : ingredients).map((v, i) => (
-            <TextInput
-              key={`ing-${i}`}
-              style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-              value={v}
-              onChangeText={(t) => {
-                const copy = ingredients.slice();
-                if (i === copy.length) copy.push('');
-                copy[i] = t;
-                const trimmed = copy.filter((x, idx) =>
-                  (idx === copy.length - 1 ? true : x.trim() !== '' || idx < copy.length - 1)
-                );
-                setIngredients(trimmed);
-              }}
-              placeholder={i === 0 ? '• 1/4 tsp onion powder' : '• add another'}
-              multiline
-              placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-            />
-          ))}
-          <Pressable onPress={() => setIngredients([...ingredients, ''])} style={styles.addLine}>
-            <Text style={styles.addLineText}>+ Add ingredient</Text>
-          </Pressable>
+          <Text style={styles.label}>Ingredients</Text>
+          <View style={styles.multiBox}>
+            {(ingredients.length ? ingredients : ['']).map((val, idx) => (
+              <TextInput
+                key={`ing-${idx}`}
+                {...getThemedInputProps({ variant: 'ghost' })}
+                style={[getThemedInputProps({ variant: 'ghost' }).style, styles.multiInput]}
+                placeholder={idx === 0 ? '• e.g., 1/4 tsp onion powder' : '• add another'}
+                value={val}
+                onChangeText={(t) => {
+                  const copy = ingredients.slice();
+                  if (idx === copy.length) copy.push('');
+                  copy[idx] = t;
+                  setIngredients(copy.filter((x, i) => (i === copy.length - 1 ? true : x !== '' || i < copy.length - 1)));
+                }}
+                multiline
+              />
+            ))}
+            <Pressable onPress={() => setIngredients([...ingredients, ''])} style={styles.addLine}>
+              <Text style={styles.addLineText}>+ Add ingredient</Text>
+            </Pressable>
+          </View>
 
           {/* Steps */}
-          <Text style={[styles.label, { color: isDark ? '#9CA3AF' : '#6B7280' }]}>Steps</Text>
-          {(!steps.length ? [''] : steps).map((v, i) => (
-            <TextInput
-              key={`step-${i}`}
-              style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
-              value={v}
-              onChangeText={(t) => {
-                const copy = steps.slice();
-                if (i === copy.length) copy.push('');
-                copy[i] = t;
-                const trimmed = copy.filter((x, idx) =>
-                  (idx === copy.length - 1 ? true : x.trim() !== '' || idx < copy.length - 1)
-                );
-                setSteps(trimmed);
-              }}
-              placeholder={i === 0 ? '1) Do the thing' : `${i + 1}) add another`}
-              multiline
-              placeholderTextColor={isDark ? '#6B7280' : '#9CA3AF'}
-            />
-          ))}
-          <Pressable onPress={() => setSteps([...steps, ''])} style={styles.addLine}>
-            <Text style={styles.addLineText}>+ Add step</Text>
-          </Pressable>
+          <Text style={styles.label}>Steps</Text>
+          <View style={styles.multiBox}>
+            {(steps.length ? steps : ['']).map((val, idx) => (
+              <TextInput
+                key={`step-${idx}`}
+                {...getThemedInputProps({ variant: 'ghost' })}
+                style={[getThemedInputProps({ variant: 'ghost' }).style, styles.multiInput]}
+                placeholder={idx === 0 ? '1) Describe a step' : `${idx + 1}) Add another step`}
+                value={val}
+                onChangeText={(t) => {
+                  const copy = steps.slice();
+                  if (idx === copy.length) copy.push('');
+                  copy[idx] = t;
+                  setSteps(copy.filter((x, i) => (i === copy.length - 1 ? true : x !== '' || i < copy.length - 1)));
+                }}
+                multiline
+              />
+            ))}
+            <Pressable onPress={() => setSteps([...steps, ''])} style={styles.addLine}>
+              <Text style={styles.addLineText}>+ Add step</Text>
+            </Pressable>
+          </View>
 
           {/* Save */}
           <Pressable style={[styles.saveBtn, !canSave && styles.btnDisabled]} onPress={save} disabled={!canSave}>
@@ -652,36 +824,138 @@ export default function RecipeEdit() {
 
           <View style={{ height: 40 }} />
         </ScrollView>
+
+        {/* AutoSnap modal (EXACT) */}
+        <AutoSnapModal
+          visible={autoSnapVisible}
+          url={url}
+          colors={colors}
+          styles={styles}
+          onDone={async (durableUrl) => {
+            // durableUrl may be a signed url or tmpfile; attempt to durable-ize & update DB path
+            try {
+              if (ensureDurableThumb) {
+                const out = await ensureDurableThumb(durableUrl);
+                const preview = out.signedUrl || out.publicUrl || out.uri || durableUrl;
+                await supabase.from('recipes').update({
+                  thumb_path: out.bucketPath || preview,
+                  updated_at: new Date().toISOString(),
+                }).eq('id', recipeId);
+                setThumbUrl(preview);
+              } else {
+                setThumbUrl(durableUrl);
+              }
+            } catch {
+              setThumbUrl(durableUrl);
+            }
+            setAutoSnapVisible(false);
+          }}
+          onCancel={() => setAutoSnapVisible(false)}
+        />
+
+        {/* Fullscreen thumbnail viewer */}
+        <Modal visible={thumbModal} transparent animationType="fade" onRequestClose={() => setThumbModal(false)}>
+          <Pressable style={styles.thumbBackdrop} onPress={() => setThumbModal(false)}>
+            {thumbUrl ? (
+              <Image
+                source={{ uri: isSupabaseSigned(thumbUrl) ? thumbUrl : bustIfSafe(thumbUrl) }}
+                style={styles.thumbFullscreen}
+                resizeMode="contain"
+                fadeDuration={0}
+              />
+            ) : null}
+          </Pressable>
+        </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  container: { padding: 16 },
-  h1: { fontSize: 22, fontWeight: '800', marginBottom: 12 },
-  label: { fontSize: 13, marginTop: 12, marginBottom: 6 },
-  input: { borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, marginBottom: 8 },
-  inputDark: { backgroundColor: '#111827', borderColor: '#1F2937', color: '#E5E7EB' },
-  inputLight: { backgroundColor: '#FFFFFF', borderColor: '#E5E7EB', color: '#111827' },
+// ====== Styles (themed; copied from Add, plus a few) ======
+const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
+  StyleSheet.create({
+    flex: { flex: 1, backgroundColor: c.bg },
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+    container: { padding: 16 },
+    h1: { color: c.text, fontSize: 22, fontWeight: '700', marginBottom: 12 },
+    label: { color: c.mutedText, marginTop: 16, marginBottom: 6, fontSize: 13 },
 
-  thumbWrap: { width: '100%', height: 210, borderWidth: 1, borderRadius: 12, overflow: 'hidden', marginBottom: 8 },
-  thumbImg: { width: '100%', height: '100%', resizeMode: 'cover' },
-  thumbPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+    input: { borderRadius: 10 },
 
-  thumbActionsRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+    actionsRow: {
+      flexDirection: 'row',
+      gap: 10,
+      alignItems: 'center',
+      marginTop: 10,
+      flexWrap: 'wrap',
+    },
 
-  smallBtn: { paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  smallBtnPrimary: { backgroundColor: '#4F46E5' },
-  smallBtnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#E5E7EB', marginTop: 4, alignSelf: 'flex-start' },
-  smallBtnText: { color: 'white', fontWeight: '600' },
+    btnNeutral: {
+      backgroundColor: c.cardBg,
+      borderColor: c.border,
+      borderWidth: 1,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      borderRadius: 10,
+    },
+    btnNeutralText: { color: c.text, fontWeight: '600' },
 
-  addLine: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 6, marginBottom: 4 },
-  addLineText: { color: '#93C5FD' },
+    btnDisabled: { opacity: 0.6 },
 
-  saveBtn: { backgroundColor: '#4F46E5', paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 16 },
-  saveBtnText: { color: 'white', fontWeight: '700' },
-  btnDisabled: { opacity: 0.6 },
-});
+    thumb: { width: '100%', height: 180 },
+
+    thumbBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.9)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16,
+    },
+    thumbFullscreen: { width: '100%', height: '80%', borderRadius: 12, backgroundColor: '#111' },
+
+    multiBox: {
+      backgroundColor: c.cardBg,
+      borderColor: c.border,
+      borderWidth: 1,
+      borderRadius: 12,
+      padding: 8,
+      marginTop: 8,
+    },
+    multiInput: {
+      borderRadius: 10,
+      marginBottom: 8,
+      minHeight: 44,
+    },
+
+    addLine: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 6 },
+    addLineText: { color: c.tint },
+
+    saveBtn: {
+      backgroundColor: c.tint,
+      paddingVertical: 12,
+      borderRadius: 12,
+      alignItems: 'center',
+      shadowColor: c.shadow,
+      marginTop: 18,
+    },
+    saveBtnText: { color: '#ffffff', fontWeight: '700' },
+
+    modalScrim: {
+      flex: 1,
+      backgroundColor: '#0009',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16,
+    },
+    modalCard: {
+      width: '100%',
+      maxWidth: 600,
+      borderRadius: 16,
+      padding: 12,
+      backgroundColor: c.cardBg,
+      borderWidth: 1,
+      borderColor: c.border,
+      gap: 10,
+    },
+    modalTitle: { fontSize: 18, color: c.text, fontWeight: '700', marginBottom: 6 },
+  });

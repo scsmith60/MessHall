@@ -2,7 +2,7 @@
 // MessHall — Home feed with avatar→Profile in header (long‑press avatar = Sign out)
 // + SafeArea header spacing
 // + Tap-to-enlarge recipe thumbnails
-// + Uses ThumbImage (path → signed URL) for recipe thumbs
+// + FIX: no hooks inside renderItem; SignedThumb component resolves storage paths to signed URLs
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -14,14 +14,13 @@ import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context'
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
-import ThumbImage from '../components/ThumbImage'; // ⟵ NEW
 
 type RecipeRow = {
   id: string;
   user_id: string;
   title: string | null;
   source_url: string | null;
-  thumb_path: string | null; // storage path or URL
+  thumb_path: string | null;
   ingredients: string[] | null;
   steps: string[] | null;
   created_at?: string | null;
@@ -29,6 +28,61 @@ type RecipeRow = {
 
 const PAGE_SIZE = 20;
 const AVATAR_SIZE = 36;
+
+// Storage helpers
+const BUCKET = 'recipe-thumbs';
+const PREVIEW_TTL = 60 * 60; // 1h
+const isHttp = (s?: string) => !!s && /^https?:\/\//i.test(s!);
+
+async function toDisplayUrl(pathOrUrl?: string | null): Promise<string> {
+  if (!pathOrUrl) return '';
+  if (isHttp(pathOrUrl)) return pathOrUrl;
+  const clean = pathOrUrl.replace(new RegExp(`^${BUCKET}/?`, 'i'), '');
+  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(clean, PREVIEW_TTL);
+  if (error) {
+    return supabase.storage.from(BUCKET).getPublicUrl(clean).data?.publicUrl || '';
+  }
+  return data?.signedUrl || '';
+}
+
+// Child component to avoid hooks-in-renderItem
+function SignedThumb({
+  pathOrUrl,
+  style,
+  onPress,
+  onError,
+}: {
+  pathOrUrl?: string | null;
+  style: any;
+  onPress?: () => void;
+  onError?: (e: any) => void;
+}) {
+  const [url, setUrl] = React.useState('');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const u = await toDisplayUrl(pathOrUrl || '');
+      if (!cancelled) setUrl(u);
+    })();
+    return () => { cancelled = true; };
+  }, [pathOrUrl]);
+
+  return (
+    <Pressable style={style} onPress={onPress} disabled={!onPress}>
+      {url ? (
+        <Image
+          source={{ uri: url }}
+          style={{ width: '100%', height: '100%' }}
+          resizeMode="cover"
+          onError={onError}
+        />
+      ) : (
+        <View style={{ width: '100%', height: '100%', backgroundColor: '#111827' }} />
+      )}
+    </Pressable>
+  );
+}
 
 export default function Home() {
   const nav = useNavigation<any>();
@@ -48,10 +102,22 @@ export default function Home() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState('');
 
-  // fullscreen thumb (stores the same path the DB has)
-  const [selectedThumb, setSelectedThumb] = useState<string | null>(null);
+  // fullscreen thumb
+  const [selectedThumbPath, setSelectedThumbPath] = useState<string | null>(null);
+  const [selectedThumbUrl, setSelectedThumbUrl] = useState<string>('');
 
   const mountedRef = useRef(true);
+
+  // Resolve modal image (handles storage path → signed URL)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!selectedThumbPath) { setSelectedThumbUrl(''); return; }
+      const u = await toDisplayUrl(selectedThumbPath);
+      if (!cancelled) setSelectedThumbUrl(u);
+    })();
+    return () => { cancelled = true; };
+  }, [selectedThumbPath]);
 
   // ------- Auth bootstrap -------
   useEffect(() => {
@@ -196,20 +262,14 @@ export default function Home() {
     return (
       <View style={[styles.card, isDark ? styles.cardDark : styles.cardLight]}>
         {/* Thumbnail: press to enlarge */}
-        <Pressable
+        <SignedThumb
+          pathOrUrl={item.thumb_path}
           style={styles.thumbWrap}
-          onPress={() => item.thumb_path && setSelectedThumb(item.thumb_path)}
-        >
-          {item.thumb_path ? (
-            <ThumbImage
-              path={item.thumb_path}
-              style={styles.thumb}
-              debugKey={item.id} // DEBUG aid
-            />
-          ) : (
-            <View style={[styles.thumb, styles.thumbFallback]} />
-          )}
-        </Pressable>
+          onPress={() => item.thumb_path && setSelectedThumbPath(item.thumb_path)}
+          onError={(e) => {
+            console.warn('[home:thumb:error]', item.id, e?.nativeEvent?.error);
+          }}
+        />
 
         {/* Meta: press to open recipe */}
         <Pressable style={styles.meta} onPress={() => openRecipe(item.id)}>
@@ -302,14 +362,13 @@ export default function Home() {
       </Pressable>
 
       {/* Fullscreen thumbnail modal */}
-      <Modal visible={!!selectedThumb} transparent animationType="fade">
-        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedThumb(null)}>
-          {selectedThumb ? (
-            <ThumbImage
-              path={selectedThumb}
+      <Modal visible={!!selectedThumbPath} transparent animationType="fade" onRequestClose={() => setSelectedThumbPath(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setSelectedThumbPath(null)}>
+          {selectedThumbUrl ? (
+            <Image
+              source={{ uri: selectedThumbUrl }}
               style={styles.fullscreenImage}
               resizeMode="contain"
-              debugKey="home-modal"
             />
           ) : null}
         </Pressable>
@@ -358,9 +417,6 @@ const styles = StyleSheet.create({
   cardLight: { backgroundColor: '#FFFFFF', borderColor: 'rgba(0,0,0,0.05)' },
 
   thumbWrap: { width: 100, height: 82, backgroundColor: '#0F172A' },
-  thumb: { width: '100%', height: '100%' },
-  thumbFallback: { backgroundColor: '#111827' },
-
   meta: { flex: 1, padding: 10, justifyContent: 'center' },
   title: { fontSize: 16, fontWeight: '700', marginBottom: 4 },
   sub: { fontSize: 12 },

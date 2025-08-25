@@ -1,8 +1,7 @@
 // screens/Recipe.tsx
 // MessHall — Recipe detail (normalized reads)
-// - Loads base recipe + related rows
-// - Resolves recipes.thumb_path (bucket path or URL) → signed URL for all images
-//   (parity with Add/Edit/Home; no need to re-add a recipe)
+// - Loads base recipe + related rows from recipe_ingredients & recipe_steps (via separate queries)
+// - Resolves thumb_path value (URL or storage path) to a displayable URL
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -13,33 +12,46 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
-import { resolveThumbUrl } from '../lib/thumb';     // ⟵ NEW
-import ThumbImage from '../components/ThumbImage';  // ⟵ NEW
 
 type RecipeRoute = RouteProp<RootStackParamList, 'Recipe'>;
 
+// DB row shapes
 type RecipeBaseRow = {
   id: string;
   user_id: string;
   title: string | null;
   source_url: string | null;
-  thumb_path: string | null; // storage path or URL
+  thumb_url: string | null; // aliased from thumb_path
 };
 
 type IngredientRow = { raw: string; pos: number | null };
 type StepRow = { step_text: string; position: number | null };
 
+// UI shape
 type RecipeForUI = {
   id: string;
   user_id: string;
   title: string | null;
   source_url: string | null;
-  thumb_path: string | null;
+  thumb_url: string | null;
   ingredients: string[];
   steps: string[];
 };
 
-const dbg = (...a: any[]) => console.log('DBG[recipe]:', ...a); // DEBUG (comment later)
+const BUCKET = 'recipe-thumbs';
+const PREVIEW_TTL = 60 * 60; // 1h
+const isHttp = (s?: string) => !!s && /^https?:\/\//i.test(s!);
+
+async function toDisplayUrl(pathOrUrl?: string | null): Promise<string> {
+  if (!pathOrUrl) return '';
+  if (isHttp(pathOrUrl)) return pathOrUrl;
+  const clean = pathOrUrl.replace(new RegExp(`^${BUCKET}/?`, 'i'), '');
+  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(clean, PREVIEW_TTL);
+  if (error) {
+    return supabase.storage.from(BUCKET).getPublicUrl(clean).data?.publicUrl || '';
+  }
+  return data?.signedUrl || '';
+}
 
 export default function Recipe() {
   const route = useRoute<RecipeRoute>();
@@ -52,21 +64,21 @@ export default function Recipe() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [coverModal, setCoverModal] = useState(false);
-
-  // Signed URL for blurred hero background (we resolve once so we can blur it)
-  const [heroUri, setHeroUri] = useState<string>('');
+  const [resolvedHero, setResolvedHero] = useState<string>('');
 
   const fetchRecipe = useCallback(async () => {
     if (!recipeId) return;
     setLoading(true);
     try {
+      // 1) Base recipe (alias thumb_path -> thumb_url)
       const { data: base, error: baseErr } = await supabase
         .from('recipes')
-        .select('id, user_id, title, source_url, thumb_path')
+        .select('id, user_id, title, source_url, thumb_url:thumb_path')
         .eq('id', recipeId)
         .single<RecipeBaseRow>();
       if (baseErr) throw baseErr;
 
+      // 2) Children (no nested select required)
       const [{ data: ing, error: ingErr }, { data: stp, error: stpErr }] = await Promise.all([
         supabase
           .from('recipe_ingredients')
@@ -80,25 +92,20 @@ export default function Recipe() {
           .order('position', { ascending: true }) as any,
       ]);
 
-      if (ingErr) throw ingErr;
-      // stpErr can be ignored if table doesn’t exist
-
       const ingredients = (ing as IngredientRow[] | null | undefined)?.map(r => r.raw).filter(Boolean) ?? [];
       const steps = (stp as StepRow[] | null | undefined)?.map(r => r.step_text).filter(Boolean) ?? [];
 
-      const ui: RecipeForUI = {
+      setData({
         id: base.id,
         user_id: base.user_id,
         title: base.title,
         source_url: base.source_url,
-        thumb_path: base.thumb_path || null,
+        thumb_url: base.thumb_url,
         ingredients,
         steps,
-      };
-      setData(ui);
-      dbg('loaded thumb_path=', ui.thumb_path);
-    } catch (e: any) {
-      console.warn('[recipe:load]', e?.message || e);
+      });
+    } catch (e) {
+      console.warn('[recipe:load]', e);
     } finally {
       setLoading(false);
     }
@@ -106,23 +113,15 @@ export default function Recipe() {
 
   useEffect(() => { fetchRecipe(); }, [fetchRecipe]);
 
-  // Resolve hero background whenever thumb_path changes
+  // Resolve hero image (handles storage path → signed URL)
   useEffect(() => {
-    let alive = true;
+    let cancelled = false;
     (async () => {
-      const p = data?.thumb_path;
-      if (!p) { if (alive) setHeroUri(''); return; }
-      try {
-        const url = await resolveThumbUrl(p);
-        if (alive) setHeroUri(url);
-        dbg('hero resolved →', url ? 'ok' : 'empty');
-      } catch (e: any) {
-        console.log('[recipe:hero:resolve]', e?.message || e);
-        if (alive) setHeroUri('');
-      }
+      const u = await toDisplayUrl(data?.thumb_url);
+      if (!cancelled) setResolvedHero(u);
     })();
-    return () => { alive = false; };
-  }, [data?.thumb_path]);
+    return () => { cancelled = true; };
+  }, [data?.thumb_url]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -143,8 +142,8 @@ export default function Recipe() {
     <SafeAreaView style={[styles.flex, { backgroundColor: isDark ? '#0B0F19' : '#FFFFFF' }]} edges={['top','left','right']}>
       {/* BG */}
       <View style={styles.heroWrap} pointerEvents="none">
-        {heroUri ? (
-          <Image source={{ uri: heroUri }} style={styles.heroImage} resizeMode="cover"
+        {resolvedHero ? (
+          <Image source={{ uri: resolvedHero }} style={styles.heroImage} resizeMode="cover"
                  blurRadius={Platform.OS === 'android' ? 15 : 20}/>
         ) : (<View style={[styles.heroFallback, { backgroundColor: isDark ? '#0B0F19' : '#F3F4F6' }]} />)}
         <View style={styles.heroDim} />
@@ -180,10 +179,9 @@ export default function Recipe() {
           {heroTitle}
         </Text>
 
-        {/* Cover image (resolves storage path → URL) */}
-        {data?.thumb_path ? (
+        {resolvedHero ? (
           <Pressable style={styles.coverCard} onPress={() => setCoverModal(true)}>
-            <ThumbImage path={data.thumb_path} style={styles.cover} resizeMode="cover" debugKey="recipe-cover" />
+            <Image source={{ uri: resolvedHero }} style={styles.cover} resizeMode="cover" />
           </Pressable>
         ) : null}
 
@@ -221,8 +219,8 @@ export default function Recipe() {
       {/* Full-screen cover */}
       <Modal visible={coverModal} transparent animationType="fade" onRequestClose={() => setCoverModal(false)}>
         <Pressable style={styles.coverBackdrop} onPress={() => setCoverModal(false)}>
-          {data?.thumb_path ? (
-            <ThumbImage path={data.thumb_path} style={styles.coverFullscreen} resizeMode="contain" debugKey="recipe-modal" />
+          {resolvedHero ? (
+            <Image source={{ uri: resolvedHero }} style={styles.coverFullscreen} resizeMode="contain" />
           ) : null}
         </Pressable>
       </Modal>
