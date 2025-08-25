@@ -1,11 +1,9 @@
 // screens/Add.tsx
-// MessHall — Add screen (themed, TikTok auto-snap, thumbnail debugger)
-// - Fixes Android black-image issue (no overflow clipping; radius on Image)
-// - Adds DEBUG_THUMBS panel + logs to inspect why preview fails
+// MessHall — Add screen (themed, TikTok auto-snap)
 // - Prefetch + getSize preflight; HEAD/Range check for signed URL reachability
 // - Auto WebView screenshot fallback + TikTok robust thumb
 // - SafeArea padding + tap-to-enlarge thumbnail
-// - *** Title extraction hardening: prefers JSON-LD/OG/Twitter/TikTok SIGI_STATE, cleans site slogans, avoids numeric slugs
+// - Title extraction debugger (shows every signal used to compute title)
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -32,10 +30,13 @@ import { supabase } from '../lib/supabaseClient';
 import { useThemeController } from '../lib/theme';
 import type { RootStackParamList } from '../App';
 
-// ===== DEBUG SWITCH =====
-const DEBUG_THUMBS = true;
+// ===== DEBUG SWITCHES =====
+// Turn OFF the old thumbnail debugger UI
+const DEBUG_THUMBS = false;
+// Turn ON the new title debugger UI
+const DEBUG_TITLE = true;
 
-/** --- Title extraction helpers (inline so this file "just works") --- */
+/** --- Title extraction helpers --- */
 const BAD_TITLES = new Set<string>([
   'TikTok – Make Your Day',
   'TikTok - Make Your Day',
@@ -49,32 +50,10 @@ const BAD_TITLES = new Set<string>([
 function cleanTitle(t?: string) {
   if (!t) return '';
   let out = t.trim();
-  // strip " | Site" / " - Site" style suffixes
   out = out.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food Network|NYT Cooking).*/i, '');
-  // collapse whitespace
-  return out.replace(/\s{2,}/g, ' ').trim();
-}
-
-function isMostlyDigitsOrJunk(s: string) {
-  const trimmed = s.trim();
-  if (!trimmed) return true;
-  if (/^\d+$/.test(trimmed)) return true;                   // pure digits
-  if (/^[0-9_-]+$/.test(trimmed)) return true;              // digits/underscores/dashes
-  if (/^[0-9a-f]{16,}$/i.test(trimmed)) return true;        // hex-ish IDs
-  const letters = (trimmed.match(/[A-Za-z]/g) || []).length;
-  const ratio = letters / trimmed.length;
-  if (ratio < 0.25) return true;                            // not enough letters
-  return false;
-}
-
-function isBadTitle(t?: string) {
-  if (!t) return true;
-  const c = cleanTitle(t);
-  if (!c) return true;
-  if (BAD_TITLES.has(c)) return true;
-  if (c.length < 3) return true;
-  if (isMostlyDigitsOrJunk(c)) return true;
-  return false;
+  out = out.replace(/\s{2,}/g, ' ').trim();
+  out = out.replace(/[–—-]\s*$/,'').trim();
+  return out;
 }
 
 function fallbackTitleFromUrl(u: string) {
@@ -82,8 +61,7 @@ function fallbackTitleFromUrl(u: string) {
     const { pathname } = new URL(u);
     const last = pathname.split('/').filter(Boolean).pop() || '';
     const cleaned = decodeURIComponent(last.replace(/[-_]+/g, ' ')).trim();
-    if (!cleaned || isMostlyDigitsOrJunk(cleaned)) return ''; // refuse numeric/ID slugs
-    return cleaned.replace(/\b\w/g, c => c.toUpperCase());
+    return cleaned ? cleaned.replace(/\b\w/g, c => c.toUpperCase()) : '';
   } catch { return ''; }
 }
 
@@ -132,13 +110,23 @@ function extractFromJSONLD(html: string) {
   return '';
 }
 
+function cleanCaptionToTitle(desc: string) {
+  if (!desc) return '';
+  let s = desc.replace(/\r/g, '').split('\n').filter(Boolean)[0] || desc;
+  s = s.split(/ingredients\s*:/i)[0] || s;
+  s = s.replace(/[#@][\w_]+/g, '').replace(/https?:\/\/\S+/g, '').trim();
+  s = cleanTitle(s);
+  if (s.length > 120) s = s.slice(0, 117).trim() + '…';
+  return s;
+}
+
 function extractDescCandidates(html: string) {
   const descs = [
     pickMetaContent(html, 'og:description'),
     pickMetaContent(html, 'twitter:description'),
   ].filter(Boolean);
-  const best = descs.find(d => !isBadTitle(d)) || '';
-  return cleanTitle(best);
+  const best = descs.find(Boolean) || '';
+  return cleanCaptionToTitle(best);
 }
 
 function extractFromTikTokSIGI(html: string) {
@@ -149,48 +137,72 @@ function extractFromTikTokSIGI(html: string) {
   if (itemModule && typeof itemModule === 'object') {
     const first: any = Object.values(itemModule)[0];
     const desc = (first?.desc || '').toString().trim();
-    if (!isBadTitle(desc)) return desc; // prefer non-junk caption
+    const cleaned = cleanCaptionToTitle(desc);
+    if (cleaned) return cleaned;
   }
+  const seo = json?.SEOState || json?.ShareMeta || json?.app || {};
+  const shareTitle = (seo?.metaParams?.title || seo?.shareMeta?.title || '').toString().trim();
+  if (shareTitle) return cleanCaptionToTitle(shareTitle);
   return '';
 }
 
-async function fetchAndExtractTitle(rawUrl: string): Promise<{ title?: string; canonical?: string }> {
+/** Title debugger payload returned by fetchAndExtractTitle */
+type TitleDebug = {
+  finalUrl?: string;
+  canonical?: string;
+  metaTitle?: string;
+  jsonLdName?: string;
+  ogTitle?: string;
+  twitterTitle?: string;
+  titleTag?: string;
+  tiktokCaption?: string;
+  metaDescriptionTitle?: string;
+  slugTitle?: string;
+  picked?: string;
+};
+
+async function fetchAndExtractTitle(rawUrl: string): Promise<{ title?: string; canonical?: string; debug: TitleDebug }> {
+  const debug: TitleDebug = {};
   try {
     const res = await fetch(rawUrl, { redirect: 'follow' });
     const finalUrl = (res as any)?.url || rawUrl;
     const html = await res.text();
+    debug.finalUrl = finalUrl;
 
     const canonical = pickLinkRel(html, 'canonical') || pickMetaContent(html, 'og:url') || finalUrl;
+    debug.canonical = canonical;
 
-    // Try title sources
+    debug.jsonLdName = extractFromJSONLD(html);
+    debug.ogTitle = pickMetaContent(html, 'og:title');
+    debug.twitterTitle = pickMetaContent(html, 'twitter:title');
+    debug.titleTag = pickTitleTag(html);
+
     let t =
-      extractFromJSONLD(html) ||
-      pickMetaContent(html, 'og:title') ||
-      pickMetaContent(html, 'twitter:title') ||
-      pickTitleTag(html) ||
+      debug.jsonLdName ||
+      debug.ogTitle ||
+      debug.twitterTitle ||
+      debug.titleTag ||
       '';
 
     t = cleanTitle(t);
 
-    // If bad, try TikTok SIGI desc or general meta descriptions
-    if (isBadTitle(t)) {
-      const tk = extractFromTikTokSIGI(html);
-      if (!isBadTitle(tk)) t = tk;
+    if (!t || BAD_TITLES.has(t)) {
+      debug.tiktokCaption = extractFromTikTokSIGI(html);
+      if (debug.tiktokCaption) t = debug.tiktokCaption;
     }
-    if (isBadTitle(t)) {
-      const desc = extractDescCandidates(html);
-      if (!isBadTitle(desc)) t = desc;
+    if (!t || BAD_TITLES.has(t)) {
+      debug.metaDescriptionTitle = extractDescCandidates(html);
+      if (debug.metaDescriptionTitle) t = debug.metaDescriptionTitle;
     }
-
-    // As absolute last resort, use slug — but only if not junk
-    if (isBadTitle(t)) {
-      const slug = fallbackTitleFromUrl(finalUrl);
-      if (!isBadTitle(slug)) t = slug;
+    if (!t || BAD_TITLES.has(t)) {
+      debug.slugTitle = fallbackTitleFromUrl(finalUrl);
+      if (debug.slugTitle) t = debug.slugTitle;
     }
 
-    return { title: isBadTitle(t) ? undefined : t, canonical };
+    debug.picked = t || undefined;
+    return { title: t || undefined, canonical, debug };
   } catch {
-    return {};
+    return { debug };
   }
 }
 
@@ -238,7 +250,7 @@ function bustIfSafe(url: string): string {
   }
 }
 
-/** Thumb with debug */
+/** Thumb (thumbnail debugger UI disabled) */
 function Thumb({
   uri,
   onPress,
@@ -251,28 +263,11 @@ function Thumb({
   const [ok, setOk] = useState<boolean | null>(null);
   const [displayUri, setDisplayUri] = useState(uri);
 
-  const [dbg, setDbg] = useState<{
-    isSigned: boolean;
-    getSizeOK?: boolean;
-    getSizeErr?: string;
-    width?: number;
-    height?: number;
-    prefetchOK?: boolean;
-    prefetchErr?: string;
-    headStatus?: number;
-    headCT?: string;
-    headLen?: string;
-    headErr?: string;
-    onErrorEvt?: any;
-  }>({ isSigned: isSupabaseSigned(uri) });
-
   useEffect(() => {
     setOk(null);
     const signed = isSupabaseSigned(uri);
     const next = signed ? uri : bustIfSafe(uri);
-    if (DEBUG_THUMBS) console.log('[Thumb] new uri', { uri, signed, displayUri: next });
     setDisplayUri(next);
-    setDbg((d) => ({ ...d, isSigned: signed }));
   }, [uri]);
 
   useEffect(() => {
@@ -283,63 +278,26 @@ function Thumb({
         await new Promise<void>((resolve, reject) => {
           Image.getSize(
             displayUri,
-            (w, h) => {
-              if (DEBUG_THUMBS) console.log('[Thumb] getSize OK', { w, h, displayUri });
-              if (!cancelled) setDbg((d) => ({ ...d, getSizeOK: true, width: w, height: h }));
+            () => {
+              if (!cancelled) setOk(true);
               resolve();
             },
-            (err) => {
-              if (DEBUG_THUMBS) console.warn('[Thumb] getSize FAIL', err);
-              if (!cancelled) setDbg((d) => ({ ...d, getSizeOK: false, getSizeErr: String(err) }));
-              reject(err);
+            () => {
+              if (!cancelled) setOk(false);
+              reject(null);
             }
           );
         });
       } catch {}
-
-      try {
-        const pf = await Image.prefetch(displayUri);
-        if (DEBUG_THUMBS) console.log('[Thumb] prefetch', pf);
-        if (!cancelled) setDbg((d) => ({ ...d, prefetchOK: !!pf }));
-      } catch (e: any) {
-        if (DEBUG_THUMBS) console.warn('[Thumb] prefetch FAIL', e?.message || e);
-        if (!cancelled) setDbg((d) => ({ ...d, prefetchOK: false, prefetchErr: e?.message || String(e) }));
-      }
-
-      try {
-        let status = 0, ct = '', len = '';
-        let res = await fetch(displayUri, { method: 'HEAD' });
-        status = res.status;
-        ct = res.headers.get('content-type') || '';
-        len = res.headers.get('content-length') || '';
-        if (DEBUG_THUMBS) console.log('[Thumb] HEAD', status, ct, len);
-        if (!cancelled) setDbg((d) => ({ ...d, headStatus: status, headCT: ct, headLen: len }));
-        if (status >= 200 && status < 400) {
-          if (!cancelled) setOk(true);
-          return;
-        }
-        res = await fetch(displayUri, { method: 'GET', headers: { Range: 'bytes=0-0' } as any });
-        status = res.status;
-        ct = res.headers.get('content-type') || '';
-        len = res.headers.get('content-length') || '';
-        if (DEBUG_THUMBS) console.log('[Thumb] Range GET', status, ct, len);
-        if (!cancelled) setDbg((d) => ({ ...d, headStatus: status, headCT: ct, headLen: len }));
-        if (status >= 200 && status < 400) {
-          if (!cancelled) setOk(true);
-        } else {
-          if (!cancelled) setOk(false);
-        }
-      } catch (e: any) {
-        if (DEBUG_THUMBS) console.warn('[Thumb] HEAD/Range FAIL', e?.message || e);
-        if (!cancelled) setDbg((d) => ({ ...d, headErr: e?.message || String(e) }));
-        if (!cancelled && dbg.getSizeOK) setOk(true);
+      if (ok === null) {
+        try {
+          const pf = await Image.prefetch(displayUri);
+          if (!cancelled) setOk(!!pf);
+        } catch { if (!cancelled) setOk(false); }
       }
     }
-
     run();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayUri]);
 
@@ -353,19 +311,10 @@ function Thumb({
       {ok === true && (
         <Image
           source={{ uri: displayUri }}
-          style={[
-            styles.thumb,
-            { borderRadius: 12, backgroundColor: '#111' },
-            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#4ade80' } : null,
-          ]}
+          style={[styles.thumb, { borderRadius: 12, backgroundColor: '#111' }]}
           resizeMode="cover"
           resizeMethod="resize"
           fadeDuration={0}
-          onError={(e) => {
-            if (DEBUG_THUMBS) console.warn('[Thumb:onError]', e?.nativeEvent);
-            setDbg((d) => ({ ...d, onErrorEvt: e?.nativeEvent }));
-            setOk(false);
-          }}
         />
       )}
       {ok === false && (
@@ -373,30 +322,9 @@ function Thumb({
           style={[
             styles.thumb,
             { alignItems: 'center', justifyContent: 'center', backgroundColor: '#111', borderRadius: 12 },
-            DEBUG_THUMBS ? { borderWidth: 1, borderColor: '#f87171' } : null,
           ]}
         >
           <Text style={{ color: '#fff' }}>Preview unavailable</Text>
-        </View>
-      )}
-      {DEBUG_THUMBS && (
-        <View style={{ marginTop: 6, padding: 8, backgroundColor: '#0b1221', borderRadius: 8 }}>
-          <Text style={{ color: '#93c5fd', fontWeight: '700', marginBottom: 4 }}>Thumbnail Debug</Text>
-          <Text style={{ color: '#cbd5e1' }} numberOfLines={3}>uri: {uri}</Text>
-          <Text style={{ color: '#cbd5e1' }} numberOfLines={2}>displayUri: {displayUri}</Text>
-          <Text style={{ color: '#e2e8f0' }}>
-            signed: {String(dbg.isSigned)} | getSizeOK: {String(dbg.getSizeOK)} {dbg.width && dbg.height ? `(${dbg.width}×${dbg.height})` : ''}
-          </Text>
-          {dbg.getSizeErr ? <Text style={{ color: '#fca5a5' }}>getSizeErr: {dbg.getSizeErr}</Text> : null}
-          <Text style={{ color: '#e2e8f0' }}>
-            prefetchOK: {String(dbg.prefetchOK)}
-          </Text>
-          {dbg.prefetchErr ? <Text style={{ color: '#fca5a5' }}>prefetchErr: {dbg.prefetchErr}</Text> : null}
-          <Text style={{ color: '#e2e8f0' }}>
-            headStatus: {dbg.headStatus ?? '-'} | ct: {dbg.headCT ?? '-'} | len: {dbg.headLen ?? '-'}
-          </Text>
-          {dbg.headErr ? <Text style={{ color: '#fca5a5' }}>headErr: {dbg.headErr}</Text> : null}
-          {dbg.onErrorEvt ? <Text style={{ color: '#fca5a5' }}>imageError: {JSON.stringify(dbg.onErrorEvt)}</Text> : null}
         </View>
       )}
     </Pressable>
@@ -436,16 +364,12 @@ function AutoSnapModal({
         const modWV = await import('react-native-webview');
         const WV = (modWV as any).WebView || (modWV as any).default;
         setWebViewComp(() => WV || null);
-      } catch (e) {
-        if (DEBUG_THUMBS) console.warn('[autosnap] webview import failed', e);
-      }
+      } catch {}
       try {
         const modVS = await import('react-native-view-shot');
         const VS = (modVS as any).ViewShot || (modVS as any).default;
         setViewShotComp(() => VS || null);
-      } catch (e) {
-        if (DEBUG_THUMBS) console.warn('[autosnap] view-shot import failed', e);
-      }
+      } catch {}
     })();
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, []);
@@ -516,8 +440,7 @@ function AutoSnapModal({
       } else {
         onDone(src);
       }
-    } catch (e) {
-      if (DEBUG_THUMBS) console.warn('[autosnap] finishWithUrl error', e);
+    } catch {
       onDone(src);
     }
   };
@@ -534,8 +457,7 @@ function AutoSnapModal({
           result: 'tmpfile',
         }) as Promise<string>);
         if (uri) await finishWithUrl(uri);
-      } catch (e) {
-        if (DEBUG_THUMBS) console.warn('[autosnap] capture failed', e);
+      } catch {
         onCancel();
       } finally {
         setSnapping(false);
@@ -642,6 +564,9 @@ export default function Add() {
   const [thumbModal, setThumbModal] = useState(false);
   const userTouchedUrlRef = useRef(false);
 
+  // Title debugger state
+  const [titleDebug, setTitleDebug] = useState<TitleDebug | null>(null);
+
   useEffect(() => {
     const incoming = (route.params?.sharedUrl || '').trim();
     if (!incoming) return;
@@ -731,15 +656,20 @@ export default function Add() {
         if (fetchMeta) meta = await fetchMeta(theUrl);
         else meta = { title: theUrl.replace(/^https?:\/\//i, '').slice(0, 60) };
 
-        // --- TITLE: robust selection with junk/ID guards
         let nextTitle = cleanTitle(meta.title || '');
-        if (isBadTitle(nextTitle)) {
-          const { title: better, canonical } = await fetchAndExtractTitle(theUrl);
-          if (better && !isBadTitle(better)) nextTitle = better;
-          if (canonical && canonical !== theUrl) setUrl(canonical); // adopt canonical for future enriches
+
+        // Deep extraction + debugger
+        const { title: better, canonical, debug } = await fetchAndExtractTitle(theUrl);
+        if (debug) setTitleDebug({
+          ...debug,
+          metaTitle: meta.title || '',
+        });
+
+        if (!nextTitle || BAD_TITLES.has(nextTitle)) {
+          if (better) nextTitle = better;
+          if (canonical && canonical !== theUrl) setUrl(canonical);
         }
-        // If still bad, do NOT force a numeric slug — leave empty so the user can type
-        if (isBadTitle(nextTitle)) nextTitle = '';
+        if (!nextTitle) nextTitle = fallbackTitleFromUrl(theUrl) || theUrl;
 
         const cleanedIngredients = uniq(meta.ingredients || []);
         const cleanedSteps = uniq(meta.steps || []);
@@ -787,6 +717,7 @@ export default function Add() {
     setThumbUrl('');
     setIngredients([]);
     setSteps([]);
+    setTitleDebug(null);
     userTouchedUrlRef.current = false;
   }, []);
 
@@ -803,12 +734,11 @@ export default function Add() {
         return;
       }
 
-      // 1) Create the base recipe row
       const base = {
         user_id: user.id,
         title: title.trim(),
         source_url: looksLikeUrl(url) ? url.trim() : null,
-        thumb_path: thumbUrl || null, // <-- matches your schema
+        thumb_path: thumbUrl || null,
         created_at: new Date().toISOString(),
       };
 
@@ -821,30 +751,25 @@ export default function Add() {
       if (createErr) throw createErr;
       const newId = created.id as string;
 
-      // 2) Insert ingredients as rows (raw/pos)
       const ingRows = (ingredients || [])
         .map(s => s?.trim())
         .filter(Boolean)
         .map((raw, idx) => ({ recipe_id: newId, raw, pos: idx }));
-
       if (ingRows.length) {
         const { error: insIngErr } = await supabase.from('recipe_ingredients').insert(ingRows);
         if (insIngErr) throw insIngErr;
       }
 
-      // 3) Insert steps as rows (step_text/position)
       const stepRows = (steps || [])
         .map(s => s?.trim())
         .filter(Boolean)
         .map((step_text, idx) => ({ recipe_id: newId, step_text, position: idx }));
-
       if (stepRows.length) {
         const { error: insStepErr } = await supabase.from('recipe_steps').insert(stepRows);
         if (insStepErr) throw insStepErr;
       }
 
       Alert.alert('Saved', 'Your recipe has been saved.');
-      // Optionally: nav.navigate('Recipe' as never, { id: newId } as never);
     } catch (e: any) {
       Alert.alert('Save failed', e?.message || 'Please try again.');
     } finally {
@@ -908,6 +833,24 @@ export default function Add() {
             value={title}
             onChangeText={setTitle}
           />
+
+          {/* Title Debugger */}
+          {DEBUG_TITLE && titleDebug ? (
+            <View style={styles.titleDebugBox}>
+              <Text style={styles.titleDebugH}>Title Debug</Text>
+              <Text style={styles.titleDebugLine}>finalUrl: {titleDebug.finalUrl || '-'}</Text>
+              <Text style={styles.titleDebugLine}>canonical: {titleDebug.canonical || '-'}</Text>
+              <Text style={styles.titleDebugLine}>meta.title (fetchMeta): {titleDebug.metaTitle || '-'}</Text>
+              <Text style={styles.titleDebugLine}>JSON‑LD name/headline: {titleDebug.jsonLdName || '-'}</Text>
+              <Text style={styles.titleDebugLine}>og:title: {titleDebug.ogTitle || '-'}</Text>
+              <Text style={styles.titleDebugLine}>twitter:title: {titleDebug.twitterTitle || '-'}</Text>
+              <Text style={styles.titleDebugLine}>&lt;title&gt; tag: {titleDebug.titleTag || '-'}</Text>
+              <Text style={styles.titleDebugLine}>TikTok caption/share: {titleDebug.tiktokCaption || '-'}</Text>
+              <Text style={styles.titleDebugLine}>meta description cleaned: {titleDebug.metaDescriptionTitle || '-'}</Text>
+              <Text style={styles.titleDebugLine}>slug fallback: {titleDebug.slugTitle || '-'}</Text>
+              <Text style={[styles.titleDebugLine, { color: '#93c5fd' }]}>PICKED: {titleDebug.picked || '-'}</Text>
+            </View>
+          ) : null}
 
           {/* Thumbnail (tap to enlarge) */}
           {thumbUrl ? <Thumb uri={thumbUrl} onPress={() => setThumbModal(true)} styles={styles} /> : null}
@@ -992,9 +935,6 @@ export default function Add() {
                 style={styles.thumbFullscreen}
                 resizeMode="contain"
                 fadeDuration={0}
-                onError={(e) => {
-                  if (DEBUG_THUMBS) console.warn('[Thumb Fullscreen:onError]', e?.nativeEvent);
-                }}
               />
             ) : null}
           </Pressable>
@@ -1039,14 +979,6 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
 
     btnDisabled: { opacity: 0.6 },
 
-    thumbWrap: {
-      marginTop: 12,
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.cardBg,
-      borderRadius: 12,
-      padding: 0,
-    },
     thumb: { width: '100%', height: 180 },
 
     thumbBackdrop: {
@@ -1057,6 +989,19 @@ const makeStyles = (c: ReturnType<typeof useThemeController>['colors']) =>
       padding: 16,
     },
     thumbFullscreen: { width: '100%', height: '80%', borderRadius: 12, backgroundColor: '#111' },
+
+    // Title debugger styles
+    titleDebugBox: {
+      marginTop: 10,
+      padding: 10,
+      borderRadius: 10,
+      backgroundColor: '#0b1221',
+      borderWidth: 1,
+      borderColor: '#1f2a44',
+      gap: 4,
+    },
+    titleDebugH: { color: '#93c5fd', fontWeight: '700', marginBottom: 4 },
+    titleDebugLine: { color: '#cbd5e1', fontSize: 12 },
 
     multiBox: {
       backgroundColor: c.cardBg,
