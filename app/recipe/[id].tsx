@@ -86,7 +86,7 @@ export default function RecipeDetail() {
 
   const startCookMode = async () => {
     await success();
-    Alert.alert('Cook Mode', 'We’ll build voice-friendly, step-by-step Cook Mode next!');
+    router.push(`/cook/${recipe.id}`);
     // FUTURE: router.push(`/cook/${recipe.id}`)
   };
 
