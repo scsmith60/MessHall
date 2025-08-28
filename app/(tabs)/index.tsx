@@ -8,6 +8,8 @@ import { fetchFeedPage, FeedItem } from '../../lib/feed';
 import RecipeCard from '../../components/RecipeCard';
 import SponsoredCard from '../../components/SponsoredCard';
 import { success } from '../../lib/haptics';
+import { recipeStore } from '../../lib/store';
+import { router } from 'expo-router'; // 👈 NEW import for navigation
 
 export default function HomeScreen() {
   const [data, setData] = useState<FeedItem[]>([]);
@@ -19,13 +21,32 @@ export default function HomeScreen() {
   const loadPage = useCallback(async (nextPage: number) => {
     if (loading) return;
     setLoading(true);
+
     const items = await fetchFeedPage(nextPage, PAGE_SIZE);
-    setData(prev => nextPage === 0 ? items : [...prev, ...items]);
+
+    // feed returns both 'recipe' and 'sponsored' items;
+    // register only actual recipes so detail screen can find them by id.
+    const recipesOnly = items.filter(it => it.type === 'recipe') as any[];
+    recipeStore.upsertMany(
+      recipesOnly.map(r => ({
+        id: r.id,
+        title: r.title,
+        image: r.image,
+        creator: r.creator,
+        knives: r.knives,
+        cooks: r.cooks,
+        createdAt: r.createdAt,
+      }))
+    );
+
+    setData(prev => (nextPage === 0 ? items : [...prev, ...items]));
     setPage(nextPage);
     setLoading(false);
   }, [loading]);
 
-  useEffect(() => { loadPage(0); }, []);
+  useEffect(() => {
+    loadPage(0);
+  }, []);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -60,7 +81,8 @@ export default function HomeScreen() {
         knives={item.knives}
         cooks={item.cooks}
         createdAt={item.createdAt}
-        onOpen={(id) => {}}
+        // 👇 navigate to detail when opened
+        onOpen={(id) => router.push(`/recipe/${id}`)}
         onSave={(id) => {}}
       />
     );
@@ -76,7 +98,11 @@ export default function HomeScreen() {
       onEndReachedThreshold={0.4}
       onEndReached={onEndReached}
       refreshControl={
-        <RefreshControl tintColor="#fff" refreshing={refreshing} onRefresh={onRefresh} />
+        <RefreshControl
+          tintColor="#fff"
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+        />
       }
       ListFooterComponent={
         loading ? <ActivityIndicator style={{ marginVertical: 24 }} /> : null
