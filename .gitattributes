@@ -1,0 +1,12 @@
+# ------------------------------
+# Make line endings consistent across Windows/Mac/Linux
+# ------------------------------
+* text=auto
+
+# Track big binary assets with LFS (images, videos)
+*.png filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+*.gif filter=lfs diff=lfs merge=lfs -text
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+*.mov filter=lfs diff=lfs merge=lfs -text

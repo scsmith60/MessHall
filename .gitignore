@@ -1,37 +1,42 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+# ------------------------------
+# MessHall / React Native / Expo
+# (We ignore files we can re-create)
+# ------------------------------
 
-# dependencies
+# Node
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Expo
 .expo/
+.expo-shared/
 dist/
 web-build/
-expo-env.d.ts
+*.tmp
 
-# Native
-.kotlin/
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
+# Metro bundler / cache
+.packager/
+.haste/
+.expo/
+.expo-shared/assets.json
 
-# Metro
-.metro-health-check*
+# iOS / Android build stuff (generated)
+ios/build/
+android/app/build/
+android/.gradle/
+android/.idea/
 
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
-
-# macOS
-.DS_Store
-*.pem
-
-# local env files
+# Environment secrets
+.env
 .env*.local
 
-# typescript
-*.tsbuildinfo
+# IDEs
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
