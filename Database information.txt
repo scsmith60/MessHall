@@ -1,0 +1,3 @@
+Database Pwd: h.@KFbtMN2ssZRe
+ANON: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhqYXl5aWFnZWxuZHNvZGtxYWdhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY0MjExMzEsImV4cCI6MjA3MTk5NzEzMX0.JvtabMyrnoYhoJoOKdQSf9rnvprL-IAspKMI-Y-KZSE
+URL: https://xjayyiagelndsodkqaga.supabase.co
