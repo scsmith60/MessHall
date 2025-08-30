@@ -2,12 +2,8 @@
 // 🧒 what this does (like i'm 5):
 // - checks if you're an admin
 // - if not admin, sends you back to the tabs
-// - shows Owner Dashboard with a pretty "+ New Slot" button (with icon!) and 3 card blocks
-// - cards change colors automatically for LIGHT or DARK mode
-//
-// ✅ Changes I made for you:
-// - Replaced the text pill with a real button using Ionicons (no more "box with X").
-// - Fixed the route to the nested page: "/(tabs)/owner/create-slot".
+// - shows Owner Dashboard with a pretty "+ New Slot" button and "Manage Slots" button
+// - shows card blocks (Revenue, Ad Slots, Payouts)
 
 import React, { useEffect, useState, useMemo } from "react";
 import {
@@ -19,7 +15,7 @@ import {
   TouchableOpacity,
 } from "react-native";
 import { Redirect, router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons"; // ✅ proper icon import (Expo-managed)
+import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../../lib/supabase";
 
 type Profile = { is_admin: boolean } | null;
@@ -27,10 +23,7 @@ type Profile = { is_admin: boolean } | null;
 export default function OwnerScreen() {
   const [allowed, setAllowed] = useState<boolean | null>(null);
 
-  // 🎨 read phone theme (light or dark)
   const scheme = useColorScheme();
-
-  // 🎨 pick friendly colors for each theme
   const COLORS = useMemo(() => {
     if (scheme === "dark") {
       return {
@@ -67,7 +60,7 @@ export default function OwnerScreen() {
       }
       const { data, error } = await supabase
         .from("profiles")
-        .select<"is_admin", Profile>("is_admin")
+        .select("is_admin")
         .eq("id", uid)
         .single();
 
@@ -101,7 +94,6 @@ export default function OwnerScreen() {
 
   if (!allowed) return <Redirect href="/(tabs)" />;
 
-  // ✅ admin content
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: COLORS.bg }}
@@ -122,9 +114,26 @@ export default function OwnerScreen() {
         Only admins can see this. 🎯
       </Text>
 
-      {/* NEW: pretty icon button to navigate to the create form */}
+      {/* NEW: Manage Slots button */}
+      <Text
+        onPress={() => router.push("/(tabs)/owner/owner-slots")}
+        style={{
+          alignSelf: "flex-start",
+          backgroundColor: "#1f2937",
+          color: "#e5e7eb",
+          fontWeight: "900",
+          paddingVertical: 10,
+          paddingHorizontal: 14,
+          borderRadius: 999,
+          marginBottom: 12,
+        }}
+      >
+        Manage Slots
+      </Text>
+
+      {/* Existing: New Slot button */}
       <TouchableOpacity
-        onPress={() => router.push("/(tabs)/owner/create-slot")} // 👈 nested under Owner
+        onPress={() => router.push("/(tabs)/owner/create-slot")}
         activeOpacity={0.85}
         style={{
           alignSelf: "flex-start",

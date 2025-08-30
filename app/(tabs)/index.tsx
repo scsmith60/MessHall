@@ -1,11 +1,21 @@
-// HOME / SCUTTLEBUTT FEED (now reading from Supabase via dataAPI)
-// - Pull-to-refresh
-// - Infinite scroll
-// - Gently interleaved sponsored cards from DB
-// - Registers recipes in the in-memory store so Detail/Cook can find them
+// app/(tabs)/index.tsx
+// HOME / SCUTTLEBUTT FEED
+// like I'm 5:
+// - We show a big list of recipe cards, with some sponsored (ad) cards sprinkled in.
+// - We pull more when you scroll down (infinite), and you can pull-to-refresh.
+// - We save recipes to a tiny in-memory store so other screens find them.
+// - We track when a sponsored card is SEEN (>=50% visible) and log it ONE time.
+// - STEP 3c: Sponsored cards are rendered via <SponsoredCard slot={...} />.
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, ListRenderItemInfo, RefreshControl, View, Alert } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  ListRenderItemInfo,
+  RefreshControl,
+  View,
+  Alert,
+} from 'react-native';
 import { COLORS, SPACING } from '../../lib/theme';
 import { dataAPI } from '../../lib/data';
 import RecipeCard from '../../components/RecipeCard';
@@ -13,72 +23,141 @@ import SponsoredCard from '../../components/SponsoredCard';
 import { success } from '../../lib/haptics';
 import { recipeStore } from '../../lib/store';
 import { router } from 'expo-router';
+import { logAdEvent } from '../../lib/ads';
+
+// ===== Types =====
+type SponsoredSlot = {
+  id: string;         // required for tracking
+  brand?: string;
+  title?: string;
+  image?: string;
+  cta?: string;
+};
 
 type FeedItem =
-  | { type: 'recipe'; id: string; title: string; image: string; creator: string; knives: number; cooks: number; createdAt: string }
-  | { type: 'sponsored'; id: string; brand: string; title: string; image: string; cta: string };
+  | {
+      type: 'recipe';
+      id: string;
+      title: string;
+      image: string;
+      creator: string;
+      knives: number;
+      cooks: number;
+      createdAt: string;
+    }
+  | {
+      type: 'sponsored';
+      // legacy fields (still coming from older feeds)
+      id: string;
+      brand: string;
+      title: string;
+      image: string;
+      cta?: string;
+      // preferred shape for ads:
+      slot?: SponsoredSlot; // if not present, we’ll build a safe fallback below
+    };
 
+// ===== Screen =====
 export default function HomeScreen() {
-  // STATE: list data + pagination flags
+  // list state
   const [data, setData] = useState<FeedItem[]>([]);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const PAGE_SIZE = 12;
 
-  // helper: load a page of data
-  const loadPage = useCallback(async (nextPage: number) => {
-    if (loading) return;
-    setLoading(true);
-    try {
-      const items = await dataAPI.getFeedPage(nextPage, PAGE_SIZE);
+  // remember which ads we saw so we don't double count impressions
+  const seenAdsRef = useRef<Set<string>>(new Set());
 
-      // register recipes in our tiny store so detail screen can find them by id
-      const recipesOnly = items.filter(it => it.type === 'recipe') as Extract<FeedItem, { type: 'recipe' }>[];
-      recipeStore.upsertMany(recipesOnly.map(r => ({
-        id: r.id,
-        title: r.title,
-        image: r.image,
-        creator: r.creator,
-        knives: r.knives,
-        cooks: r.cooks,
-        createdAt: new Date(r.createdAt).getTime(),
-      })));
+  // load a page
+  const loadPage = useCallback(
+    async (nextPage: number) => {
+      if (loading) return;
+      setLoading(true);
+      try {
+        const items = await dataAPI.getFeedPage(nextPage, PAGE_SIZE);
 
-      setData(prev => nextPage === 0 ? items : [...prev, ...items]);
-      setPage(nextPage);
-    } catch (err: any) {
-      Alert.alert('Feed Problem', err?.message ?? 'Could not load feed.');
-    } finally {
-      setLoading(false);
-    }
-  }, [loading]);
+        // register recipes in the tiny store for other screens
+        const recipesOnly = items.filter(
+          (it) => it.type === 'recipe'
+        ) as Extract<FeedItem, { type: 'recipe' }>[];
 
-  useEffect(() => { loadPage(0); }, []);
+        recipeStore.upsertMany(
+          recipesOnly.map((r) => ({
+            id: r.id,
+            title: r.title,
+            image: r.image,
+            creator: r.creator,
+            knives: r.knives,
+            cooks: r.cooks,
+            createdAt: new Date(r.createdAt).getTime(),
+          }))
+        );
 
+        setData((prev) => (nextPage === 0 ? items : [...prev, ...items]));
+        setPage(nextPage);
+      } catch (err: any) {
+        Alert.alert('Feed Problem', err?.message ?? 'Could not load feed.');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loading]
+  );
+
+  // first load
+  useEffect(() => {
+    loadPage(0);
+  }, []);
+
+  // pull-to-refresh
   const onRefresh = async () => {
     setRefreshing(true);
+    seenAdsRef.current.clear(); // fresh session
     await loadPage(0);
     await success();
     setRefreshing(false);
   };
 
+  // infinite scroll
   const onEndReached = () => {
     loadPage(page + 1);
   };
 
+  // viewability: log ad impressions once per ad id
+  const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
+    for (const v of viewableItems) {
+      const item: FeedItem | undefined = v?.item;
+      if (!item || item.type !== 'sponsored') continue;
+
+      // prefer the slot id; fallback to legacy item id so we still log
+      const candidateId = (item.slot && item.slot.id) || item.id;
+      if (candidateId && !seenAdsRef.current.has(candidateId)) {
+        seenAdsRef.current.add(candidateId);
+        logAdEvent(candidateId, 'impression', { where: 'home_feed' });
+      }
+    }
+  }).current;
+
+  // render row
   const renderItem = ({ item }: ListRenderItemInfo<FeedItem>) => {
     if (item.type === 'sponsored') {
-      return (
-        <SponsoredCard
-          brand={item.brand}
-          title={item.title}
-          image={item.image}
-          cta={item.cta || 'Learn more'}
-          onPress={() => {}}
-        />
-      );
+      // STEP 3c: SponsoredCard uses a slot object.
+      // Fallback: build a slot from legacy fields if `item.slot` is missing.
+      const slot: SponsoredSlot =
+        item.slot ??
+        ({
+          id: item.id,
+          brand: item.brand,
+          title: item.title,
+          image: item.image,
+          cta: item.cta,
+        } as SponsoredSlot);
+
+      return <SponsoredCard slot={slot as any} />;
     }
+
+    // recipe
     return (
       <RecipeCard
         id={item.id}
@@ -89,11 +168,12 @@ export default function HomeScreen() {
         cooks={item.cooks}
         createdAt={new Date(item.createdAt).getTime()}
         onOpen={(id) => router.push(`/recipe/${id}`)}
-        onSave={() => {}} // will use real API on Detail soon
+        onSave={() => {}}
       />
     );
   };
 
+  // list UI
   return (
     <FlatList
       style={{ flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg }}
@@ -103,8 +183,12 @@ export default function HomeScreen() {
       ItemSeparatorComponent={() => <View style={{ height: SPACING.lg }} />}
       onEndReachedThreshold={0.4}
       onEndReached={onEndReached}
-      refreshControl={<RefreshControl tintColor="#fff" refreshing={refreshing} onRefresh={onRefresh} />}
+      refreshControl={
+        <RefreshControl tintColor="#fff" refreshing={refreshing} onRefresh={onRefresh} />
+      }
       ListFooterComponent={loading ? <ActivityIndicator style={{ marginVertical: 24 }} /> : null}
+      onViewableItemsChanged={onViewableItemsChanged}
+      viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
     />
   );
 }

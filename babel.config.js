@@ -1,17 +1,29 @@
 // babel.config.js
-// 👶 This tells Babel how to read your code.
-// 👇 We use "babel-preset-expo" (the new, correct way).
+// 👶 This tells Babel how to read your code and understand our aliases.
+// IMPORTANT:
+// - Keep "expo-router/babel" so Expo Router works.
+// - Add "module-resolver" so Metro understands "@/..." imports.
+// - Keep Reanimated plugin LAST.
+
 module.exports = function (api) {
   api.cache(true);
   return {
     presets: [
-      // ✅ This preset replaces the old "expo-router/babel" plugin usage.
-      "babel-preset-expo",
+      "babel-preset-expo",            // ✅ main Expo preset
     ],
     plugins: [
-      // ❌ DO NOT include "expo-router/babel" anymore.
-      // ✅ Keep Reanimated plugin LAST so animations work.
-      "react-native-reanimated/plugin",
+      "expo-router/babel",            // ✅ needed for expo-router
+      [
+        "module-resolver",            // ✅ teaches Metro what "@" means
+        {
+          root: ["./"],               // project root
+          alias: {
+            "@": "./"                 // "@/lib/..." → "./lib/..."
+          },
+          extensions: [".ts", ".tsx", ".js", ".jsx", ".json"]
+        }
+      ],
+      "react-native-reanimated/plugin" // ✅ keep LAST
     ],
   };
 };
