@@ -1,138 +1,236 @@
 // lib/extractTitle.ts
+// Like I'm 5: this file finds a nice title for a page.
+// We look in many places (H1, JSON-LD, OG meta, TikTok JSON) and pick the best.
+
 export type ExtractedMeta = {
   title?: string;
   canonicalUrl?: string;
 };
 
+/* --------------------------- tiny string helpers --------------------------- */
+
+const stripTags = (s: string) => s.replace(/<[^>]*>/g, "");
+const decodeEntities = (s: string) =>
+  s
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+const textify = (html: string) =>
+  decodeEntities(stripTags(String(html))).replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim();
+
 const BAD_TITLES = new Set([
-  'TikTok – Make Your Day',
-  'TikTok - Make Your Day',
-  'TikTok',
-  'YouTube',
-  'Instagram',
-  'Login • Instagram',
+  "TikTok – Make Your Day",
+  "TikTok - Make Your Day",
+  "TikTok",
+  "YouTube",
+  "Instagram",
+  "Login • Instagram",
 ]);
 
-function text(el?: Element | null) {
-  return (el?.getAttribute('content') || el?.textContent || '').trim();
-}
+const isTikTok = (url: string) => /tiktok\.com\/@/i.test(url);
 
-function safeJSON<T = any>(str?: string | null): T | undefined {
-  if (!str) return;
-  try { return JSON.parse(str); } catch { return; }
-}
+/* ------------------------------- meta helpers ------------------------------ */
 
-// Basic DOM loader for RN/JS (no browser): use a tiny HTML parser.
-// If you already have one, swap this out.
-function domFromHTML(html: string) {
-  // Very light DOM via JSDOM-like interface isn’t available in RN; instead,
-  // use regex selects for the few tags we need.
-  // For reliability, we’ll do simple selectors by hand below.
-  return { html };
-}
-
-function pickMeta(html: string, name: string) {
-  const re = new RegExp(`<meta[^>]+(?:property|name)=[\\"']${name}[\\"'][^>]*>`, 'i');
+function pickMeta(html: string, name: string): string {
+  // <meta property="og:title" ...> or <meta name="twitter:title" ...>
+  const re = new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]*>`, "i");
   const m = html.match(re);
-  if (!m) return '';
-  const tag = m[0];
-  const cm = tag.match(/content=["']([^"']+)["']/i);
-  return cm?.[1]?.trim() || '';
+  if (!m) return "";
+  const cm = m[0].match(/content=["']([^"']+)["']/i);
+  return (cm?.[1] || "").trim();
 }
 
-function pickLink(html: string, rel: string) {
-  const re = new RegExp(`<link[^>]+rel=[\\"']${rel}[\\"'][^>]*>`, 'i');
-  const m = html.match(re);
-  if (!m) return '';
-  const tag = m[0];
-  const hm = tag.match(/href=["']([^"']+)["']/i);
-  return hm?.[1]?.trim() || '';
+function pickTitleTag(html: string): string {
+  const m = html.match(/<title>([\s\S]*?)<\/title>/i);
+  return m?.[1] ? textify(m[1]) : "";
 }
 
-function pickTitleTag(html: string) {
-  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return m?.[1]?.replace(/\s+/g, ' ').trim() || '';
+function pickGenericH1(html: string): string {
+  const m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const h1 = m?.[1] ? textify(m[1]) : "";
+  if (!h1) return "";
+  // Avoid headings that are just "Ingredients" etc.
+  if (/^\s*(ingredients?|directions?|steps?|method)\s*$/i.test(h1)) return "";
+  return h1;
 }
 
-// --- Platform helpers ---
+function cleanTitle(t: string): string {
+  if (!t) return "";
+  let out = t;
+  // remove long site suffixes
+  out = out.replace(
+    /\s*[|–-]\s*(TikTok|YouTube|Instagram|Facebook|Pinterest|Allrecipes|Food Network|Yummly|Google).*$/i,
+    ""
+  );
+  // trim “ by @user”
+  out = out.replace(/\s*by\s*@[\w.\-]+$/i, "");
+  // collapse spaces
+  out = out.replace(/\s{2,}/g, " ").trim();
+  return out;
+}
 
-function extractFromJSONLD(html: string) {
-  // Prefer Recipe or VideoObject name
-  const scripts = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+function fromCanonicalLink(html: string): string {
+  const m =
+    html.match(/<link[^>]+rel=["']canonical["'][^>]*href=["']([^"']+)["']/i) ||
+    html.match(/<meta[^>]+property=["']og:url["'][^>]*content=["']([^"']+)["']/i);
+  return (m?.[1] || "").trim();
+}
+
+/* ---------------------------- JSON-LD extraction --------------------------- */
+
+function safeJSON<T = any>(s?: string | null): T | null {
+  if (!s) return null;
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return null;
+  }
+}
+
+function fromJsonLdTitle(html: string): string {
+  const scripts = [
+    ...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi),
+  ];
+  let best = "";
+  let bestScore = -1;
+
   for (const s of scripts) {
     const json = safeJSON<any>(s[1]);
     if (!json) continue;
 
-    const arr = Array.isArray(json) ? json : [json];
-    for (const node of arr) {
-      const ctxType = (node['@type'] || node.type || '').toString();
-      if (/Recipe/i.test(ctxType) || /VideoObject/i.test(ctxType) || node.name) {
-        const name = (node.name || '').toString().trim();
-        if (name) return name;
-      }
-      // Some sites nest graph
-      if (node['@graph']) {
-        for (const g of node['@graph']) {
-          const name = (g?.name || '').toString().trim();
-          const t = (g?.['@type'] || '').toString();
-          if (name && (/Recipe|VideoObject|Article/i.test(t) || t)) return name;
-        }
+    const nodes: any[] = Array.isArray(json) ? json : json["@graph"] ? json["@graph"] : [json];
+
+    for (const node of nodes) {
+      const t = node?.["@type"];
+      const title = String(node?.name || node?.headline || "").trim();
+      if (!title) continue;
+
+      const isRecipe =
+        typeof t === "string"
+          ? /Recipe/i.test(t)
+          : Array.isArray(t) && t.some((x: any) => /Recipe/i.test(String(x)));
+      const isMedia =
+        typeof t === "string"
+          ? /(VideoObject|ImageObject|SocialMediaPosting|WebPage|Article)/i.test(t)
+          : Array.isArray(t) &&
+            t.some((x: any) =>
+              /(VideoObject|ImageObject|SocialMediaPosting|WebPage|Article)/i.test(String(x))
+            );
+
+      let score = title.length;
+      if (isRecipe) score += 500;
+      else if (isMedia) score += 200;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = title;
       }
     }
   }
-  return '';
+  return best;
 }
 
-function extractFromTikTok(html: string) {
-  // TikTok hides real data in SIGI_STATE
+/* --------------------------- TikTok special DOM H1 ------------------------- */
+// Your screenshot showed: <h1 class="... H1PhotoTitle ...">Texas Roadhouse ...</h1>
+// TikTok also uses "H1VideoTitle". We read those directly.
+
+function fromTikTokDomH1(html: string): string {
+  // any <h1> whose class contains H1PhotoTitle / H1VideoTitle / PhotoTitle
+  const m =
+    html.match(/<h1[^>]+class=["'][^"']*\bH1PhotoTitle\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i) ||
+    html.match(/<h1[^>]+class=["'][^"']*\bH1VideoTitle\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i) ||
+    html.match(/<h1[^>]+class=["'][^"']*\bPhotoTitle\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i);
+  return m?.[1] ? textify(m[1]) : "";
+}
+
+/* ------------------------------ TikTok SIGI ------------------------------- */
+// Fallback caption/title from the state JSON (works for both photos & videos)
+
+function fromTikTokSigi(html: string): string {
   const m = html.match(/<script[^>]+id=["']SIGI_STATE["'][^>]*>([\s\S]*?)<\/script>/i);
   const json = safeJSON<any>(m?.[1]);
-  if (!json) return '';
-  // ItemModule:{<videoId>:{desc: "..."}}
-  const itemModule = json?.ItemModule;
-  if (itemModule && typeof itemModule === 'object') {
-    const first = Object.values<any>(itemModule)[0];
-    const desc = (first?.desc || '').toString().trim();
+  if (!json) return "";
+
+  const im = json?.ItemModule;
+  if (im && typeof im === "object") {
+    const first: any = Object.values(im)[0];
+    const desc = (first?.desc || first?.shareInfo?.shareTitle || first?.title || "")
+      .toString()
+      .trim();
     if (desc) return desc;
   }
-  return '';
+
+  const seo = json?.SEOState || json?.ShareMeta || json?.app || {};
+  const maybe = (
+    seo?.metaParams?.title ||
+    seo?.shareMeta?.title ||
+    seo?.ogMeta?.title ||
+    ""
+  )
+    .toString()
+    .trim();
+  return maybe || "";
 }
 
-function cleanTitle(t: string) {
-  // strip site suffixes like " | Site" or " - Site"
-  let out = t.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Food Network|Allrecipes|Pinterest).*/i, '');
-  out = out.replace(/\s{2,}/g, ' ').trim();
-  return out;
-}
+/* --------------------------------- main ------------------------------------ */
 
 export function extractTitle(html: string, url: string): ExtractedMeta {
-  const result: ExtractedMeta = {};
+  const out: ExtractedMeta = {};
+  const canonical = fromCanonicalLink(html) || undefined;
 
-  // Canonical
-  const canonical = pickLink(html, 'canonical') || pickMeta(html, 'og:url');
-  if (canonical) result.canonicalUrl = canonical;
-
-  // High-confidence: JSON-LD
-  let title =
-    extractFromJSONLD(html) ||
-    pickMeta(html, 'og:title') ||
-    pickMeta(html, 'twitter:title') ||
-    pickTitleTag(html);
-
-  // TikTok specific fallback
-  if (!title || BAD_TITLES.has(title)) {
-    const tk = extractFromTikTok(html);
-    if (tk) title = tk;
+  // 0) TikTok DOM H1 (photo/video pages) — this is the spot you highlighted.
+  if (isTikTok(url)) {
+    const domH1 = fromTikTokDomH1(html);
+    if (domH1 && !BAD_TITLES.has(domH1)) {
+      out.title = cleanTitle(domH1);
+      out.canonicalUrl = canonical;
+      return out;
+    }
   }
 
-  // As last resort, use page title cleaned
-  title = cleanTitle(title || pickTitleTag(html));
-
-  if (!title || BAD_TITLES.has(title)) {
-    // nothing decent; leave undefined so caller can fallback to filename/slug
-    return result;
+  // 1) JSON-LD (prefer Recipe, then media/article/social/webpage)
+  const ld = fromJsonLdTitle(html);
+  if (ld && !BAD_TITLES.has(ld)) {
+    out.title = cleanTitle(ld);
+    out.canonicalUrl = canonical;
+    return out;
   }
 
-  result.title = title;
-  return result;
+  // 2) OG / Twitter meta
+  const ogt = pickMeta(html, "og:title") || pickMeta(html, "twitter:title");
+  if (ogt && !BAD_TITLES.has(ogt)) {
+    out.title = cleanTitle(ogt);
+    out.canonicalUrl = canonical;
+    return out;
+  }
+
+  // 3) TikTok SIGI_STATE (caption as title)
+  if (isTikTok(url)) {
+    const sigi = fromTikTokSigi(html);
+    if (sigi && !BAD_TITLES.has(sigi)) {
+      out.title = cleanTitle(sigi);
+      out.canonicalUrl = canonical;
+      return out;
+    }
+  }
+
+  // 4) Generic <h1>
+  const h1 = pickGenericH1(html);
+  if (h1 && !BAD_TITLES.has(h1)) {
+    out.title = cleanTitle(h1);
+    out.canonicalUrl = canonical;
+    return out;
+  }
+
+  // 5) Last resort: <title>
+  const t = pickTitleTag(html);
+  if (t && !BAD_TITLES.has(t)) {
+    out.title = cleanTitle(t);
+    out.canonicalUrl = canonical;
+    return out;
+  }
+
+  return { title: undefined, canonicalUrl: canonical };
 }
