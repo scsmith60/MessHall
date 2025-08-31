@@ -1,9 +1,14 @@
 // app/(tabs)/capture.tsx
-// CAPTURE (ELI5):
-// 1) Make a new recipe row in the "recipes" table (title, time, servings, etc.)
-// 2) Upload the picture into the "recipe-images" storage bucket and store its link on the recipe
-// 3) Add each ingredient line into "recipe_ingredients" (one row per line)
-// 4) Add each step line into "recipe_steps" (one row per line)
+// ELI5 CAPTURE FLOW (kid-simple):
+// 1) You paste a link (or add a photo).
+// 2) We call fetchMeta(url) to get title + image + ingredients + steps.
+//    - It checks blog recipe JSON-LD/microdata.
+//    - It checks TikTok caption/JSON/oEmbed.
+//    - It checks JSON-LD/OG descriptions.
+//    - It returns neat ingredient lines + steps.
+// 3) If fetchMeta misses an image, we try OG image and TikTok oEmbed.
+// 4) If ingredients are still empty on TikTok, we try a small caption fallback.
+// 5) SAVE writes recipe + image + ingredients + steps to Supabase.
 
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
@@ -21,16 +26,24 @@ import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
-import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "@/lib/supabase";
 
+// 🖼️ OG (OpenGraph) fallback + storage upload
 import { fetchOgForUrl } from "@/lib/og";
-import { uploadFromUri } from "@/lib/uploads"; // <- now exists and we use the real storage bucket name
-import IngredientRow from "@/components/IngredientRow"; // adjust path if needed
+import { uploadFromUri } from "@/lib/uploads";
 
+// 🧠 NEW: unified meta importer (title + image + ingredients + steps)
+import { fetchMeta } from "@/lib/fetch_meta";
+
+// 🧪 UI wants pretty strings; normalize to canonical and keep adjectives/notes
+import { normalizeIngredientLines } from "@/lib/ingredients";
+
+// tiny caption backup for social posts if everything else fails
+import { captionToIngredientLines } from "@/lib/caption_to_ingredients";
+
+// TikTok helpers: fast oEmbed thumb + screenshot snapper
 import { isTikTokUrl, tiktokOEmbedThumbnail, TikTokSnap } from "@/lib/tiktok";
 
-// simple colors
 const COLORS = {
   bg: "#0B1120",
   card: "#111827",
@@ -43,20 +56,21 @@ const COLORS = {
   border: "#243042",
 };
 
+// where our preview image comes from
 type ImageSourceState =
   | { kind: "none" }
   | { kind: "url-og"; url: string; resolvedImageUrl: string }
   | { kind: "picker"; localUri: string }
   | { kind: "camera"; localUri: string };
 
-// 1) find first http(s) URL in any pasted text
+// find the first http(s) link inside a string
 function extractFirstUrl(s: string): string | null {
   if (!s) return null;
   const match = s.match(/https?:\/\/[^\s"'<>]+/i);
   return match ? match[0] : null;
 }
 
-// 2) small timeout helper (used for TikTok oEmbed quick try)
+// Promise timeout helper (used for quick TikTok thumbnail try)
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return await Promise.race([
     p,
@@ -65,7 +79,7 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 export default function CaptureScreen() {
-  // basic fields
+  // core fields
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
   const [timeMinutes, setTimeMinutes] = useState("");
@@ -73,19 +87,19 @@ export default function CaptureScreen() {
   const [ingredients, setIngredients] = useState<string[]>([""]);
   const [steps, setSteps] = useState<string[]>([""]);
 
-  // image state
+  // image/import state
   const [img, setImg] = useState<ImageSourceState>({ kind: "none" });
   const [loadingOg, setLoadingOg] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // TikTok snap modal
+  // TikTok snap modal (poster screenshot fallback)
   const [snapVisible, setSnapVisible] = useState(false);
   const [snapUrl, setSnapUrl] = useState("");
   const [snapReloadKey, setSnapReloadKey] = useState(0);
-
   const lastResolvedUrlRef = useRef<string>("");
 
-  // ==== IMPORT / PREVIEW =====================================================
+  // 👉 MAIN IMPORT BUTTON LOGIC
+  // Like I'm 5: We try fetchMeta first (smart), then fill any blanks with OG/TikTok helpers.
   const resolveOg = useCallback(
     async (raw: string) => {
       const url = extractFirstUrl(raw?.trim() || "");
@@ -95,86 +109,136 @@ export default function CaptureScreen() {
         return;
       }
 
-      if (isTikTokUrl(url)) {
-        try {
-          const thumb = await withTimeout(tiktokOEmbedThumbnail(url), 1200).catch(() => null);
-          if (thumb) {
-            setImg({ kind: "url-og", url, resolvedImageUrl: thumb });
-            lastResolvedUrlRef.current = url;
-            return;
-          }
-        } catch {}
-        // fallback: open snap modal to screenshot
-        setImg({ kind: "none" });
-        setSnapUrl(url);
-        setSnapReloadKey((k) => k + 1);
-        setSnapVisible(true);
-        return;
-      }
+      setLoadingOg(true);
 
       try {
-        const out = await fetchOgForUrl(url);
-        if (out?.image) {
-          setImg({ kind: "url-og", url, resolvedImageUrl: out.image });
+        // 1) Do both in parallel: smart meta + OG (for extra image/title if needed)
+        const [metaRes, ogRes] = await Promise.allSettled([
+          fetchMeta(url),
+          fetchOgForUrl(url),
+        ]);
+
+        const meta =
+          metaRes.status === "fulfilled" && metaRes.value
+            ? metaRes.value
+            : null;
+        const og =
+          ogRes.status === "fulfilled" && ogRes.value ? ogRes.value : null;
+
+        // 2) TITLE: prefer smart meta title, else OG title
+        if (meta?.title && !title.trim()) setTitle(meta.title);
+        else if (og?.title && !title.trim()) setTitle(og.title);
+
+        // 3) INGREDIENTS: use meta first; clean to canonical strings for UI
+        if (meta?.ingredients?.length) {
+          const parsed = normalizeIngredientLines(meta.ingredients);
+          const canon = parsed.map((p) => p.canonical).filter(Boolean);
+          if (canon.length) setIngredients(canon);
+        }
+
+        // 4) STEPS: straight from meta
+        if (meta?.steps?.length) {
+          setSteps(meta.steps.filter((s) => s && s.trim().length));
+        }
+
+        // 5) IMAGE: prefer meta.image, else OG image
+        let usedImage = false;
+        if (meta?.image) {
+          setImg({ kind: "url-og", url, resolvedImageUrl: meta.image });
+          usedImage = true;
           lastResolvedUrlRef.current = url;
-          if (out?.title && !title.trim()) setTitle(out.title);
-        } else {
+        } else if (og?.image) {
+          setImg({ kind: "url-og", url, resolvedImageUrl: og.image });
+          usedImage = true;
+          lastResolvedUrlRef.current = url;
+        }
+
+        // 6) If still no ingredients (common on TikTok), try a tiny caption fallback
+        const needIngredients =
+          !(meta?.ingredients?.length) &&
+          isTikTokUrl(url) &&
+          !!og?.description;
+        if (needIngredients) {
+          const guessed = captionToIngredientLines(og!.description!.trim());
+          if (guessed.length) {
+            const parsed = normalizeIngredientLines(guessed);
+            const canon = parsed.map((p) => p.canonical).filter(Boolean);
+            if (canon.length) setIngredients(canon);
+          }
+        }
+
+        // 7) TikTok: if we still don't have a picture, try super-fast oEmbed thumb
+        if (isTikTokUrl(url) && !usedImage) {
+          try {
+            const thumb = await withTimeout(tiktokOEmbedThumbnail(url), 1200).catch(() => null);
+            if (thumb) {
+              setImg({ kind: "url-og", url, resolvedImageUrl: thumb });
+              usedImage = true;
+              lastResolvedUrlRef.current = url;
+            }
+          } catch {}
+        }
+
+        // 8) Final TikTok fallback → screenshot snapper
+        if (isTikTokUrl(url) && !usedImage) {
           setImg({ kind: "none" });
-          Alert.alert("No image found on that page", out?.error || "Try a different link or add a photo.");
+          setSnapUrl(url);
+          setSnapReloadKey((k) => k + 1);
+          setSnapVisible(true);
         }
       } catch (e: any) {
         setImg({ kind: "none" });
-        Alert.alert("Link error", e?.message || "Could not read that webpage.");
+        Alert.alert("Import error", e?.message || "Could not read that webpage.");
+      } finally {
+        setLoadingOg(false);
       }
     },
     [title]
   );
 
-  const onPick = useCallback(async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== "granted") return Alert.alert("Permission needed to pick a photo.");
-    const r = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.92,
-    });
-    if (r.canceled || !r.assets?.[0]?.uri) return;
-    setPastedUrl("");
-    setImg({ kind: "picker", localUri: r.assets[0].uri });
-    Haptics.selectionAsync();
-  }, []);
-
-  const onCamera = useCallback(async () => {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== "granted") return Alert.alert("Permission needed to use camera.");
-    const r = await ImagePicker.launchCameraAsync({ quality: 0.92 });
-    if (r.canceled || !r.assets?.[0]?.uri) return;
-    setPastedUrl("");
-    setImg({ kind: "camera", localUri: r.assets[0].uri });
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }, []);
-
+  // Paste helper
   const onPaste = useCallback(async () => {
     const text = await Clipboard.getStringAsync();
     if (!text) return;
     setPastedUrl(text.trim());
-    Haptics.selectionAsync();
   }, []);
 
-  const onImport = useCallback(() => {
-    if (!pastedUrl || pastedUrl.trim().length < 5) {
-      Alert.alert("Paste a link first.");
-      return;
-    }
-    Haptics.selectionAsync();
-    setLoadingOg(true);
-    lastResolvedUrlRef.current = "";
-    setImg({ kind: "none" });
-    setSnapVisible(false);
-    Promise.resolve()
-      .then(() => resolveOg(pastedUrl.trim()))
-      .finally(() => setLoadingOg(false));
-  }, [pastedUrl, resolveOg]);
+  // pick OR camera: one button, then ask
+  const pickOrCamera = useCallback(async () => {
+    Alert.alert(
+      "Add Photo",
+      "Choose where to get your picture",
+      [
+        {
+          text: "Camera",
+          onPress: async () => {
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== "granted") return Alert.alert("Camera permission is required.");
+            const r = await ImagePicker.launchCameraAsync({ quality: 0.92, allowsEditing: true, aspect: [4, 3] });
+            if (!r.canceled && r.assets?.[0]?.uri) setImg({ kind: "camera", localUri: r.assets[0].uri });
+          },
+        },
+        {
+          text: "Gallery",
+          onPress: async () => {
+            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (status !== "granted") return Alert.alert("Photo permission is required.");
+            const r = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ImagePicker.MediaTypeOptions.Images,
+              quality: 0.92,
+              allowsEditing: true,
+              aspect: [4, 3],
+            });
+            if (!r.canceled && r.assets?.[0]?.uri) setImg({ kind: "picker", localUri: r.assets[0].uri });
+          },
+        },
+        { text: "Cancel", style: "cancel" },
+      ],
+      { cancelable: true }
+    );
+  }, []);
 
+  // preview image for <Image />
   const previewUri = useMemo(() => {
     switch (img.kind) {
       case "url-og":
@@ -187,474 +251,200 @@ export default function CaptureScreen() {
     }
   }, [img]);
 
-  // ==== SAVE ================================================================
+  // SAVE: create recipe, upload image, insert children rows
   const onSave = useCallback(async () => {
+    if (!title.trim()) return Alert.alert("Please add a title");
+
+    setSaving(true);
     try {
-      Haptics.selectionAsync();
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-      // require login
-      const user = (await supabase.auth.getUser()).data.user;
-      if (!user) {
-        Alert.alert("Please sign in first.");
-        return;
-      }
+      // 1) create recipe base row (include source_url = lastResolvedUrlRef if present)
+      const { data: me } = await supabase.auth.getUser();
+      const uid = me?.user?.id;
+      if (!uid) throw new Error("Not signed in");
 
-      // light validation
-      if (!title.trim() && !previewUri) {
-        Alert.alert("Need something to save", "Add a title or a photo.");
-        return;
-      }
-
-      setSaving(true);
-
-      // 1) insert base recipe (NO ingredients / steps columns here)
-      const { data: insertData, error: insertErr } = await supabase
+      const { data: created, error: createErr } = await supabase
         .from("recipes")
         .insert({
-          user_id: user.id,
-          source_url: pastedUrl || null,
-          title: title || null,
+          user_id: uid,
+          title: title.trim(),
           minutes: timeMinutes ? Number(timeMinutes) : null,
           servings: servings ? Number(servings) : null,
-          image_url: null, // we’ll fill this after upload
+          source_url: lastResolvedUrlRef.current || null,
         })
         .select("id")
         .single();
-      if (insertErr) throw insertErr;
-      const recipeId = insertData.id as string;
 
-      // 2) upload image to STORAGE bucket "recipe-images" and patch recipes.image_url
-      if (previewUri) {
-        const storedImageUrl = await uploadFromUri({
-          uri: previewUri,
-          storageBucket: "recipe-images", // ✅ storage bucket (NOT the table name)
-          path: `${user.id}/${recipeId}/images/${Date.now()}.jpg`,
+      if (createErr) throw createErr;
+      const recipeId = created?.id as string;
+
+      // 2) Upload chosen image (if any) and set on the recipe
+      const uri =
+        img.kind === "url-og"
+          ? img.resolvedImageUrl
+          : img.kind === "picker" || img.kind === "camera"
+          ? img.localUri
+          : "";
+
+      if (uri) {
+        const path = `${uid}/${recipeId}/images/${Date.now()}.jpg`;
+        const publicUrl = await uploadFromUri({
+          uri,
+          storageBucket: "recipe-images",
+          path,
           contentType: "image/jpeg",
         });
-        const { error: updateErr } = await supabase
-          .from("recipes")
-          .update({ image_url: storedImageUrl })
-          .eq("id", recipeId);
-        if (updateErr) throw updateErr;
+        await supabase.from("recipes").update({ image_url: publicUrl }).eq("id", recipeId);
       }
 
-      // 3) insert ingredients into recipe_ingredients (one row per line)
-      // we’ll assume columns: recipe_id (uuid), line_no (int), text (text)
-      const ingRows = ingredients
-  .map((t, i) => t.trim())
-  .filter(Boolean)
-  .map((t, i) => ({
-    recipe_id: recipeId,  // link back to recipe
-    pos: i + 1,           // use pos column for ordering
-    text: t,              // the ingredient text
-  }));
-      if (ingRows.length > 0) {
-        const { error: ingErr } = await supabase.from("recipe_ingredients").insert(ingRows);
-        if (ingErr) {
-          // don’t kill the whole save; just warn
-          console.warn("ingredients insert failed", ingErr);
-        }
+      // 3) Ingredients rows
+      const ingLines = ingredients
+        .map((s) => (s || "").trim())
+        .filter(Boolean);
+      if (ingLines.length) {
+        await supabase.from("recipe_ingredients").insert(
+          ingLines.map((text, i) => ({
+            recipe_id: recipeId,
+            pos: i + 1,
+            text,
+          }))
+        );
       }
 
-      // 4) insert steps into recipe_steps (one row per line)
-      // we’ll assume columns: recipe_id (uuid), step_no (int), text (text)
+      // 4) Steps rows
       const stepLines = steps
-        .map((t) => t.trim())
-        .filter(Boolean)
-        .map((t, idx) => ({ recipe_id: recipeId, step_no: idx + 1, text: t }));
-      if (stepLines.length > 0) {
-        const { error: stepErr } = await supabase.from("recipe_steps").insert(stepLines);
-        if (stepErr) {
-          console.warn("steps insert failed", stepErr);
-        }
+        .map((s) => (s || "").trim())
+        .filter(Boolean);
+      if (stepLines.length) {
+        await supabase.from("recipe_steps").insert(
+          stepLines.map((text, i) => ({
+            recipe_id: recipeId,
+            pos: i + 1,
+            text,
+            seconds: null,
+          }))
+        );
       }
 
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Saved!", "Your recipe is in the cloud.");
-
-      // 5) reset the form
-      setPastedUrl("");
-      setTitle("");
-      setTimeMinutes("");
-      setServings("");
-      setIngredients([""]);
-      setSteps([""]);
-      setImg({ kind: "none" });
-      lastResolvedUrlRef.current = "";
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Saved!");
     } catch (e: any) {
-      console.error("Save failed:", e);
-      Alert.alert("Save failed", e?.message || "Unknown error");
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Save failed", e?.message ?? "Please try again.");
     } finally {
       setSaving(false);
     }
-  }, [pastedUrl, title, timeMinutes, servings, ingredients, steps, previewUri]);
+  }, [title, timeMinutes, servings, ingredients, steps, img]);
 
-  // list helpers
-  const setIngredient = (i: number, v: string) =>
-    setIngredients((arr) => arr.map((x, idx) => (idx === i ? v : x)));
-  const addIngredient = () => {
-    setIngredients((arr) => [...arr, ""]);
-    Haptics.selectionAsync();
-  };
-  const delIngredient = (i: number) => {
-    setIngredients((arr) => (arr.length > 1 ? arr.filter((_, idx) => idx !== i) : [""]));
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
-  const setStep = (i: number, v: string) => setSteps((arr) => arr.map((x, idx) => (idx === i ? v : x)));
-  const addStep = () => {
-    setSteps((arr) => [...arr, ""]);
-    Haptics.selectionAsync();
-  };
-  const delStep = (i: number) => {
-    setSteps((arr) => (arr.length > 1 ? arr.filter((_, idx) => idx !== i) : [""]));
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
-
-  // ==== UI ==================================================================
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: COLORS.bg }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
-        <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: "700", marginBottom: 8 }}>
-          Capture
-        </Text>
+    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: COLORS.bg }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 140 }}>
+        <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: "900", marginBottom: 16 }}>Add Recipe</Text>
 
-        {/* URL + actions */}
-        <View
-          style={{
-            backgroundColor: COLORS.card,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: COLORS.border,
-            padding: 12,
-            marginBottom: 12,
-          }}
-        >
-          <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Paste YouTube/TikTok/blog URL</Text>
+        {/* Title */}
+        <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
+        <TextInput
+          value={title}
+          onChangeText={setTitle}
+          placeholder="My Tasty Pizza"
+          placeholderTextColor="#64748b"
+          style={{ color: "white", backgroundColor: COLORS.sunken, borderRadius: 12, padding: 12, marginBottom: 12 }}
+        />
+
+        {/* Import URL */}
+        <View style={{ backgroundColor: COLORS.card, borderRadius: 14, borderColor: COLORS.border, borderWidth: 1, padding: 12, marginBottom: 12 }}>
+          <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Import from a link (YouTube/TikTok/blog)…</Text>
           <View style={{ flexDirection: "row", alignItems: "center" }}>
             <TextInput
               value={pastedUrl}
               onChangeText={setPastedUrl}
-              placeholder="https://…"
+              placeholder="Paste page URL…"
               placeholderTextColor={COLORS.sub}
               autoCapitalize="none"
               autoCorrect={false}
-              style={{
-                flex: 1,
-                color: COLORS.text,
-                backgroundColor: COLORS.sunken,
-                paddingHorizontal: 12,
-                paddingVertical: 10,
-                borderRadius: 10,
-                marginRight: 8,
-              }}
-              editable={!saving}
+              style={{ flex: 1, color: COLORS.text, backgroundColor: COLORS.sunken, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, marginRight: 8 }}
             />
-            <TouchableOpacity
-              onPress={onPaste}
-              disabled={saving || loadingOg}
-              style={{
-                backgroundColor: COLORS.sunken,
-                paddingHorizontal: 14,
-                paddingVertical: 10,
-                borderRadius: 10,
-                marginRight: 8,
-                opacity: saving || loadingOg ? 0.6 : 1,
-              }}
-            >
+            <TouchableOpacity onPress={onPaste} style={{ backgroundColor: COLORS.sunken, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, marginRight: 8 }}>
               <Text style={{ color: COLORS.text, fontWeight: "600" }}>Paste</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => onImport()}
-              disabled={saving || loadingOg}
-              style={{
-                backgroundColor: COLORS.accent,
-                paddingHorizontal: 14,
-                paddingVertical: 10,
-                borderRadius: 10,
-                opacity: saving || loadingOg ? 0.6 : 1,
-              }}
-            >
-              <Text style={{ color: "#0B1120", fontWeight: "700" }}>
-                {loadingOg ? "Importing…" : "Import"}
-              </Text>
+            <TouchableOpacity onPress={() => resolveOg(pastedUrl)} disabled={loadingOg} style={{ backgroundColor: COLORS.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, opacity: loadingOg ? 0.6 : 1 }}>
+              <Text style={{ color: "#0B1120", fontWeight: "700" }}>{loadingOg ? "Importing…" : "Import"}</Text>
             </TouchableOpacity>
+          </View>
+
+          {/* Preview */}
+          <View style={{ marginTop: 10 }}>
+            {previewUri ? (
+              <Image source={{ uri: previewUri }} style={{ width: "100%", height: 220, borderRadius: 12 }} contentFit="cover" />
+            ) : (
+              <View style={{ height: 220, borderRadius: 12, backgroundColor: COLORS.sunken, borderWidth: 1, borderColor: COLORS.border, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ color: COLORS.sub }}>No imported image yet</Text>
+              </View>
+            )}
           </View>
         </View>
 
-        {/* Photo preview */}
-        <View
-          style={{
-            backgroundColor: COLORS.card,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: COLORS.border,
-            padding: 12,
-            marginBottom: 12,
-          }}
-        >
-          <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Photo</Text>
-          {previewUri ? (
-            <Image
-              source={{ uri: previewUri }}
-              style={{ width: "100%", height: 220, borderRadius: 12 }}
-              contentFit="cover"
-              cachePolicy="none"
-            />
-          ) : (
-            <View
-              style={{
-                height: 220,
-                borderRadius: 12,
-                backgroundColor: COLORS.sunken,
-                borderWidth: 1,
-                borderColor: COLORS.border,
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Ionicons name="image-outline" size={44} color={COLORS.sub} />
-              <Text style={{ color: COLORS.sub, marginTop: 6 }}>No photo yet</Text>
-            </View>
-          )}
-          <View style={{ flexDirection: "row", marginTop: 10 }}>
-            <TouchableOpacity
-              onPress={onPick}
-              disabled={saving}
-              style={{
-                backgroundColor: COLORS.sunken,
-                padding: 12,
-                borderRadius: 10,
-                flex: 1,
-                marginRight: 10,
-                opacity: saving ? 0.6 : 1,
-              }}
-            >
-              <Text style={{ color: COLORS.text, textAlign: "center", fontWeight: "600" }}>
-                Pick from Library
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={onCamera}
-              disabled={saving}
-              style={{
-                backgroundColor: COLORS.accent,
-                padding: 12,
-                borderRadius: 10,
-                flex: 1,
-                opacity: saving ? 0.6 : 1,
-              }}
-            >
-              <Text style={{ color: "#0B1120", textAlign: "center", fontWeight: "700" }}>
-                Take Photo
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Basics */}
-        <View
-          style={{
-            backgroundColor: COLORS.card,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: COLORS.border,
-            padding: 12,
-            marginBottom: 12,
-          }}
-        >
-          <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Title</Text>
-          <TextInput
-            value={title}
-            onChangeText={setTitle}
-            placeholder="e.g., Creamy Garlic Pasta"
-            placeholderTextColor={COLORS.sub}
-            style={{
-              color: COLORS.text,
-              backgroundColor: COLORS.sunken,
-              paddingHorizontal: 12,
-              paddingVertical: 12,
-              borderRadius: 10,
-              marginBottom: 12,
-            }}
-            editable={!saving}
-          />
-          <View style={{ flexDirection: "row" }}>
-            <View style={{ flex: 1, marginRight: 10 }}>
-              <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Time (minutes)</Text>
-              <TextInput
-                value={timeMinutes}
-                onChangeText={setTimeMinutes}
-                placeholder="e.g., 25"
-                keyboardType="numeric"
-                placeholderTextColor={COLORS.sub}
-                style={{
-                  color: COLORS.text,
-                  backgroundColor: COLORS.sunken,
-                  paddingHorizontal: 12,
-                  paddingVertical: 12,
-                  borderRadius: 10,
-                }}
-                editable={!saving}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Servings</Text>
-              <TextInput
-                value={servings}
-                onChangeText={setServings}
-                placeholder="e.g., 4"
-                keyboardType="numeric"
-                placeholderTextColor={COLORS.sub}
-                style={{
-                  color: COLORS.text,
-                  backgroundColor: COLORS.sunken,
-                  paddingHorizontal: 12,
-                  paddingVertical: 12,
-                  borderRadius: 10,
-                }}
-                editable={!saving}
-              />
-            </View>
-          </View>
-        </View>
+        {/* Photo button (camera or gallery) */}
+        <TouchableOpacity onPress={pickOrCamera} style={{ backgroundColor: COLORS.card, padding: 12, borderRadius: 12, alignItems: "center", marginBottom: 12 }}>
+          <Text style={{ color: COLORS.text, fontWeight: "800" }}>Add/Choose Photo…</Text>
+        </TouchableOpacity>
 
         {/* Ingredients */}
-        <View
-          style={{
-            backgroundColor: COLORS.card,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: COLORS.border,
-            padding: 12,
-            marginBottom: 12,
-          }}
-        >
-          <Text style={{ color: COLORS.text, fontWeight: "700", marginBottom: 8 }}>Ingredients</Text>
-          {ingredients.map((line, i) => (
-  <IngredientRow
-    key={`ing-${i}`}
-    value={line}
-    onChange={(t) => setIngredient(i, t)}
-    onRemove={() => delIngredient(i)}
-  />
-))}
-
-          <TouchableOpacity
-            onPress={addIngredient}
-            disabled={saving}
-            style={{
-              backgroundColor: COLORS.sunken,
-              padding: 12,
-              borderRadius: 10,
-              alignItems: "center",
-              marginTop: 4,
-              opacity: saving ? 0.6 : 1,
-            }}
-          >
-            <Text style={{ color: COLORS.text, fontWeight: "600" }}>+ Add Ingredient</Text>
-          </TouchableOpacity>
-        </View>
+        <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "900", marginBottom: 8 }}>Ingredients</Text>
+        {ingredients.map((ing, i) => (
+          <View key={i} style={{ marginBottom: 10 }}>
+            <TextInput
+              value={ing}
+              onChangeText={(v) => setIngredients((arr) => arr.map((x, idx) => (idx === i ? v : x)))}
+              placeholder="2 cups flour…"
+              placeholderTextColor="#64748b"
+              style={{ color: "white", backgroundColor: COLORS.sunken, borderRadius: 10, padding: 10 }}
+            />
+            <TouchableOpacity onPress={() => setIngredients((arr) => arr.filter((_, idx) => idx !== i))} style={{ marginTop: 6, alignSelf: "flex-end", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: "#7f1d1d" }}>
+              <Text style={{ color: "white", fontWeight: "800" }}>Remove</Text>
+            </TouchableOpacity>
+          </View>
+        ))}
+        <TouchableOpacity onPress={() => setIngredients((arr) => [...arr, ""])} style={{ marginTop: 6, backgroundColor: COLORS.card, paddingVertical: 12, borderRadius: 12, alignItems: "center", marginBottom: 16 }}>
+          <Text style={{ color: COLORS.text, fontWeight: "800" }}>+ Add Ingredient</Text>
+        </TouchableOpacity>
 
         {/* Steps */}
-        <View
-          style={{
-            backgroundColor: COLORS.card,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: COLORS.border,
-            padding: 12,
-            marginBottom: 12,
-          }}
-        >
-          <Text style={{ color: COLORS.text, fontWeight: "700", marginBottom: 8 }}>Steps</Text>
-          {steps.map((line, i) => (
-            <View
-              key={`step-${i}`}
-              style={{
-                backgroundColor: COLORS.sunken,
-                borderRadius: 10,
-                padding: 10,
-                marginBottom: 8,
-                borderWidth: 1,
-                borderColor: COLORS.border,
-              }}
-            >
-              <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
-                <Text style={{ color: COLORS.text, fontWeight: "700" }}>{i + 1}.</Text>
-                <TouchableOpacity onPress={() => delStep(i)} disabled={saving}>
-                  <Text style={{ color: "#FCA5A5", fontWeight: "700", opacity: saving ? 0.6 : 1 }}>
-                    Remove
-                  </Text>
-                </TouchableOpacity>
-              </View>
-              <TextInput
-                value={line}
-                onChangeText={(v) => setStep(i, v)}
-                placeholder="Type what to do in this step…"
-                placeholderTextColor={COLORS.sub}
-                multiline
-                style={{ color: COLORS.text, minHeight: 60, textAlignVertical: "top" }}
-                editable={!saving}
-              />
-            </View>
-          ))}
-          <TouchableOpacity
-            onPress={addStep}
-            disabled={saving}
-            style={{
-              backgroundColor: COLORS.sunken,
-              padding: 12,
-              borderRadius: 10,
-              alignItems: "center",
-              marginTop: 4,
-              opacity: saving ? 0.6 : 1,
-            }}
-          >
-            <Text style={{ color: COLORS.text, fontWeight: "600" }}>+ Add Step</Text>
-          </TouchableOpacity>
-        </View>
+        <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "900", marginBottom: 8 }}>Steps</Text>
+        {steps.map((st, i) => (
+          <View key={i} style={{ marginBottom: 10 }}>
+            <TextInput
+              value={st}
+              onChangeText={(t) => setSteps((arr) => arr.map((x, idx) => (idx === i ? t : x)))}
+              placeholder="Mix everything…"
+              placeholderTextColor="#64748b"
+              multiline
+              style={{ color: "white", backgroundColor: COLORS.sunken, borderRadius: 10, padding: 10, minHeight: 60 }}
+            />
+            <TouchableOpacity onPress={() => setSteps((arr) => arr.filter((_, idx) => idx !== i))} style={{ marginTop: 6, alignSelf: "flex-end", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: "#7f1d1d" }}>
+              <Text style={{ color: "white", fontWeight: "800" }}>Remove</Text>
+            </TouchableOpacity>
+          </View>
+        ))}
+        <TouchableOpacity onPress={() => setSteps((arr) => [...arr, ""])} style={{ marginTop: 6, backgroundColor: COLORS.card, paddingVertical: 12, borderRadius: 12, alignItems: "center", marginBottom: 20 }}>
+          <Text style={{ color: COLORS.text, fontWeight: "800" }}>+ Add Step</Text>
+        </TouchableOpacity>
       </ScrollView>
 
       {/* Save bar */}
-      <View
-        pointerEvents="box-none"
-        style={{
-          position: "absolute",
-          left: 0,
-          right: 0,
-          bottom: 0,
-          padding: 12,
-          backgroundColor: COLORS.bg,
-          borderTopWidth: 1,
-          borderColor: COLORS.border,
-        }}
-      >
+      <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 12, backgroundColor: COLORS.bg, borderTopWidth: 1, borderColor: COLORS.border }}>
         <TouchableOpacity
           onPress={onSave}
           disabled={saving}
-          style={{
-            backgroundColor: COLORS.green,
-            paddingVertical: 14,
-            borderRadius: 12,
-            alignItems: "center",
-            flexDirection: "row",
-            justifyContent: "center",
-            gap: 8,
-            opacity: saving ? 0.7 : 1,
-          }}
+          style={{ backgroundColor: saving ? "#475569" : "#22c55e", paddingVertical: 14, borderRadius: 12, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, opacity: saving ? 0.7 : 1 }}
         >
           {saving && <ActivityIndicator size="small" color="#fff" />}
-          <Text style={{ color: "#fff", fontWeight: "800" }}>
-            {saving ? "Saving…" : "Save to Cloud"}
-          </Text>
+          <Text style={{ color: "#fff", fontWeight: "800" }}>{saving ? "Saving…" : "Save"}</Text>
         </TouchableOpacity>
       </View>
 
-      {/* TikTok snap modal (only when needed) */}
+      {/* TikTok snap modal */}
       <TikTokSnap
         url={snapUrl}
         visible={snapVisible}
@@ -667,7 +457,7 @@ export default function CaptureScreen() {
           if (uriOrUrl.startsWith("http")) {
             setImg({ kind: "url-og", url: snapUrl, resolvedImageUrl: uriOrUrl });
           } else {
-            setImg({ kind: "picker", localUri: uriOrUrl }); // screenshot fallback
+            setImg({ kind: "picker", localUri: uriOrUrl }); // screenshot -> local file
           }
           lastResolvedUrlRef.current = snapUrl;
         }}

@@ -3,7 +3,7 @@
 // LIKE I'M 5: screens say "please get/change a recipe", and this file talks to the database nicely.
 
 import { supabase } from './supabase';
-// ⬇️ new: reuse the upload/cleanup helpers so storage stays tidy
+// ⬇️ reuse the upload/cleanup helpers so storage stays tidy
 import {
   replaceRecipeImage as replaceRecipeImageUpload,
   deleteRecipeAssets,
@@ -50,6 +50,7 @@ export interface DataAPI {
     createdAt: string;
     ingredients: string[];
     steps: StepRow[];
+    sourceUrl: string | null; // 🆕 original page URL (if any)
   } | null>;
 
   // saves/likes/cooked
@@ -76,7 +77,7 @@ export interface DataAPI {
     steps: { text: string; seconds: number | null }[]; // whole list in order
   }): Promise<void>;
 
-  // 🖼️ NEW: replace image & delete the old file automatically
+  // 🖼️ replace image & delete the old file automatically
   replaceRecipeImage(recipeId: string, sourceUri: string): Promise<string>;
 }
 
@@ -138,7 +139,7 @@ export const dataAPI: DataAPI = {
     const { data: r, error } = await supabase
       .from('recipes')
       .select(`
-        id, title, image_url, cooks_count, created_at,
+        id, title, image_url, cooks_count, created_at, source_url,
         user_id, profiles!recipes_user_id_fkey ( username, knives ),
         recipe_ingredients ( pos, text ),
         recipe_steps ( pos, text, seconds )
@@ -167,6 +168,7 @@ export const dataAPI: DataAPI = {
       createdAt: r.created_at,
       ingredients: ings,
       steps,
+      sourceUrl: r.source_url ?? null, // 🆕 hand it to screens
     };
   },
 
