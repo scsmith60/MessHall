@@ -2,6 +2,12 @@
 // like i'm 5: paste a link → we fetch smart stuff (title/image/ingredients/steps).
 // we now keep title simple: try meta/og; if it's weak on TikTok, open TitleSnap to read the live H1.
 // (ingredients/steps/image logic unchanged)
+//
+// 🔧 IMPORTANT CHANGE (fix FK error):
+// - We STOP sending user_id from the app when creating a recipe.
+// - The DB should set recipes.user_id = auth.uid() by DEFAULT (via SQL).
+// - We still read the uid only for S3 pathing (uploads), not for the insert.
+//   This avoids "violates foreign key constraint recipes_user_id_fkey" if a stale/invalid uid slips in.
 
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
@@ -116,7 +122,7 @@ export default function CaptureScreen() {
   const [snapUrl, setSnapUrl] = useState("");
   const [snapReloadKey, setSnapReloadKey] = useState(0);
 
-  // ⬇️ NEW: TitleSnap (TITLE only)
+  // ⬇️ TitleSnap (TITLE only)
   const [titleSnapVisible, setTitleSnapVisible] = useState(false);
   const [titleSnapUrl, setTitleSnapUrl] = useState("");
 
@@ -141,16 +147,13 @@ export default function CaptureScreen() {
         const og = ogRes.status === "fulfilled" ? ogRes.value : null;
 
         /* ------------------------------- TITLE ------------------------------- */
-        // kid-simple: try meta → then og; if that still looks weak on TikTok, open TitleSnap
         const current = (title || "").trim();
         const candidate = (meta?.title || og?.title || "").trim();
 
-        // only replace if current is empty/weak (don’t overwrite user-edited titles)
         if (isWeakTitle(current) && candidate) {
           setTitle(candidate);
         }
 
-        // if it's a TikTok link and our best title is still weak → use live DOM snap
         const bestSoFar = isWeakTitle(current) ? candidate : current;
         if (isTikTokLike(url) && isWeakTitle(bestSoFar)) {
           setTitleSnapUrl(url);
@@ -284,14 +287,15 @@ export default function CaptureScreen() {
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
+      // ✅ We still fetch uid ONLY for upload pathing (not for DB FK)
       const { data: me } = await supabase.auth.getUser();
-      const uid = me?.user?.id;
-      if (!uid) throw new Error("Not signed in");
+      const uid = me?.user?.id || "anonymous"; // safe fallback for path only
 
+      // 👉 IMPORTANT: Do NOT send user_id.
+      // DB default (auth.uid()) will set it on insert, preventing FK errors.
       const { data: created, error: createErr } = await supabase
         .from("recipes")
         .insert({
-          user_id: uid,
           title: title.trim(),
           minutes: timeMinutes ? Number(timeMinutes) : null,
           servings: servings ? Number(servings) : null,
@@ -302,6 +306,7 @@ export default function CaptureScreen() {
 
       if (createErr) throw createErr;
       const recipeId = created?.id as string;
+      if (!recipeId) throw new Error("Could not create recipe.");
 
       // upload image if we have one
       const uri =
@@ -325,19 +330,20 @@ export default function CaptureScreen() {
       // ingredients
       const ingLines = ingredients.map((s) => (s || "").trim()).filter(Boolean);
       if (ingLines.length) {
-        await supabase.from("recipe_ingredients").insert(
+        const { error } = await supabase.from("recipe_ingredients").insert(
           ingLines.map((text, i) => ({
             recipe_id: recipeId,
             pos: i + 1,
             text,
           }))
         );
+        if (error) throw error;
       }
 
       // steps
       const stepLines = steps.map((s) => (s || "").trim()).filter(Boolean);
       if (stepLines.length) {
-        await supabase.from("recipe_steps").insert(
+        const { error } = await supabase.from("recipe_steps").insert(
           stepLines.map((text, i) => ({
             recipe_id: recipeId,
             pos: i + 1,
@@ -345,6 +351,7 @@ export default function CaptureScreen() {
             seconds: null,
           }))
         );
+        if (error) throw error;
       }
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

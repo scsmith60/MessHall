@@ -1,91 +1,111 @@
-// PURPOSE: one recipe in the feed with image, creator line, cooks, time ago.
-// BEHAVIOR: swipe Save/Share (from SwipeCard), tap = open, long-press = haptic menu.
-// STEP 5b ADDED:
-// - Two tiny action buttons on the card: "♡ Like" and "I Cooked (+3 🔪)"
-// - Optimistic UI updates so it feels instant
-// - Calls dataAPI.toggleLike() and dataAPI.markCooked() to persist
-// - Updates local cooks and knives values so Badge + "cooked" text change right away
+// components/RecipeCard.tsx
+// LIKE I'M 5: this is one big yummy card.
+// We added a tiny medals pill next to the username:
+//   Beta   [🎖️ 128]                      1h
+//
+// NEW: If the recipe is YOURS, we HIDE the Like + I Cooked buttons
+// and show a soft "Your recipe" chip instead so it looks tidy.
+// NEW: We also show a ❤️ likes COUNT pill (a tiny heart + number) for everyone.
+//
+// Notes:
+// - "knives" prop = creator's lifetime medals (from user_stats.medals_total).
+// - We hide the pill if medals = 0 so it’s not clutter.
+// - Tap card to open (no "Open" text).
+// - Middle row shows cooks (number + medal icon) + likes count, and a Like button (unless owner).
+// - Big green "I Cooked (+3 🎖️)" button at the bottom (unless owner).
 
 import React, { useMemo, useState } from 'react';
-import { Alert, Image, Linking, Share, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Share, StyleSheet, Text, View } from 'react-native';
 import SwipeCard from './ui/SwipeCard';
 import HapticButton from './ui/HapticButton';
-import Badge from './ui/Badge';
-import { COLORS, RADIUS, SPACING } from '../lib/theme';
+import { COLORS, RADIUS } from '../lib/theme';
 import { compactNumber, timeAgo } from '../lib/utils';
 import { tap, success, warn } from '../lib/haptics';
-import { dataAPI } from '../lib/data'; // STEP 5b: we call server here
+import { dataAPI } from '../lib/data';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useUserId } from '../lib/auth'; // 👈 tiny helper to know who I am
 
 type Props = {
   id: string;
   title: string;
   image: string;
   creator: string;
+
+  // 🔸 creator's lifetime medals (wired via dataAPI: user_stats.medals_total)
   knives: number;
+
+  // how many people tapped "I Cooked" on THIS recipe
   cooks: number;
-  createdAt: number;
+
+  // ❤️ how many likes (we show as a small heart + number)
+  likes: number;
+
+  // time
+  createdAt: number | string;
+
+  // 👇 who owns this recipe (so we can hide buttons if it's me)
+  ownerId: string;
+
   onOpen?: (id: string) => void;
   onSave?: (id: string) => void;
 
-  // (optional) let parent know about quick actions if they care
   onLikedChange?: (id: string, liked: boolean) => void;
   onCooked?: (id: string) => void;
+
+  // Optional: star rating for the RECIPE (not the user)
+  rating?: number;        // 0..5 (can be 3.5)
+  ratingCount?: number;   // e.g., 128
 };
 
 export default function RecipeCard(props: Props) {
   const { id, title, image, creator, createdAt, onOpen, onSave, onLikedChange, onCooked } = props;
 
-  // STEP 5b: local numbers we show on the card (so it feels instant)
-  const [knives, setKnives] = useState<number>(props.knives ?? 0);
-  const [cooks, setCooks] = useState<number>(props.cooks ?? 0);
-  const [liked, setLiked] = useState<boolean>(false); // we can hydrate later from API if needed
+  // 👶 Who am I? If my id matches ownerId, it's MY recipe.
+  const { userId } = useUserId();
+  const isOwner = useMemo(() => !!userId && userId === props.ownerId, [userId, props.ownerId]);
 
-  // fake deep link (later from database)
+  // LOCAL: optimistic numbers so it feels instant
+  const [medals, setMedals] = useState<number>(props.knives ?? 0); // creator's medals (lifetime)
+  const [cooks, setCooks] = useState<number>(props.cooks ?? 0);
+  const [likes, setLikes] = useState<number>(props.likes ?? 0);
+  const [liked, setLiked] = useState<boolean>(false);
+
   const deepLink = `messhall://recipe/${id}`;
 
-  // swipe actions
+  // 👉 swipe actions: save + share
   const save = () => { success(); onSave?.(id); };
   const share = async () => {
     success();
     await Share.share({ message: `${title} on MessHall — ${deepLink}` });
   };
 
-  // long-press menu (copy/report)
-  const longPressMenu = async () => {
-    await tap(); // gentle buzz before options
-    Alert.alert('Recipe', 'What would you like to do?', [
-      { text: 'Copy Link', onPress: () => Share.share({ message: deepLink }) },
-      { text: 'Report', style: 'destructive', onPress: () => warn() },
-      { text: 'Cancel', style: 'cancel' }
-    ]);
-  };
+  // 👉 tapping the card opens it
+  const open = async () => { await tap(); onOpen?.(id); };
 
-  // STEP 5b: tap Like (ELI5: heart gives/takes 1 knife point)
+  // ❤️ like: +/- 1 medal (UI nudge only; real medals come from cooks via DB)
   const toggleLike = async () => {
     try {
-      const { liked: nowLiked } = await dataAPI.toggleLike(id);
+      const { liked: nowLiked, likesCount } = await dataAPI.toggleLike(id);
       setLiked(nowLiked);
-
-      // optimistic knives nudge: +1 if liked, -1 if unliked
-      setKnives(k => Math.max(0, k + (nowLiked ? 1 : -1)));
-
+      // If server returns a count, trust it; otherwise nudge by ±1
+      setLikes((prev) =>
+        typeof likesCount === 'number' ? likesCount : Math.max(0, prev + (nowLiked ? 1 : -1))
+      );
+      setMedals(m => Math.max(0, m + (nowLiked ? 1 : -1))); // optional UI nudge
       onLikedChange?.(id, nowLiked);
       await tap();
-    } catch {
+    } catch (e: any) {
       await warn();
       Alert.alert('Sign in required', 'Please sign in to like recipes.');
     }
   };
 
-  // STEP 5b: tap Cooked (ELI5: "I cooked it!" gives +3 knives and +1 cooked)
+  // 🍳 cooked: +3 medals and +1 cook (UI optimistic; DB trigger does the real thing)
   const markCooked = async () => {
     try {
       await dataAPI.markCooked(id);
-
-      // optimistic update: up we go!
       setCooks(c => c + 1);
-      setKnives(k => Math.max(0, k + 3)); // match your knives_weights if different
-
+      setMedals(m => Math.max(0, m + 3));
       onCooked?.(id);
       await success();
     } catch {
@@ -94,52 +114,131 @@ export default function RecipeCard(props: Props) {
     }
   };
 
+  // ⭐ tiny star rating row (for the RECIPE if provided)
+  const StarRating = ({
+    value = 0,
+    count = 0,
+    size = 14,
+  }: { value?: number; count?: number; size?: number }) => {
+    const v = Math.max(0, Math.min(5, value ?? 0));
+    const stars = [0, 1, 2, 3, 4].map(i => {
+      const diff = v - i;
+      const name = diff >= 1 ? 'star' : diff >= 0.5 ? 'star-half' : 'star-outline';
+      return <Ionicons key={i} name={name as any} size={size} color="#FACC15" />;
+    });
+    return (
+      <View style={styles.ratingWrap}>
+        <View style={styles.ratingStars}>{stars}</View>
+        <Text style={styles.ratingCount}>{`(${compactNumber(count)})`}</Text>
+      </View>
+    );
+  };
+
+  // 🎖️ cooks stat pill (number + medal icon)
+  const MedalStat = ({ count }: { count: number }) => (
+    <View style={styles.medalStat}>
+      <Text style={styles.stat}>{compactNumber(count)}</Text>
+      <MaterialCommunityIcons name="medal-outline" size={14} color={COLORS.subtext} />
+    </View>
+  );
+
+  // ❤️ likes stat pill (heart + number)
+  const LikeStat = ({ count }: { count: number }) => (
+    <View style={styles.likeStat}>
+      <Ionicons name="heart" size={14} color="#F87171" />
+      <Text style={styles.stat}>{compactNumber(count)}</Text>
+    </View>
+  );
+
+  // 🎖️ tiny pill next to username showing the CREATOR'S lifetime medals
+  const CreatorMedalPill = ({ value }: { value: number }) => {
+    if (!value) return null; // hide if zero to keep it clean
+    return (
+      <View style={styles.pill}>
+        <MaterialCommunityIcons name="medal" size={12} color="#E5E7EB" />
+        <Text style={styles.pillText}>{compactNumber(value)}</Text>
+      </View>
+    );
+  };
+
+  // 🧢 gentle chip that says "Your recipe" (used when we hide buttons)
+  const OwnerChip = () => (
+    <View style={styles.ownerChip}>
+      <Text style={styles.ownerChipText}>Your recipe</Text>
+    </View>
+  );
+
   return (
     <SwipeCard title={title} onSave={save} onShare={share}>
-      <HapticButton onPress={() => onOpen?.(id)} style={{ borderRadius: RADIUS.xl }}>
-        {/* NOTE: onLongPress belongs on the touchable; HapticButton forwards it to child View here */}
-        <View onLongPress={longPressMenu}>
-          {/* IMAGE — use ~16:9 so it looks crisp; recommended: 1200x675 */}
+      {/* Whole card opens on tap */}
+      <HapticButton onPress={open} style={{ borderRadius: RADIUS.xl }}>
+        <View>
+          {/* TITLE */}
+          <Text style={styles.title} numberOfLines={2}>{title}</Text>
+
+          {/* IMAGE */}
           <Image source={{ uri: image }} style={styles.img} resizeMode="cover" />
 
-          {/* META LINE: creator + knives badge + time ago */}
+          {/* META: Creator + [🎖️ medals] + (optional ⭐ rating) + time */}
           <View style={styles.row}>
-            <Text style={styles.creator}>{creator}</Text>
-            <Badge knives={knives} />
+            <Text style={styles.creator} numberOfLines={1}>{creator}</Text>
+
+            {/* creator's lifetime medals pill (from props.knives) */}
+            <CreatorMedalPill value={medals} />
+
+            {/* optional recipe star rating */}
+            {typeof props.rating === 'number' && (
+              <StarRating value={props.rating} count={props.ratingCount ?? 0} />
+            )}
+
             <View style={{ flex: 1 }} />
-            <Text style={styles.dim}>{timeAgo(createdAt)}</Text>
+            <Text style={styles.dim}>{timeAgo(createdAt as any)}</Text>
           </View>
 
-          {/* STATS LINE: shows cooked count + quick Open link */}
+          {/* STATS: cooks + likes, and Like button (hidden if owner) */}
           <View style={styles.row}>
-            <Text style={styles.stat}>{compactNumber(cooks)} cooked</Text>
+            <MedalStat count={cooks} />
+            <View style={{ width: 10 }} />
+            <LikeStat count={likes} />
             <View style={{ flex: 1 }} />
-            <Text style={styles.link} onPress={() => Linking.openURL(deepLink)}>Open</Text>
+
+            {/* Like button (compact ghost) — HIDDEN if it's my recipe */}
+            {!isOwner && (
+              <HapticButton
+                onPress={toggleLike}
+                style={[styles.likeBtn, liked && styles.likeBtnActive]}
+                accessibilityLabel="Like this recipe"
+              >
+                <Ionicons
+                  name={liked ? 'heart' : 'heart-outline'}
+                  size={16}
+                  color={liked ? COLORS.accent : COLORS.text}
+                  style={{ marginRight: 6 }}
+                />
+                <Text style={[styles.likeText, liked && { color: COLORS.accent, fontWeight: '800' }]}>
+                  Like
+                </Text>
+              </HapticButton>
+            )}
           </View>
 
-          {/* STEP 5b: QUICK ACTION BAR (tiny buttons, easy for thumbs) */}
-          <View style={styles.actionRow}>
-            {/* Like button */}
-            <HapticButton
-              onPress={toggleLike}
-              style={[
-                styles.actionBtn,
-                { backgroundColor: liked ? '#1f2937' : COLORS.card }
-              ]}
-            >
-              <Text style={{ color: liked ? '#FFD1DC' : COLORS.text, fontWeight: '800' }}>
-                {liked ? '♥ Liked' : '♡ Like'}
-              </Text>
-            </HapticButton>
-
-            {/* I Cooked button */}
-            <HapticButton
-              onPress={markCooked}
-              style={[styles.actionBtn, { backgroundColor: '#0b3b2e' }]}
-            >
-              <Text style={{ color: '#CFF8D6', fontWeight: '900' }}>I Cooked (+3 🔪)</Text>
-            </HapticButton>
-          </View>
+          {/* ACTION: Big clear CTA (hidden if owner) */}
+          {!isOwner ? (
+            <View style={styles.actionRow}>
+              <HapticButton
+                onPress={markCooked}
+                style={styles.cookedButton}
+                accessibilityLabel="I cooked this"
+              >
+                <Ionicons name="checkmark-circle" size={18} color="#ffffff" />
+                <Text style={styles.cookedText}>I Cooked</Text>
+                <Text style={styles.cookedBonus}>+3</Text>
+                <MaterialCommunityIcons name="medal" size={18} color="#ffffff" />
+              </HapticButton>
+            </View>
+          ) : (
+            <OwnerChip />
+          )}
         </View>
       </HapticButton>
     </SwipeCard>
@@ -147,27 +246,71 @@ export default function RecipeCard(props: Props) {
 }
 
 const styles = StyleSheet.create({
-  img: { width: '100%', height: 220, borderRadius: 16, marginTop: 8, marginBottom: 10 },
+  title: { color: COLORS.text, fontSize: 16, fontWeight: '800', marginBottom: 6 },
 
-  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  img: { width: '100%', height: 220, borderRadius: 16, marginBottom: 10 },
 
-  creator: { color: COLORS.text, fontWeight: '700', fontSize: 14 },
+  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+
+  creator: { color: COLORS.text, fontWeight: '800', fontSize: 14 },
+
   dim: { color: COLORS.subtext, fontSize: 12 },
+
   stat: { color: COLORS.subtext, fontSize: 13 },
 
-  link: { color: COLORS.accent, fontSize: 13, fontWeight: '800' },
+  // ⭐ rating styles
+  ratingWrap: { flexDirection: 'row', alignItems: 'center', marginLeft: 10 },
+  ratingStars: { flexDirection: 'row', gap: 2 },
+  ratingCount: { color: COLORS.subtext, fontSize: 12, marginLeft: 6, fontWeight: '600' },
 
-  // STEP 5b styles: tidy little buttons row
-  actionRow: {
+  // 🎖️ cooks stat
+  medalStat: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+
+  // ❤️ likes stat
+  likeStat: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+
+  // 🎖️ creator medal pill (next to username)
+  pill: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 8,
-    marginBottom: 4
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#0b3b2e',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#134e4a',
+    marginLeft: 8,
   },
-  actionBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: RADIUS.lg,
-    alignItems: 'center'
-  }
+  pillText: { color: COLORS.text, fontWeight: '800', fontSize: 12 },
+
+  // like button (ghost)
+  likeBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: RADIUS.lg, backgroundColor: COLORS.card,
+  },
+  likeBtnActive: { backgroundColor: '#1f2937' },
+  likeText: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
+
+  // big green CTA
+  actionRow: { marginTop: 8, marginBottom: 2 },
+  cookedButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, backgroundColor: '#0b3b2e',
+    paddingVertical: 12, borderRadius: RADIUS.lg,
+  },
+  cookedText: { color: '#ffffff', fontWeight: '900', fontSize: 14 },
+  cookedBonus: { color: '#ffffff', fontWeight: '900', fontSize: 14 },
+
+  // gentle "Your recipe" chip
+  ownerChip: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#1f2937',
+    marginTop: 6,
+  },
+  ownerChipText: { color: COLORS.subtext, fontWeight: '800', fontSize: 12 },
 });

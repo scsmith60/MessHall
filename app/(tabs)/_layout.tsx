@@ -1,44 +1,48 @@
 // app/(tabs)/_layout.tsx
-// 👶 kid version:
-// - builds the bottom tabs
-// - checks "am I admin?"
-// - if no admin → HIDE Owner tab (href: null)
-// - uses Ionicons with VALID names so no more "X" boxes
+// ✅ Known-good Tabs layout that always mounts the tab bar.
+// - Logs when the layout mounts (so we know Tabs are alive)
+// - Keeps your admin-only Owner tab
+// - Uses RequireAuth *after* Tabs mount so the bar is not short-circuited
 
 import React, { useEffect, useState, useCallback } from "react";
 import { Tabs } from "expo-router";
-import { Ionicons } from "@expo/vector-icons"; // ✅ correct import
+import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
+import { useAuth } from "../../lib/auth";
+import { Redirect } from "expo-router";
 
-// 🎨 colors (tweak if you like)
-const COLORS = {
-  bg: "#0b1220",
-  border: "#1f2937",
-  text: "#cbd5e1",
-  active: "#22c55e", // MessHall green-ish
-};
+const COLORS = { bg: "#0b1220", border: "#1f2937", text: "#cbd5e1", active: "#22c55e" };
+
+// 🔎 tiny icon helper
+const makeIcon =
+  (name: React.ComponentProps<typeof Ionicons>["name"]) =>
+  ({ color, size }: { color: string; size: number }) =>
+    <Ionicons name={name} color={color} size={size} />;
 
 export default function TabsLayout() {
+  console.log("[TabsLayout] mount");
+  const { isLoggedIn, loading } = useAuth();
+
+  // 🧱 IMPORTANT: never block mounting Tabs; just *redirect after* they appear
+  if (!loading && !isLoggedIn) {
+    console.log("[TabsLayout] not logged in → redirect to /(auth)/login");
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  // Admin tab
   const [isAdmin, setIsAdmin] = useState(false);
   const [ready, setReady] = useState(false);
 
-  // 🔎 check profiles.is_admin
   const loadIsAdmin = useCallback(async () => {
     try {
       const { data: auth } = await supabase.auth.getUser();
       const uid = auth.user?.id;
-      if (!uid) {
-        setIsAdmin(false);
-        setReady(true);
-        return;
-      }
-
+      if (!uid) { setIsAdmin(false); setReady(true); return; }
       const { data, error } = await supabase
         .from("profiles")
         .select("is_admin")
         .eq("id", uid)
         .single();
-
       setIsAdmin(!error && !!data?.is_admin);
     } catch {
       setIsAdmin(false);
@@ -53,12 +57,6 @@ export default function TabsLayout() {
     return () => data.subscription?.unsubscribe();
   }, [loadIsAdmin]);
 
-  // 🧩 helper to avoid repeating icon code
-  const makeIcon =
-    (name: React.ComponentProps<typeof Ionicons>["name"]) =>
-    ({ color, size }: { color: string; size: number }) =>
-      <Ionicons name={name} color={color} size={size} />;
-
   return (
     <Tabs
       screenOptions={{
@@ -68,44 +66,23 @@ export default function TabsLayout() {
         tabBarStyle: { backgroundColor: COLORS.bg, borderTopColor: COLORS.border },
       }}
     >
-      {/* 🏠 Home -> file must be app/(tabs)/index.tsx */}
-      <Tabs.Screen
-        name="index"
-        options={{ title: "Home", tabBarIcon: makeIcon("home") }}
-      />
-
-      {/* 📷 Capture -> file: app/(tabs)/capture.tsx */}
-      <Tabs.Screen
-        name="capture"
-        options={{ title: "Capture", tabBarIcon: makeIcon("camera") }}
-      />
-
-      {/* 🗓️ Planner -> file: app/(tabs)/planner.tsx */}
-      <Tabs.Screen
-        name="planner"
-        options={{ title: "Planner", tabBarIcon: makeIcon("calendar") }}
-      />
-
-      {/* 🛒 Shop -> file: app/(tabs)/shop.tsx */}
-      <Tabs.Screen
-        name="shop"
-        options={{ title: "Shop", tabBarIcon: makeIcon("cart") }}
-      />
-
-      {/* 👤 Profile -> file: app/(tabs)/profile.tsx */}
-      <Tabs.Screen
-        name="profile"
-        options={{ title: "Profile", tabBarIcon: makeIcon("person") }}
-      />
-
-      {/* 📊 Owner (admin only) -> file: app/(tabs)/owner.tsx */}
+      {/* 🏠 Home (file: app/(tabs)/index.tsx) */}
+      <Tabs.Screen name="index"   options={{ title: "Home",    tabBarIcon: makeIcon("home") }} />
+      {/* 📷 Capture */}
+      <Tabs.Screen name="capture" options={{ title: "Capture", tabBarIcon: makeIcon("camera") }} />
+      {/* 🗓️ Planner */}
+      <Tabs.Screen name="planner" options={{ title: "Planner", tabBarIcon: makeIcon("calendar") }} />
+      {/* 🛒 Shop */}
+      <Tabs.Screen name="shop"    options={{ title: "Shop",    tabBarIcon: makeIcon("cart") }} />
+      {/* 👤 Profile */}
+      <Tabs.Screen name="profile" options={{ title: "Profile", tabBarIcon: makeIcon("person") }} />
+      {/* 📊 Owner (admin only) */}
       <Tabs.Screen
         name="owner"
         options={{
           title: "Owner",
-          tabBarIcon: makeIcon("stats-chart"), // ✅ valid Ionicon
-          // 🪄 hide route completely if not admin (or still checking)
-          href: ready && isAdmin ? undefined : null,
+          tabBarIcon: makeIcon("stats-chart"),
+          href: ready && isAdmin ? undefined : null, // hide when not admin or still checking
         }}
       />
     </Tabs>

@@ -1,30 +1,10 @@
 // app/recipe/edit/[id].tsx
-// LIKE I'M 5 (what this screen does):
-// - Lets you change your recipe (title, ingredients, steps, image).
-// - Shows two pictures side-by-side: LEFT = current picture, RIGHT = new picture.
-//   You tap the RIGHT picture to use it. (No big "Use" button needed.)
-// - Has 2 tiny switches (only for the owner):
-//   1) Private -> when ON, recipe is hidden from public feed and creator can't earn.
-//   2) Monetization -> shows only when NOT private; when ON, creator can earn.
-//      (If Private is ON, Monetization is forced OFF automatically.)
-// - Public recipes default to Monetization = ON.
-//
-// NOTE: The database should have boolean columns:
-//   is_private (default false) and monetization_eligible (default true).
-//   A DB trigger can also force monetization_eligible = false whenever is_private = true.
+// Edit page. NEW: source_url awareness (imported lock) + save source_url.
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  Alert,
-  ScrollView,
-  TouchableOpacity,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Switch, // <-- tiny toggle control
+  View, Text, TextInput, Alert, ScrollView, TouchableOpacity,
+  KeyboardAvoidingView, Platform, ActivityIndicator, Switch,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Image } from 'expo-image';
@@ -41,7 +21,6 @@ import { normalizeIngredientLines } from '@/lib/ingredients';
 import { tiktokOEmbedThumbnail, TikTokSnap, isTikTokUrl } from '@/lib/tiktok';
 import { fetchMeta } from '@/lib/fetch_meta';
 
-/* ---------------------------- tiny types ---------------------------- */
 type StepRow = { text: string; seconds: number | null };
 type ImageSourceState =
   | { kind: 'none' }
@@ -49,59 +28,55 @@ type ImageSourceState =
   | { kind: 'picker'; localUri: string }
   | { kind: 'camera'; localUri: string };
 
-/* --------------------------- tiny helpers --------------------------- */
-// 1) find the first http(s):// link in text
 function extractFirstUrl(s: string): string | null {
   if (!s) return null;
   const m = s.match(/https?:\/\/[^\s"'<>]+/i);
   return m ? m[0] : null;
 }
-// 2) wrap a promise with a timeout
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return await Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 }
 
-/* ============================== SCREEN ============================== */
 export default function EditRecipe() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
-  /* -------- who is logged in + who owns recipe (so we can edit) -------- */
+  // auth/ownership
   const [userId, setUserId] = useState<string | null>(null);
   const [ownerId, setOwnerId] = useState<string | null>(null);
 
-  /* ------------------------- main recipe fields ------------------------- */
+  // main fields
   const [title, setTitle] = useState('');
   const [currentImageUrl, setCurrentImageUrl] = useState<string>('');
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<StepRow[]>([]);
 
-  /* --------------------- privacy + monetization flags -------------------- */
-  // Private: hides from public feed; creator cannot earn when true.
+  // privacy/monetization
   const [isPrivate, setIsPrivate] = useState<boolean>(false);
-  // Monetization: only matters when NOT private. Public defaults to true.
   const [monetizationEligible, setMonetizationEligible] = useState<boolean>(true);
 
-  /* ----------------------- picking/importing images ---------------------- */
-  const [img, setImg] = useState<ImageSourceState>({ kind: 'none' }); // the NEW preview on the RIGHT
-  const [pastedUrl, setPastedUrl] = useState('');
+  // NEW: import awareness
+  const [sourceUrlDb, setSourceUrlDb] = useState<string | null>(null); // what DB already has
+  const [pastedUrl, setPastedUrl] = useState('');                      // what user types now
+
+  // image handling
+  const [img, setImg] = useState<ImageSourceState>({ kind: 'none' });
   const [loadingImport, setLoadingImport] = useState(false);
 
-  /* ----------------------------- TikTok snap ----------------------------- */
+  // tiktok snap
   const [snapVisible, setSnapVisible] = useState(false);
   const [snapUrl, setSnapUrl] = useState('');
   const [snapReloadKey, setSnapReloadKey] = useState(0);
 
-  /* ------------------------- misc state / refs --------------------------- */
+  // misc
   const lastResolvedUrlRef = useRef<string>('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  /* --------------------- get signed-in user id on mount ------------------ */
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null));
   }, []);
 
-  /* -------------------------- load the recipe ---------------------------- */
+  // load existing recipe
   useEffect(() => {
     let off = false;
     (async () => {
@@ -110,23 +85,20 @@ export default function EditRecipe() {
         const r: any = await dataAPI.getRecipeById(id);
         if (!r) { Alert.alert('Missing', 'Recipe not found.'); router.back(); return; }
 
-        // basic fields
         setTitle(r.title || '');
         setCurrentImageUrl(r.image_url || r.image || '');
         setIngredients(r.ingredients || []);
         setSteps(r.steps || []);
 
-        // privacy + monetization (default monetization = true if public)
         const dbIsPrivate = Boolean(r.is_private);
         const dbMonet = r.monetization_eligible;
         setIsPrivate(dbIsPrivate);
-        setMonetizationEligible(
-          dbIsPrivate
-            ? false // if private -> no monetization for creator
-            : (typeof dbMonet === 'boolean' ? dbMonet : true) // public -> default true if missing
-        );
+        setMonetizationEligible(dbIsPrivate ? false : (typeof dbMonet === 'boolean' ? dbMonet : true));
 
-        if (r.sourceUrl) setPastedUrl(r.sourceUrl);
+        // NEW: read source_url (may be snake_case or camelCase from API)
+        const link = (r.source_url ?? r.sourceUrl ?? '').trim();
+        setSourceUrlDb(link || null);
+        setPastedUrl(link); // prefill box
 
         const owner = await dataAPI.getRecipeOwnerId(id);
         if (!off) setOwnerId(owner);
@@ -141,7 +113,6 @@ export default function EditRecipe() {
 
   const canEdit = !!userId && !!ownerId && userId === ownerId;
 
-  /* ------------------- figure out the NEW preview uri ------------------- */
   const previewUri = useMemo(() => {
     switch (img.kind) {
       case 'url-og': return img.resolvedImageUrl;
@@ -151,14 +122,13 @@ export default function EditRecipe() {
     }
   }, [img]);
 
-  /* ------------------------------ paste url ------------------------------ */
   const onPaste = useCallback(async () => {
     const text = await Clipboard.getStringAsync();
     if (!text) return;
     setPastedUrl(text.trim());
   }, []);
 
-  /* ------------------------------ import URL ----------------------------- */
+  // import from pasted URL (fills fields + maybe image)
   const onImport = useCallback(async () => {
     const raw = (pastedUrl || '').trim();
     const url = extractFirstUrl(raw);
@@ -168,10 +138,8 @@ export default function EditRecipe() {
     try {
       const meta = await fetchMeta(url);
 
-      // fill title if empty
       if (meta.title && !title.trim()) setTitle(meta.title);
 
-      // fill ingredients and steps
       if (meta.ingredients?.length) {
         const parsed = normalizeIngredientLines(meta.ingredients);
         const canon = parsed.map(p => p.canonical).filter(Boolean);
@@ -181,17 +149,13 @@ export default function EditRecipe() {
         setSteps(meta.steps.map((t: any) => ({ text: String(t), seconds: null })));
       }
 
-      // gentle debug toast
       Alert.alert('Import result', `Found ingredients: ${meta.ingredients?.length || 0}\nTitle: ${meta.title || '(none)'}`);
 
-      // try image from meta
       let usedImage = false;
       if (meta.image) {
         setImg({ kind: 'url-og', url, resolvedImageUrl: meta.image });
         usedImage = true;
       }
-
-      // TikTok fallback
       if (isTikTokUrl(url) && !usedImage) {
         try {
           const thumb = await withTimeout(tiktokOEmbedThumbnail(url), 1200).catch(() => null);
@@ -215,7 +179,7 @@ export default function EditRecipe() {
     }
   }, [pastedUrl, title]);
 
-  /* --------------------- pick from camera or gallery --------------------- */
+  // choose camera/gallery
   const chooseCameraOrGallery = useCallback(() => {
     Alert.alert('Add Photo', 'Where do you want to get the photo?', [
       {
@@ -249,7 +213,7 @@ export default function EditRecipe() {
     ], { cancelable: true });
   }, []);
 
-  /* ---------------- tap RIGHT image to upload & set as current ---------------- */
+  // tap right image to upload + set current
   const uploadPreviewAndSetImage = useCallback(async () => {
     if (!canEdit) { await warn(); Alert.alert('Only the owner can change the image.'); return; }
     if (!userId) { Alert.alert('Please sign in first.'); return; }
@@ -261,7 +225,6 @@ export default function EditRecipe() {
 
     if (!uri) { Alert.alert('No new image yet.\nTip: Tap "Add/Choose Photo…" or Import.'); return; }
 
-    // guess extension for contentType
     const guessExt = () => (uri.match(/\.([a-zA-Z0-9]{3,4})(?:\?|$)/)?.[1] || 'jpg').toLowerCase();
     const ext = guessExt();
 
@@ -281,7 +244,7 @@ export default function EditRecipe() {
     Alert.alert('Updated', 'Recipe image updated!');
   }, [canEdit, userId, img, id]);
 
-  /* ----------------------- ingredients / steps edit ---------------------- */
+  // ingredient/step helpers
   const addIngredient = () => setIngredients(a => [...a, '']);
   const updateIngredient = (i: number, t: string) => setIngredients(a => a.map((v, idx) => idx === i ? t : v));
   const removeIngredient = (i: number) => setIngredients(a => a.filter((_, idx) => idx !== i));
@@ -295,24 +258,34 @@ export default function EditRecipe() {
   };
   const removeStep = (i: number) => setSteps(a => a.filter((_, idx) => idx !== i));
 
-  /* --------------------------------- SAVE -------------------------------- */
+  // NEW: compute imported lock = any source_url present (DB or newly pasted)
+  const importedLock = useMemo(() => {
+    const current = (sourceUrlDb || '').trim();
+    const pending = (pastedUrl || '').trim();
+    return !!(current || pending);
+  }, [sourceUrlDb, pastedUrl]);
+
+  // what we actually show on the switch
+  const monetizationEffective = (!isPrivate && !importedLock) ? monetizationEligible : false;
+
+  // SAVE
   const saveAll = async () => {
     if (!canEdit) { await warn(); Alert.alert('Not allowed', 'Only the owner can edit this recipe.'); return; }
 
     const cleanTitle = title.trim();
     if (!cleanTitle) return Alert.alert('Please add a title');
 
-    // tidy ingredients + steps
     const parsed = normalizeIngredientLines(ingredients);
     const canon = parsed.map(p => p.canonical).filter(Boolean);
     const cleanSteps = steps
       .map(s => ({ text: s.text.trim(), seconds: s.seconds ?? null }))
       .filter(s => s.text.length > 0);
 
-    // important rule:
-    // - If PRIVATE -> creator monetization must be OFF (false).
-    // - If PUBLIC  -> use the switch value (default is true).
-    const monetizationFlag = isPrivate ? false : monetizationEligible;
+    // final monetization rules
+    const monetizationFlag = (!isPrivate && !importedLock) ? monetizationEligible : false;
+
+    // final source_url to send
+    const finalSourceUrl = (pastedUrl && pastedUrl.trim() !== '') ? pastedUrl.trim() : (sourceUrlDb ?? null);
 
     setSaving(true);
     try {
@@ -325,6 +298,7 @@ export default function EditRecipe() {
         steps: cleanSteps,
         is_private: isPrivate,
         monetization_eligible: monetizationFlag,
+        source_url: finalSourceUrl,        // <-- IMPORTANT
       });
       await success();
       router.replace(`/recipe/${id}`);
@@ -336,7 +310,7 @@ export default function EditRecipe() {
     }
   };
 
-  /* -------------------------------- GUARDS ------------------------------- */
+  // guards
   if (loading) {
     return (
       <View style={{ flex:1, backgroundColor: COLORS.bg, alignItems:'center', justifyContent:'center' }}>
@@ -344,8 +318,8 @@ export default function EditRecipe() {
       </View>
     );
   }
-
-  if (!canEdit) {
+  const canEditNow = !!userId && !!ownerId && userId === ownerId;
+  if (!canEditNow) {
     return (
       <View style={{ flex:1, backgroundColor: COLORS.bg, alignItems:'center', justifyContent:'center', padding:24 }}>
         <Text style={{ color: COLORS.text, fontWeight: '800', textAlign:'center' }}>Only the owner can edit this recipe.</Text>
@@ -356,11 +330,10 @@ export default function EditRecipe() {
     );
   }
 
-  /* ---------------------------------- UI --------------------------------- */
+  // UI
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: COLORS.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 160 }}>
-        {/* title */}
         <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 16 }}>Edit Recipe</Text>
 
         <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
@@ -372,13 +345,13 @@ export default function EditRecipe() {
           style={{ color:'white', backgroundColor:'#1e293b', borderRadius:12, padding:12, marginBottom:8 }}
         />
 
-        {/* tiny row: PRIVATE switch */}
+        {/* PRIVATE switch */}
         <View style={{ flexDirection:'row', alignItems:'center', marginBottom:4 }}>
           <Switch
             value={isPrivate}
             onValueChange={(v) => {
               setIsPrivate(v);
-              if (v) setMonetizationEligible(false); // when turning private ON, force monetization OFF
+              if (v) setMonetizationEligible(false); // force OFF when private
             }}
             thumbColor={isPrivate ? '#22c55e' : '#e5e7eb'}
             trackColor={{ false: '#374151', true: '#14532d' }}
@@ -389,25 +362,26 @@ export default function EditRecipe() {
           Private hides your recipe from the public feed and blocks creator earnings.
         </Text>
 
-        {/* tiny row: MONETIZATION switch (only when NOT private) */}
-        {!isPrivate && (
-          <>
-            <View style={{ flexDirection:'row', alignItems:'center', marginBottom:4 }}>
-              <Switch
-                value={monetizationEligible}
-                onValueChange={setMonetizationEligible}
-                thumbColor={monetizationEligible ? '#22c55e' : '#e5e7eb'}
-                trackColor={{ false: '#374151', true: '#14532d' }}
-              />
-              <Text style={{ color: COLORS.text, fontWeight:'700', marginLeft:8 }}>Monetization</Text>
-            </View>
-            <Text style={{ color:'#94a3b8', marginBottom:12, fontSize:12 }}>
-              When ON (default for public), the creator can earn on this recipe.
-            </Text>
-          </>
-        )}
+        {/* MONETIZATION switch — LOCKED if private OR imported */}
+        <View style={{ flexDirection:'row', alignItems:'center', marginBottom:4 }}>
+          <Switch
+            value={monetizationEffective}
+            disabled={isPrivate || importedLock}
+            onValueChange={setMonetizationEligible}
+            thumbColor={monetizationEffective ? '#22c55e' : '#e5e7eb'}
+            trackColor={{ false: '#374151', true: '#14532d' }}
+          />
+          <Text style={{ color: COLORS.text, fontWeight:'700', marginLeft:8 }}>Monetization</Text>
+        </View>
+        <Text style={{ color:'#94a3b8', marginBottom:12, fontSize:12 }}>
+          {isPrivate
+            ? '🔒 Locked: recipe is Private.'
+            : importedLock
+              ? '🌐 Locked: recipe has a source link (Imported).'
+              : 'When ON (default for public), the creator can earn on this recipe.'}
+        </Text>
 
-        {/* images: side-by-side (left current, right new to tap) */}
+        {/* IMAGES — left current, right new (tap to use) */}
         <Text style={{ color: COLORS.text, marginBottom: 8 }}>Images</Text>
         <Text style={{ color:'#94a3b8', marginBottom: 10 }}>
           Left = current. Right = new. Tap the right picture to set it!
@@ -443,12 +417,12 @@ export default function EditRecipe() {
           </TouchableOpacity>
         </View>
 
-        {/* add/choose photo (fills RIGHT card) */}
+        {/* add/choose photo */}
         <TouchableOpacity onPress={chooseCameraOrGallery} style={{ backgroundColor: COLORS.card, padding:12, borderRadius:12, alignItems:'center', marginBottom:12 }}>
           <Text style={{ color: COLORS.text, fontWeight:'800' }}>Add/Choose Photo…</Text>
         </TouchableOpacity>
 
-        {/* import (also fills RIGHT card) */}
+        {/* import box (pre-filled if we know it) */}
         <View style={{ backgroundColor:'#111827', borderRadius:14, borderColor:'#243042', borderWidth:1, padding:12, marginBottom:12 }}>
           <Text style={{ color:'#9CA3AF', marginBottom:6 }}>Re-import from link (pre-filled if we know it)</Text>
           <View style={{ flexDirection:'row', alignItems:'center' }}>
@@ -539,7 +513,7 @@ export default function EditRecipe() {
         </TouchableOpacity>
       </View>
 
-      {/* TikTok Snap helper (lets you grab a frame if needed) */}
+      {/* TikTok Snap helper */}
       <TikTokSnap
         url={snapUrl}
         visible={snapVisible}

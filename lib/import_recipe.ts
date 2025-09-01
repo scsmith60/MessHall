@@ -1,17 +1,9 @@
 // lib/import_recipe.ts
 // ELI5: given a web page URL, we try really hard to pull out a recipe.
-// Order:
-// 1) JSON-LD (schema.org Recipe)
-// 2) Microdata fallbacks
-// 3) Visible description textContent fallbacks (e.g., DivDescriptionContainer, data-e2e*="desc")
-// 4) OG/Twitter description as last resort
-//
-// We return { title?, ingredients?, steps? }.
-// Screens then normalize + display.
+// (Kept exactly like yours; no DB writes here)
 
 import { normalizeIngredientLines } from './ingredients';
 
-// ---------- tiny utils ----------
 type ImportedRecipe = {
   title?: string;
   ingredients?: string[];
@@ -40,7 +32,6 @@ function pickMeta(html: string, name: string) {
 function toLines(val: any): string[] {
   if (!val) return [];
   if (Array.isArray(val)) return val.map(String);
-  // split on newlines & common bullet separators
   return String(val)
     .replace(/\r/g,'')
     .split(/\n|[\u2022•·▪▫►▶]/g)
@@ -49,7 +40,6 @@ function toLines(val: any): string[] {
 }
 function asArray<T=any>(x: any): T[] { return Array.isArray(x) ? x : [x]; }
 
-// ---------- JSON-LD ----------
 function parseJsonLd(html: string): ImportedRecipe | null {
   const scripts = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
   for (const s of scripts) {
@@ -93,7 +83,6 @@ function parseJsonLd(html: string): ImportedRecipe | null {
   return null;
 }
 
-// ---------- Microdata (light) ----------
 function parseMicrodata(html: string): ImportedRecipe | null {
   const ingMatches = [...html.matchAll(/itemprop=["']recipeIngredient["'][^>]*>([\s\S]*?)<\/[^>]+>/gi)];
   const stepMatches = [...html.matchAll(/itemprop=["']recipeInstructions["'][^>]*>([\s\S]*?)<\/[^>]+>/gi)];
@@ -109,13 +98,8 @@ function parseMicrodata(html: string): ImportedRecipe | null {
   return null;
 }
 
-// ---------- Visible description/caption FALLBACK ----------
-// We scan for elements whose class/id/data-e2e mention "desc", "description", "caption",
-// or the exact "DivDescriptionContainer" you found. We then take their textContent,
-// split to lines, and run our normalizer so units are canonical.
 function parseVisibleDescription(html: string): ImportedRecipe | null {
   const CANDIDATE_BLOCK = new RegExp(
-    // capture whole opening+content+closing of likely description blocks
     `<([a-z0-9]+)([^>]*?(?:class|id|data-e2e)=["'][^"']*(?:DivDescriptionContainer|description|desc|caption)[^"']*["'][^>]*)>([\\s\\S]*?)<\\/\\1>`,
     'ig'
   );
@@ -128,16 +112,11 @@ function parseVisibleDescription(html: string): ImportedRecipe | null {
   }
   if (!chunks.length) return null;
 
-  // Pick the longest chunk (usually the full description)
   const best = chunks.sort((a,b)=>b.length-a.length)[0];
-
-  // Heuristic: extract lines that look like ingredients
-  // (We let normalizeIngredientLines do heavy lifting/aliases.)
   const roughLines = toLines(best);
   const normalized = normalizeIngredientLines(roughLines);
   const ingredients = normalized.map(p => p.canonical).filter(Boolean);
 
-  // Optional: guess steps if we see a 'Steps:' section
   const lower = best.toLowerCase();
   let steps: string[] = [];
   const stepsIdx = lower.indexOf('steps:');
@@ -151,7 +130,6 @@ function parseVisibleDescription(html: string): ImportedRecipe | null {
   return null;
 }
 
-// ---------- OG/Twitter description fallback ----------
 function parseMetaDescriptionFallback(html: string): ImportedRecipe | null {
   const desc = pickMeta(html, 'og:description') || pickMeta(html, 'twitter:description');
   if (!desc) return null;
@@ -162,24 +140,19 @@ function parseMetaDescriptionFallback(html: string): ImportedRecipe | null {
   return { ingredients };
 }
 
-// ---------- main ----------
 export async function importRecipeFromUrl(url: string): Promise<ImportedRecipe | null> {
   const res = await fetch(url, { redirect: 'follow' });
   const html = await res.text();
 
-  // 1) JSON-LD
   const fromLd = parseJsonLd(html);
   if (fromLd) return fromLd;
 
-  // 2) Microdata
   const fromMicro = parseMicrodata(html);
   if (fromMicro) return fromMicro;
 
-  // 3) Visible description/caption (your DivDescriptionContainer case)
   const fromVisible = parseVisibleDescription(html);
   if (fromVisible) return fromVisible;
 
-  // 4) OG/Twitter description
   const fromMeta = parseMetaDescriptionFallback(html);
   if (fromMeta) return fromMeta;
 

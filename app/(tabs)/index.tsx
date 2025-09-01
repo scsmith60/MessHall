@@ -5,7 +5,6 @@
 // - We pull more when you scroll down (infinite), and you can pull-to-refresh.
 // - We save recipes to a tiny in-memory store so other screens find them.
 // - We track when a sponsored card is SEEN (>=50% visible) and log it ONE time.
-// - STEP 3c: Sponsored cards are rendered via <SponsoredCard slot={...} />.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -34,6 +33,8 @@ type SponsoredSlot = {
   cta?: string;
 };
 
+// 👶 Feed items we render (recipes + ads)
+// NEW: include ownerId + likes so RecipeCard can hide buttons and show ❤️ count.
 type FeedItem =
   | {
       type: 'recipe';
@@ -43,7 +44,9 @@ type FeedItem =
       creator: string;
       knives: number;
       cooks: number;
+      likes: number;       // ❤️ show this on the card
       createdAt: string;
+      ownerId: string;     // who owns it (hides Like/Cooked when mine)
     }
   | {
       type: 'sponsored';
@@ -91,6 +94,7 @@ export default function HomeScreen() {
             knives: r.knives,
             cooks: r.cooks,
             createdAt: new Date(r.createdAt).getTime(),
+            // we could also store r.likes / r.ownerId if needed elsewhere
           }))
         );
 
@@ -142,8 +146,6 @@ export default function HomeScreen() {
   // render row
   const renderItem = ({ item }: ListRenderItemInfo<FeedItem>) => {
     if (item.type === 'sponsored') {
-      // STEP 3c: SponsoredCard uses a slot object.
-      // Fallback: build a slot from legacy fields if `item.slot` is missing.
       const slot: SponsoredSlot =
         item.slot ??
         ({
@@ -157,7 +159,7 @@ export default function HomeScreen() {
       return <SponsoredCard slot={slot as any} />;
     }
 
-    // recipe
+    // 🥘 recipe card — pass ownerId + likes so the card hides buttons and shows ❤️ count
     return (
       <RecipeCard
         id={item.id}
@@ -166,7 +168,9 @@ export default function HomeScreen() {
         creator={item.creator}
         knives={item.knives}
         cooks={item.cooks}
+        likes={item.likes}
         createdAt={new Date(item.createdAt).getTime()}
+        ownerId={item.ownerId}
         onOpen={(id) => router.push(`/recipe/${id}`)}
         onSave={() => {}}
       />
