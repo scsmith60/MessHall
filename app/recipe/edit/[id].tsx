@@ -1,5 +1,5 @@
 // app/recipe/edit/[id].tsx
-// Edit page. NEW: source_url awareness (imported lock) + save source_url.
+// Edit page. PLUS: show the creator’s avatar + callsign at the top (tap → profile).
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
@@ -54,18 +54,17 @@ export default function EditRecipe() {
   const [isPrivate, setIsPrivate] = useState<boolean>(false);
   const [monetizationEligible, setMonetizationEligible] = useState<boolean>(true);
 
-  // NEW: import awareness
-  const [sourceUrlDb, setSourceUrlDb] = useState<string | null>(null); // what DB already has
-  const [pastedUrl, setPastedUrl] = useState('');                      // what user types now
+  // import awareness
+  const [sourceUrlDb, setSourceUrlDb] = useState<string | null>(null);
+  const [pastedUrl, setPastedUrl] = useState('');
 
   // image handling
   const [img, setImg] = useState<ImageSourceState>({ kind: 'none' });
   const [loadingImport, setLoadingImport] = useState(false);
 
-  // tiktok snap
-  const [snapVisible, setSnapVisible] = useState(false);
-  const [snapUrl, setSnapUrl] = useState('');
-  const [snapReloadKey, setSnapReloadKey] = useState(0);
+  // creator header bits (👶 NEW)
+  const [creatorUsername, setCreatorUsername] = useState<string>('someone');
+  const [creatorAvatar, setCreatorAvatar] = useState<string | null>(null);
 
   // misc
   const lastResolvedUrlRef = useRef<string>('');
@@ -82,7 +81,7 @@ export default function EditRecipe() {
     (async () => {
       if (!id) return;
       try {
-        const r: any = await dataAPI.getRecipeById(id);
+        const r: any = await dataAPI.getRecipeById(id); // now returns creatorAvatar too
         if (!r) { Alert.alert('Missing', 'Recipe not found.'); router.back(); return; }
 
         setTitle(r.title || '');
@@ -90,15 +89,17 @@ export default function EditRecipe() {
         setIngredients(r.ingredients || []);
         setSteps(r.steps || []);
 
+        setCreatorUsername(r.creator || 'someone');       // 👶 NEW
+        setCreatorAvatar(r.creatorAvatar ?? null);         // 👶 NEW
+
         const dbIsPrivate = Boolean(r.is_private);
         const dbMonet = r.monetization_eligible;
         setIsPrivate(dbIsPrivate);
         setMonetizationEligible(dbIsPrivate ? false : (typeof dbMonet === 'boolean' ? dbMonet : true));
 
-        // NEW: read source_url (may be snake_case or camelCase from API)
-        const link = (r.source_url ?? r.sourceUrl ?? '').trim();
+        const link = (r.sourceUrl ?? '').trim();
         setSourceUrlDb(link || null);
-        setPastedUrl(link); // prefill box
+        setPastedUrl(link);
 
         const owner = await dataAPI.getRecipeOwnerId(id);
         if (!off) setOwnerId(owner);
@@ -128,7 +129,6 @@ export default function EditRecipe() {
     setPastedUrl(text.trim());
   }, []);
 
-  // import from pasted URL (fills fields + maybe image)
   const onImport = useCallback(async () => {
     const raw = (pastedUrl || '').trim();
     const url = extractFirstUrl(raw);
@@ -139,16 +139,13 @@ export default function EditRecipe() {
       const meta = await fetchMeta(url);
 
       if (meta.title && !title.trim()) setTitle(meta.title);
-
       if (meta.ingredients?.length) {
-        const parsed = normalizeIngredientLines(meta.ingredients);
-        const canon = parsed.map(p => p.canonical).filter(Boolean);
-        setIngredients(canon);
+        const lines = meta.ingredients as string[];
+        setIngredients(lines);
       }
       if (meta.steps?.length) {
-        setSteps(meta.steps.map((t: any) => ({ text: String(t), seconds: null })));
+        setSteps((meta.steps as string[]).map(t => ({ text: String(t), seconds: null })));
       }
-
       Alert.alert('Import result', `Found ingredients: ${meta.ingredients?.length || 0}\nTitle: ${meta.title || '(none)'}`);
 
       let usedImage = false;
@@ -167,9 +164,6 @@ export default function EditRecipe() {
         } catch {}
         if (!usedImage) {
           setImg({ kind: 'none' });
-          setSnapUrl(url);
-          setSnapReloadKey(k => k + 1);
-          setSnapVisible(true);
         }
       }
     } catch (e: any) {
@@ -179,7 +173,6 @@ export default function EditRecipe() {
     }
   }, [pastedUrl, title]);
 
-  // choose camera/gallery
   const chooseCameraOrGallery = useCallback(() => {
     Alert.alert('Add Photo', 'Where do you want to get the photo?', [
       {
@@ -213,7 +206,6 @@ export default function EditRecipe() {
     ], { cancelable: true });
   }, []);
 
-  // tap right image to upload + set current
   const uploadPreviewAndSetImage = useCallback(async () => {
     if (!canEdit) { await warn(); Alert.alert('Only the owner can change the image.'); return; }
     if (!userId) { Alert.alert('Please sign in first.'); return; }
@@ -244,47 +236,19 @@ export default function EditRecipe() {
     Alert.alert('Updated', 'Recipe image updated!');
   }, [canEdit, userId, img, id]);
 
-  // ingredient/step helpers
-  const addIngredient = () => setIngredients(a => [...a, '']);
-  const updateIngredient = (i: number, t: string) => setIngredients(a => a.map((v, idx) => idx === i ? t : v));
-  const removeIngredient = (i: number) => setIngredients(a => a.filter((_, idx) => idx !== i));
+  const monetizationEffective = (!isPrivate && !(sourceUrlDb || pastedUrl)) ? monetizationEligible : false;
 
-  const addStep = () => setSteps(a => [...a, { text: '', seconds: null }]);
-  const updateStepText = (i: number, t: string) => setSteps(a => a.map((v, idx) => idx === i ? { ...v, text: t } : v));
-  const updateStepSeconds = (i: number, txt: string) => {
-    const n = txt.replace(/[^\d]/g, '');
-    const val = n === '' ? null : Math.min(24 * 60 * 60, parseInt(n, 10) || 0);
-    setSteps(a => a.map((v, idx) => idx === i ? { ...v, seconds: val } : v));
-  };
-  const removeStep = (i: number) => setSteps(a => a.filter((_, idx) => idx !== i));
-
-  // NEW: compute imported lock = any source_url present (DB or newly pasted)
-  const importedLock = useMemo(() => {
-    const current = (sourceUrlDb || '').trim();
-    const pending = (pastedUrl || '').trim();
-    return !!(current || pending);
-  }, [sourceUrlDb, pastedUrl]);
-
-  // what we actually show on the switch
-  const monetizationEffective = (!isPrivate && !importedLock) ? monetizationEligible : false;
-
-  // SAVE
   const saveAll = async () => {
     if (!canEdit) { await warn(); Alert.alert('Not allowed', 'Only the owner can edit this recipe.'); return; }
 
     const cleanTitle = title.trim();
     if (!cleanTitle) return Alert.alert('Please add a title');
 
-    const parsed = normalizeIngredientLines(ingredients);
-    const canon = parsed.map(p => p.canonical).filter(Boolean);
     const cleanSteps = steps
       .map(s => ({ text: s.text.trim(), seconds: s.seconds ?? null }))
       .filter(s => s.text.length > 0);
 
-    // final monetization rules
-    const monetizationFlag = (!isPrivate && !importedLock) ? monetizationEligible : false;
-
-    // final source_url to send
+    const monetizationFlag = (!isPrivate && !(sourceUrlDb || pastedUrl)) ? monetizationEligible : false;
     const finalSourceUrl = (pastedUrl && pastedUrl.trim() !== '') ? pastedUrl.trim() : (sourceUrlDb ?? null);
 
     setSaving(true);
@@ -294,11 +258,11 @@ export default function EditRecipe() {
         id: id!,
         title: cleanTitle,
         image_url: (currentImageUrl || '').trim() || null,
-        ingredients: canon,
+        ingredients,
         steps: cleanSteps,
         is_private: isPrivate,
         monetization_eligible: monetizationFlag,
-        source_url: finalSourceUrl,        // <-- IMPORTANT
+        source_url: finalSourceUrl,
       });
       await success();
       router.replace(`/recipe/${id}`);
@@ -310,7 +274,6 @@ export default function EditRecipe() {
     }
   };
 
-  // guards
   if (loading) {
     return (
       <View style={{ flex:1, backgroundColor: COLORS.bg, alignItems:'center', justifyContent:'center' }}>
@@ -330,12 +293,28 @@ export default function EditRecipe() {
     );
   }
 
-  // UI
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: COLORS.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 160 }}>
-        <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 16 }}>Edit Recipe</Text>
+        <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 8 }}>Edit Recipe</Text>
 
+        {/* 👶 NEW: little creator header with avatar + callsign (tap → profile) */}
+        <View style={{ flexDirection:'row', alignItems:'center', marginBottom: 14 }}>
+          <TouchableOpacity onPress={() => router.push(`/u/${creatorUsername}`)} activeOpacity={0.7}>
+            {creatorAvatar ? (
+              <Image source={{ uri: creatorAvatar }} style={{ width:28, height:28, borderRadius:14, marginRight:8 }} />
+            ) : (
+              <View style={{ width:28, height:28, borderRadius:14, marginRight:8, backgroundColor:'#111827', alignItems:'center', justifyContent:'center' }}>
+                <Text style={{ color:'#e5e7eb', fontSize:12, fontWeight:'800' }}>{(creatorUsername||'U')[0]?.toUpperCase()}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push(`/u/${creatorUsername}`)} activeOpacity={0.7}>
+            <Text style={{ color: COLORS.text, fontWeight:'800' }}>{creatorUsername}</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Title */}
         <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
         <TextInput
           value={title}
@@ -366,7 +345,7 @@ export default function EditRecipe() {
         <View style={{ flexDirection:'row', alignItems:'center', marginBottom:4 }}>
           <Switch
             value={monetizationEffective}
-            disabled={isPrivate || importedLock}
+            disabled={isPrivate || !!(sourceUrlDb || pastedUrl)}
             onValueChange={setMonetizationEligible}
             thumbColor={monetizationEffective ? '#22c55e' : '#e5e7eb'}
             trackColor={{ false: '#374151', true: '#14532d' }}
@@ -376,7 +355,7 @@ export default function EditRecipe() {
         <Text style={{ color:'#94a3b8', marginBottom:12, fontSize:12 }}>
           {isPrivate
             ? '🔒 Locked: recipe is Private.'
-            : importedLock
+            : (sourceUrlDb || pastedUrl)
               ? '🌐 Locked: recipe has a source link (Imported).'
               : 'When ON (default for public), the creator can earn on this recipe.'}
         </Text>
@@ -422,7 +401,7 @@ export default function EditRecipe() {
           <Text style={{ color: COLORS.text, fontWeight:'800' }}>Add/Choose Photo…</Text>
         </TouchableOpacity>
 
-        {/* import box (pre-filled if we know it) */}
+        {/* import box */}
         <View style={{ backgroundColor:'#111827', borderRadius:14, borderColor:'#243042', borderWidth:1, padding:12, marginBottom:12 }}>
           <Text style={{ color:'#9CA3AF', marginBottom:6 }}>Re-import from link (pre-filled if we know it)</Text>
           <View style={{ flexDirection:'row', alignItems:'center' }}>
@@ -451,17 +430,17 @@ export default function EditRecipe() {
             <View key={i} style={{ flexDirection:'row', alignItems:'center', marginBottom:8 }}>
               <TextInput
                 value={ing}
-                onChangeText={(t)=>updateIngredient(i,t)}
+                onChangeText={(t)=>setIngredients(a => a.map((v, idx) => idx === i ? t : v))}
                 placeholder={`Ingredient ${i + 1}`}
                 placeholderTextColor="#64748b"
                 style={{ flex:1, color:'white', backgroundColor:'#1e293b', borderRadius:10, padding:10 }}
               />
-              <TouchableOpacity onPress={()=>removeIngredient(i)} style={{ marginLeft:8, paddingVertical:10, paddingHorizontal:12, backgroundColor:'#7f1d1d', borderRadius:10 }}>
+              <TouchableOpacity onPress={()=>setIngredients(a => a.filter((_, idx) => idx !== i))} style={{ marginLeft:8, paddingVertical:10, paddingHorizontal:12, backgroundColor:'#7f1d1d', borderRadius:10 }}>
                 <Text style={{ color:'white', fontWeight:'800' }}>X</Text>
               </TouchableOpacity>
             </View>
           ))}
-          <HapticButton onPress={addIngredient} style={{ marginTop:6, backgroundColor: COLORS.card, paddingVertical:12, borderRadius: RADIUS.lg, alignItems:'center' }}>
+          <HapticButton onPress={()=>setIngredients(a => [...a, ''])} style={{ marginTop:6, backgroundColor: COLORS.card, paddingVertical:12, borderRadius: RADIUS.lg, alignItems:'center' }}>
             <Text style={{ color: COLORS.text, fontWeight:'800' }}>+ Add Ingredient</Text>
           </HapticButton>
         </View>
@@ -473,7 +452,7 @@ export default function EditRecipe() {
             <View key={i} style={{ marginBottom: 10 }}>
               <TextInput
                 value={st.text}
-                onChangeText={(t)=>updateStepText(i,t)}
+                onChangeText={(t)=>setSteps(a => a.map((v, idx) => idx === i ? { ...v, text: t } : v))}
                 placeholder="Mix everything…"
                 placeholderTextColor="#64748b"
                 multiline
@@ -483,51 +462,31 @@ export default function EditRecipe() {
                 <Text style={{ color:'#94a3b8', marginRight:8 }}>Seconds (optional)</Text>
                 <TextInput
                   value={st.seconds === null ? '' : String(st.seconds)}
-                  onChangeText={(t)=>updateStepSeconds(i,t)}
+                  onChangeText={(txt)=>{
+                    const n = txt.replace(/[^\d]/g, '');
+                    const val = n === '' ? null : Math.min(24 * 60 * 60, parseInt(n, 10) || 0);
+                    setSteps(a => a.map((v, idx) => idx === i ? { ...v, seconds: val } : v));
+                  }}
                   keyboardType="number-pad"
                   placeholder="e.g., 90"
                   placeholderTextColor="#64748b"
-                  style={{ width:100, color:'white', backgroundColor:'#111827', borderRadius:10, padding:10 }}
+                  style={{ color:'white', backgroundColor:'#1e293b', borderRadius:10, padding:10, width:100 }}
                 />
-                <TouchableOpacity onPress={()=>removeStep(i)} style={{ marginLeft:10, paddingVertical:10, paddingHorizontal:12, backgroundColor:'#7f1d1d', borderRadius:10 }}>
-                  <Text style={{ color:'white', fontWeight:'800' }}>Remove</Text>
-                </TouchableOpacity>
               </View>
             </View>
           ))}
-          <HapticButton onPress={addStep} style={{ marginTop:6, backgroundColor: COLORS.card, paddingVertical:12, borderRadius: RADIUS.lg, alignItems:'center' }}>
+          <HapticButton onPress={()=>setSteps(a => [...a, { text: '', seconds: null }])} style={{ marginTop:6, backgroundColor: COLORS.card, paddingVertical:12, borderRadius: RADIUS.lg, alignItems:'center' }}>
             <Text style={{ color: COLORS.text, fontWeight:'800' }}>+ Add Step</Text>
           </HapticButton>
         </View>
+
+        {/* save */}
+        <HapticButton onPress={saveAll} disabled={saving} style={{ backgroundColor: COLORS.accent, paddingVertical: 14, borderRadius: RADIUS.xl, alignItems:'center' }}>
+          <Text style={{ color:'#001018', fontWeight:'900' }}>{saving ? 'Saving…' : 'Save Changes'}</Text>
+        </HapticButton>
+
+        <View style={{ height: 24 }} />
       </ScrollView>
-
-      {/* sticky SAVE bar */}
-      <View pointerEvents="box-none" style={{ position:'absolute', left:0, right:0, bottom:0, padding:12, backgroundColor: COLORS.bg, borderTopWidth:1, borderColor:'#243042' }}>
-        <TouchableOpacity
-          onPress={saveAll}
-          disabled={saving}
-          style={{ backgroundColor: saving ? '#475569' : '#22c55e', paddingVertical:14, borderRadius:12, alignItems:'center', flexDirection:'row', justifyContent:'center', opacity:saving?0.7:1 }}
-        >
-          {saving && <ActivityIndicator size="small" color="#fff" />}
-          <Text style={{ color:'#fff', fontWeight:'800' }}>{saving ? 'Saving…' : 'Save'}</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* TikTok Snap helper */}
-      <TikTokSnap
-        url={snapUrl}
-        visible={snapVisible}
-        reloadKey={snapReloadKey}
-        zoom={1.75}
-        focusY={0.4}
-        onCancel={() => setSnapVisible(false)}
-        onFound={(uriOrUrl) => {
-          setSnapVisible(false);
-          if (uriOrUrl.startsWith('http')) setImg({ kind: 'url-og', url: snapUrl, resolvedImageUrl: uriOrUrl });
-          else setImg({ kind: 'picker', localUri: uriOrUrl });
-          lastResolvedUrlRef.current = snapUrl;
-        }}
-      />
     </KeyboardAvoidingView>
   );
 }

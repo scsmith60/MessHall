@@ -1,8 +1,9 @@
 // app/recipe/[id].tsx
-// Shows one recipe. NEW: status pills for 🔒 Private / 🌐 Imported.
+// Shows one recipe. Friendly "Cooked it / Uncook" toggle with optimistic UI.
+// PLUS: tap the creator avatar/name to open their public profile at /u/<username>
 
-import React, { useEffect, useState } from 'react';
-import { Alert, ScrollView, Share, Text, View } from 'react-native';
+import React, { useEffect, useState, useCallback } from 'react';
+import { Alert, ScrollView, Share, Text, View, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { recipeStore } from '../../lib/store';
 import { COLORS, RADIUS, SPACING } from '../../lib/theme';
@@ -23,6 +24,7 @@ export default function RecipeDetail() {
     title: string;
     image: string;
     creator: string;
+    creatorAvatar?: string | null; // 👶 face
     knives: number;
     createdAt: number;
   } | null>(null);
@@ -32,7 +34,7 @@ export default function RecipeDetail() {
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const isOwner = !!userId && !!ownerId && userId === ownerId;
 
-  // NEW: flags for pills
+  // status pills
   const [isPrivate, setIsPrivate] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
 
@@ -47,6 +49,10 @@ export default function RecipeDetail() {
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState<number>(0);
   const [cooksCount, setCooksCount] = useState<number>(0);
+
+  // did I cook it?
+  const [isCooked, setIsCooked] = useState(false);
+  const [savingCook, setSavingCook] = useState(false);
 
   // load main record
   useEffect(() => {
@@ -63,13 +69,13 @@ export default function RecipeDetail() {
             title: r.title,
             image: r.image_url ?? r.image ?? '',
             creator: r.creator,
+            creatorAvatar: r.creatorAvatar ?? null, // 👶
             knives: r.knives ?? 0,
             createdAt: new Date(r.createdAt ?? r.created_at).getTime(),
           });
 
-          // NEW: capture privacy/import flags
           setIsPrivate(!!r.is_private);
-          setSourceUrl(r.source_url ?? r.sourceUrl ?? null);
+          setSourceUrl(r.sourceUrl ?? null);
 
           if (Array.isArray(r.steps)) setSteps(r.steps);
           if (Array.isArray(r.ingredients)) setIngredients(r.ingredients);
@@ -82,6 +88,7 @@ export default function RecipeDetail() {
                   title: s.title,
                   image: (s as any).image_url ?? s.image ?? '',
                   creator: s.creator,
+                  creatorAvatar: null,
                   knives: s.knives ?? 0,
                   createdAt: s.createdAt,
                 }
@@ -89,22 +96,6 @@ export default function RecipeDetail() {
           );
           if (Array.isArray(s?.steps)) setSteps(s.steps);
           if (Array.isArray(s?.ingredients)) setIngredients(s.ingredients);
-        }
-      } catch {
-        const s: any = id ? recipeStore.get(id) : undefined;
-        if (s) {
-          setModel({
-            id: s.id,
-            title: s.title,
-            image: (s as any).image_url ?? s.image ?? '',
-            creator: s.creator,
-            knives: s.knives ?? 0,
-            createdAt: s.createdAt,
-          });
-          if (Array.isArray(s?.steps)) setSteps(s.steps);
-          if (Array.isArray(s?.ingredients)) setIngredients(s.ingredients);
-        } else {
-          setModel(null);
         }
       } finally {
         if (alive) setLoading(false);
@@ -124,17 +115,13 @@ export default function RecipeDetail() {
     return () => { gone = true; };
   }, [id]);
 
-  // load ingredients/steps if not present
+  // try fill ings/steps if empty
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!id) return;
       try {
-        const { data } = await supabase
-          .from('recipe_ingredients')
-          .select('*')
-          .eq('recipe_id', id)
-          .order('pos');
+        const { data } = await supabase.from('recipe_ingredients').select('*').eq('recipe_id', id).order('pos');
         if (!cancelled && data) {
           const lines = data.map((row: any) => row.text ?? '').filter(Boolean);
           if (lines.length) setIngredients(lines);
@@ -143,16 +130,13 @@ export default function RecipeDetail() {
     })();
     return () => { cancelled = true; };
   }, [id]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!id || steps.length > 0) return;
       try {
-        const { data } = await supabase
-          .from('recipe_steps')
-          .select('*')
-          .eq('recipe_id', id)
-          .order('pos');
+        const { data } = await supabase.from('recipe_steps').select('*').eq('recipe_id', id).order('pos');
         if (!cancelled && data) {
           setSteps(data.map((row: any) => ({ text: row.text ?? '', seconds: row.seconds ?? null })));
         }
@@ -161,7 +145,7 @@ export default function RecipeDetail() {
     return () => { cancelled = true; };
   }, [id, steps.length]);
 
-  // sign image url if from storage
+  // sign main image if from storage
   const [signedImageUrl, setSignedImageUrl] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -169,58 +153,74 @@ export default function RecipeDetail() {
       if (!raw) { setSignedImageUrl(null); return; }
       if (raw.startsWith('http')) { setSignedImageUrl(raw); return; }
       const path = raw.replace(/^\/+/, '');
-      const { data } = await supabase
-        .storage.from('recipe-images')
-        .createSignedUrl(path, 60 * 60 * 24 * 7);
+      const { data } = await supabase.storage.from('recipe-images').createSignedUrl(path, 60 * 60 * 24 * 7);
       if (!cancelled) setSignedImageUrl(data?.signedUrl ?? null);
     }
     signIt(model?.image || '');
     return () => { cancelled = true; };
   }, [model?.image]);
 
-  // counts
-  const fetchEngagement = React.useCallback(async () => {
+  // counts + my states
+  const fetchEngagement = useCallback(async () => {
     if (!id) return;
-    const { count: likeCount } = await supabase
-      .from('recipe_likes')
-      .select('id', { count: 'exact', head: true })
-      .eq('recipe_id', id);
+
+    const { count: likeCount } = await supabase.from('recipe_likes').select('id', { count: 'exact', head: true }).eq('recipe_id', id);
     setLikesCount(likeCount ?? 0);
 
     if (userId) {
-      const { data: myLike } = await supabase
-        .from('recipe_likes')
-        .select('id')
-        .eq('recipe_id', id)
-        .eq('user_id', userId)
-        .maybeSingle();
+      const { data: myLike } = await supabase.from('recipe_likes').select('id').eq('recipe_id', id).eq('user_id', userId).maybeSingle();
       setLiked(!!myLike);
-    } else {
-      setLiked(false);
-    }
+    } else setLiked(false);
 
-    const { count: cookCount } = await supabase
-      .from('recipe_cooks')
-      .select('id', { count: 'exact', head: true })
-      .eq('recipe_id', id);
+    const { count: cookCount } = await supabase.from('recipe_cooks').select('id', { count: 'exact', head: true }).eq('recipe_id', id);
     setCooksCount(cookCount ?? 0);
+
+    if (userId) {
+      const { data: myCook } = await supabase.from('recipe_cooks').select('id').eq('recipe_id', id).eq('user_id', userId).maybeSingle();
+      setIsCooked(!!myCook);
+    } else setIsCooked(false);
   }, [id, userId]);
   useEffect(() => { fetchEngagement(); }, [fetchEngagement]);
 
-  // actions
+  // actions (save/like/share)
   const shareIt = async () => { await success(); await Share.share({ message: `${model?.title} on MessHall — messhall://recipe/${id}` }); };
   const toggleSave = async () => { try { const s = await dataAPI.toggleSave(String(id)); setSaved(s); await tap(); } catch { await warn(); Alert.alert('Sign in required'); } };
-  const toggleLike = async () => { 
+  const toggleLike = async () => {
     try { await dataAPI.toggleLike(String(id)); await tap(); await fetchEngagement(); }
-    catch (e: any) { await warn(); Alert.alert('Action not allowed', 'Please sign in to like recipes.'); }
+    catch { await warn(); Alert.alert('Action not allowed', 'Please sign in to like recipes.'); }
   };
-  const markCooked = async () => { try { await dataAPI.markCooked(String(id)); await success(); await fetchEngagement(); }
-    catch { await warn(); Alert.alert('Action not allowed', 'Please sign in to record cooks.'); } };
+
+  // cooked toggle (insert/delete)
+  const toggleCooked = useCallback(async () => {
+    if (!userId || !id) { await warn(); Alert.alert('Please sign in to record cooks.'); return; }
+    if (isOwner) { Alert.alert('Heads up', "You can’t medal your own recipe."); return; }
+    try {
+      setSavingCook(true);
+      if (isCooked) {
+        setIsCooked(false); setCooksCount(n => Math.max(0, n - 1));
+        const { error } = await supabase.from('recipe_cooks').delete().eq('user_id', userId).eq('recipe_id', id);
+        if (error) { setIsCooked(true); setCooksCount(n => n + 1); throw error; }
+        await tap();
+      } else {
+        setIsCooked(true); setCooksCount(n => n + 1);
+        const { error } = await supabase.from('recipe_cooks').insert({ user_id: userId, recipe_id: id as any }); // id is uuid
+        // @ts-ignore
+        if (error && error.code !== '23505') { setIsCooked(false); setCooksCount(n => Math.max(0, n - 1)); throw error; }
+        await success();
+      }
+    } catch (e: any) {
+      await warn(); Alert.alert('Oops', e?.message ?? 'Could not update cooked state.');
+    } finally { setSavingCook(false); }
+  }, [id, userId, isCooked, isOwner]);
+
   const startCookMode = async () => { await success(); router.push(`/cook/${id}`); };
   const goEdit = async () => { await tap(); router.push(`/recipe/edit/${id}`); };
   const confirmDelete = async () => { await warn(); Alert.alert('Delete?', 'This cannot be undone.', [
     { text: 'Cancel', style: 'cancel' },
-    { text: 'Delete', style: 'destructive', onPress: async () => { try { await dataAPI.deleteRecipe(String(id)); await success(); router.back(); } catch { await warn(); Alert.alert('Delete failed'); } } }
+    { text: 'Delete', style: 'destructive', onPress: async () => {
+      try { await dataAPI.deleteRecipe(String(id)); await success(); router.back(); }
+      catch { await warn(); Alert.alert('Delete failed'); }
+    } }
   ]); };
 
   if (loading) return <View style={{ flex:1,backgroundColor:COLORS.bg,alignItems:'center',justifyContent:'center'}}><Text style={{color:COLORS.text}}>Loading…</Text></View>;
@@ -245,7 +245,6 @@ export default function RecipeDetail() {
     );
   };
 
-  // NEW: Status pills
   const StatusPills = ({ isPrivate, sourceUrl }: { isPrivate: boolean; sourceUrl: string | null }) => {
     if (!isPrivate && !(sourceUrl && sourceUrl.trim() !== '')) return null;
     return (
@@ -271,14 +270,29 @@ export default function RecipeDetail() {
       <View style={{paddingHorizontal:SPACING.lg,paddingTop:SPACING.lg}}>
         <Text style={{color:COLORS.text,fontSize:22,fontWeight:'900',marginBottom:8}}>{model.title}</Text>
 
+        {/* CREATOR ROW: avatar + name (both tappable) */}
         <View style={{flexDirection:'row',alignItems:'center',marginBottom:10}}>
-          <Text style={{color:COLORS.text,fontWeight:'700'}}>{model.creator}</Text>
+          <TouchableOpacity onPress={() => router.push(`/u/${model.creator}`)} activeOpacity={0.7}>
+            {model.creatorAvatar ? (
+              <Image source={{ uri: model.creatorAvatar }} style={{ width:24, height:24, borderRadius:12, marginRight:8 }} />
+            ) : (
+              <View style={{ width:24, height:24, borderRadius:12, marginRight:8, backgroundColor:'#111827', alignItems:'center', justifyContent:'center' }}>
+                <Text style={{ color:'#e5e7eb', fontSize:12, fontWeight:'800' }}>{(model.creator||'U')[0]?.toUpperCase()}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={() => router.push(`/u/${model.creator}`)} activeOpacity={0.7}>
+            {/* Slightly lighter than super bold */}
+            <Text style={{color:COLORS.text,fontWeight:'700'}}>{model.creator}</Text>
+          </TouchableOpacity>
+
           <CreatorMedalPill value={model.knives} />
           <View style={{flex:1}} />
-          <Text style={{color:COLORS.subtext}}>{timeAgo(model.createdAt)}</Text>
+          <Text style={{color:COLORS.sub}}>{timeAgo(model.createdAt)}</Text>
         </View>
 
-        {/* NEW: status pills */}
+        {/* status pills */}
         <StatusPills isPrivate={isPrivate} sourceUrl={sourceUrl} />
 
         {isOwner && (
@@ -292,6 +306,7 @@ export default function RecipeDetail() {
           </View>
         )}
 
+        {/* counts */}
         <View style={{flexDirection:'row',gap:10,marginBottom:16}}>
           <View style={{flexDirection:'row',alignItems:'center',gap:6,backgroundColor:COLORS.card,paddingHorizontal:12,paddingVertical:6,borderRadius:999}}>
             <MaterialCommunityIcons name="medal" size={16} color={COLORS.accent} />
@@ -303,6 +318,7 @@ export default function RecipeDetail() {
           </View>
         </View>
 
+        {/* actions */}
         <View style={{flexDirection:'row',gap:10,marginBottom:16}}>
           <HapticButton onPress={toggleSave} style={{flex:1,backgroundColor:saved?'#14532d':COLORS.card,paddingVertical:14,borderRadius:RADIUS.lg,alignItems:'center'}}>
             <Text style={{color:saved?'#CFF8D6':COLORS.text,fontWeight:'800'}}>{saved?'Saved ✓':'Save'}</Text>
@@ -320,21 +336,27 @@ export default function RecipeDetail() {
         </View>
       </View>
 
-      <View style={{paddingHorizontal:SPACING.lg,marginTop:6}}>
-        <Text style={{color:COLORS.text,fontSize:18,fontWeight:'900',marginBottom:8}}>Ingredients</Text>
-        {ings.map((t,i)=><Text key={i} style={{color:COLORS.subtext,marginBottom:6}}>• {t}</Text>)}
+      {/* ingredients */}
+      <View style={{ paddingHorizontal: SPACING.lg, marginTop: 6 }}>
+        <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 8 }}>Ingredients</Text>
+        {(ingredients.length ? ingredients : ings).map((t, i) => (
+          <Text key={i} style={{ color: '#9ca3af', marginBottom: 6 }}>
+            • {t}
+          </Text>
+        ))}
       </View>
 
-      <View style={{paddingHorizontal:SPACING.lg,marginTop:16}}>
-        <Text style={{color:COLORS.text,fontSize:18,fontWeight:'900',marginBottom:8}}>Steps</Text>
-        {stepList.map((s,i)=>(
-          <View key={i} style={{flexDirection:'row',marginBottom:10}}>
-            <Text style={{color:COLORS.accent,fontWeight:'900',width:24}}>{i+1}.</Text>
-            <Text style={{color:COLORS.subtext,flex:1}}>
+      {/* steps */}
+      <View style={{ paddingHorizontal: SPACING.lg, marginTop: 16 }}>
+        <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 8 }}>Steps</Text>
+        {(steps.length ? steps : stepList).map((s, i) => (
+          <View key={i} style={{ flexDirection: 'row', marginBottom: 10 }}>
+            <Text style={{ color: COLORS.accent, fontWeight: '900', width: 24 }}>{i + 1}.</Text>
+            <Text style={{ color: '#9ca3af', flex: 1 }}>
               {s.text}{' '}
-              {typeof s.seconds==='number'&&s.seconds>0&&(
-                <Text style={{color:COLORS.accent}}>
-                  ({String(Math.floor(s.seconds/60)).padStart(2,'0')}:{String(s.seconds%60).padStart(2,'0')})
+              {typeof s.seconds === 'number' && s.seconds > 0 && (
+                <Text style={{ color: COLORS.accent }}>
+                  ({String(Math.floor(s.seconds / 60)).padStart(2, '0')}:{String(s.seconds % 60).padStart(2, '0')})
                 </Text>
               )}
             </Text>
@@ -342,38 +364,39 @@ export default function RecipeDetail() {
         ))}
       </View>
 
-      <View style={{paddingHorizontal:SPACING.lg,marginTop:8}}>
+      {/* bottom actions */}
+      <View style={{ paddingHorizontal: SPACING.lg, marginTop: 8 }}>
         {isOwner ? (
-          <>
-            <View style={{
-              alignSelf:'flex-start',
-              backgroundColor:'#0f172a',
-              borderColor:'#334155',
-              borderWidth:1,
-              borderRadius:RADIUS.lg,
-              paddingVertical:8,
-              paddingHorizontal:12,
-              marginBottom:12
-            }}>
-              <Text style={{ color: COLORS.subtext, fontWeight:'800', fontSize:12 }}>Your recipe</Text>
-            </View>
-            <HapticButton onPress={startCookMode} style={{backgroundColor:COLORS.accent,paddingVertical:16,borderRadius:RADIUS.xl,alignItems:'center'}}>
-              <Text style={{color:'#001018',fontWeight:'900',fontSize:16}}>Start Cook Mode</Text>
-            </HapticButton>
-          </>
+          <HapticButton onPress={startCookMode} style={{ backgroundColor: COLORS.accent, paddingVertical: 16, borderRadius: RADIUS.xl, alignItems: 'center' }}>
+            <Text style={{ color: '#001018', fontWeight: '900', fontSize: 16 }}>Start Cook Mode</Text>
+          </HapticButton>
         ) : (
           <>
-            <HapticButton onPress={markCooked} style={{backgroundColor:COLORS.card,paddingVertical:16,borderRadius:RADIUS.xl,alignItems:'center',marginBottom:8}}>
-              <Text style={{color:COLORS.text,fontWeight:'900',fontSize:16}}>I cooked this!</Text>
+            <HapticButton
+              onPress={toggleCooked}
+              disabled={savingCook}
+              style={{
+                backgroundColor: isCooked ? '#14532d' : COLORS.card,
+                paddingVertical: 16,
+                borderRadius: RADIUS.xl,
+                alignItems: 'center',
+                marginBottom: 8,
+                opacity: savingCook ? 0.7 : 1,
+              }}
+            >
+              <Text style={{ color: isCooked ? '#CFF8D6' : COLORS.text, fontWeight: '900', fontSize: 16 }}>
+                {savingCook ? 'Saving…' : isCooked ? 'Uncook' : 'I cooked this!'}
+              </Text>
             </HapticButton>
-            <HapticButton onPress={startCookMode} style={{backgroundColor:COLORS.accent,paddingVertical:16,borderRadius:RADIUS.xl,alignItems:'center'}}>
-              <Text style={{color:'#001018',fontWeight:'900',fontSize:16}}>Start Cook Mode</Text>
+
+            <HapticButton onPress={startCookMode} style={{ backgroundColor: COLORS.accent, paddingVertical: 16, borderRadius: RADIUS.xl, alignItems: 'center' }}>
+              <Text style={{ color: '#001018', fontWeight: '900', fontSize: 16 }}>Start Cook Mode</Text>
             </HapticButton>
           </>
         )}
       </View>
 
-      <View style={{height:32}} />
+      <View style={{ height: 32 }} />
     </ScrollView>
   );
 }
