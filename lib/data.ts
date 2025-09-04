@@ -78,7 +78,7 @@ export interface DataAPI {
   getRecipeOwnerId(recipeId: string): Promise<string | null>;
   updateRecipe(
     recipeId: string,
-    patch: { title?: string; image_url?: string | null }
+    patch: { title?: string; image_url?: string | null; minutes?: number | null }
   ): Promise<{ id: string; title: string; image_url: string | null; updated_at: string }>;
   deleteRecipe(recipeId: string): Promise<void>;
 
@@ -92,10 +92,26 @@ export interface DataAPI {
     is_private?: boolean;
     monetization_eligible?: boolean;
     source_url?: string | null;
+    minutes?: number | null; // 👶 uses your existing column
   }): Promise<void>;
 
   // upload new image & persist url (also cleans old)
   replaceRecipeImage(recipeId: string, sourceUri: string): Promise<string>;
+
+  // 👶 ADVANCED: minutes + diet + ingredient filters (server-side)
+  searchRecipesAdvanced(args: {
+    text?: string;                      // title contains (case-insensitive)
+    maxMinutes?: number;                // recipes.minutes <= this
+    diet?: Array<'vegan' | 'gluten_free' | 'dairy_free'>; // overlaps diet_tags
+    includeIngredients?: string[];      // overlaps main_ingredients
+    excludeIngredients?: string[];      // NOT overlaps
+    limit?: number;                     // default 50
+  }): Promise<Array<{ id: string; title: string; image: string | null; creator: string }>>;
+
+  // 👶 SIMPLE: free-text fallback (kept for backward compatibility)
+  searchRecipes(query: string): Promise<
+    Array<{ id: string; title: string; image: string | null; creator: string }>
+  >;
 }
 
 /* ---------------------------------------------------------
@@ -149,7 +165,8 @@ export const dataAPI: DataAPI = {
     const { data: recipes, error } = await supabase
       .from('recipes')
       .select(`
-        id, title, image_url, cooks_count, likes_count, created_at,
+        id, title, image_url, cooks_count, likes_count, created_at, minutes,
+        diet_tags, main_ingredients,
         user_id,
         profiles!recipes_user_id_fkey ( username, avatar_url )
       `)
@@ -212,7 +229,7 @@ export const dataAPI: DataAPI = {
     const { data: r, error } = await supabase
       .from('recipes')
       .select(`
-        id, title, image_url, cooks_count, created_at, source_url,
+        id, title, image_url, cooks_count, created_at, source_url, minutes,
         is_private, monetization_eligible,
         user_id,
         profiles!recipes_user_id_fkey ( username, avatar_url ),
@@ -375,7 +392,7 @@ export const dataAPI: DataAPI = {
   async updateRecipeFull(args) {
     const {
       id, title, image_url, ingredients, steps,
-      is_private, monetization_eligible, source_url
+      is_private, monetization_eligible, source_url, minutes
     } = args;
 
     // base fields
@@ -387,6 +404,7 @@ export const dataAPI: DataAPI = {
         ...(is_private !== undefined ? { is_private } : {}),
         ...(monetization_eligible !== undefined ? { monetization_eligible } : {}),
         ...(source_url !== undefined ? { source_url } : {}),
+        ...(minutes !== undefined ? { minutes } : {}), // 👶 use your existing minutes column
       })
       .eq('id', id);
     if (baseErr) throw baseErr;
@@ -416,6 +434,93 @@ export const dataAPI: DataAPI = {
     const { error } = await supabase.from('recipes').update({ image_url: url }).eq('id', recipeId);
     if (error) throw error;
     return url;
+  },
+
+  // 8A) 👶 NEW: ADVANCED server-side search (fast + precise)
+  // LIKE I'M 5:
+  // - We search title text,
+  // - AND/OR keep only recipes with minutes <= number,
+  // - AND/OR match diet tags (vegan/gluten_free/dairy_free),
+  // - AND/OR match key ingredients (chicken/pasta/etc.)
+  async searchRecipesAdvanced({
+    text, maxMinutes, diet = [], includeIngredients = [], excludeIngredients = [], limit = 50,
+  }) {
+    let q = supabase
+      .from('recipes')
+      .select(`
+        id, title, image_url, minutes, diet_tags, main_ingredients,
+        profiles!recipes_user_id_fkey ( username )
+      `)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (text && text.trim()) q = q.ilike('title', `%${text.trim()}%`);
+    if (typeof maxMinutes === 'number') q = q.lte('minutes', maxMinutes);
+    if (diet.length) q = q.overlaps('diet_tags', diet);
+    if (includeIngredients.length) q = q.overlaps('main_ingredients', includeIngredients.map((x) => x.toLowerCase()));
+    if (excludeIngredients.length) q = q.not('main_ingredients', 'overlaps', excludeIngredients.map((x) => x.toLowerCase()));
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    return (data ?? []).map((r: any) => ({
+      id: String(r.id),
+      title: r.title ?? '',
+      image: r.image_url ?? null,
+      creator: r.profiles?.username ?? 'someone',
+    }));
+  },
+
+  // 8B) 👶 SIMPLE: free-text search (title → ingredient fallback)
+  async searchRecipes(query: string) {
+    const q = (query || '').trim();
+    if (!q) return [];
+
+    // (A) title match
+    const { data: titleRows, error: titleErr } = await supabase
+      .from('recipes')
+      .select(`
+        id, title, image_url,
+        user_id,
+        profiles!recipes_user_id_fkey ( username )
+      `)
+      .ilike('title', `%${q}%`)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (titleErr) throw titleErr;
+
+    let rows = titleRows ?? [];
+
+    // (B) if no title hits, try ingredient text
+    if (!rows.length) {
+      const { data: ingMatches } = await supabase
+        .from('recipe_ingredients')
+        .select('recipe_id')
+        .ilike('text', `%${q}%`)
+        .limit(50);
+
+      const ids = Array.from(new Set((ingMatches ?? []).map((r: any) => r.recipe_id))).filter(Boolean);
+      if (ids.length) {
+        const { data: byIng } = await supabase
+          .from('recipes')
+          .select(`
+            id, title, image_url,
+            user_id,
+            profiles!recipes_user_id_fkey ( username )
+          `)
+          .in('id', ids)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        rows = byIng ?? [];
+      }
+    }
+
+    return (rows ?? []).map((r: any) => ({
+      id: String(r.id),
+      title: r.title ?? '',
+      image: r.image_url ?? null,
+      creator: r.profiles?.username ?? 'someone',
+    }));
   },
 };
 

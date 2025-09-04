@@ -1,5 +1,8 @@
 // app/recipe/edit/[id].tsx
-// Edit page. PLUS: show the creator’s avatar + callsign at the top (tap → profile).
+// LIKE I'M 5:
+// - This is the "Edit Recipe" screen.
+// - We add a Safe Area wrapper so nothing hides under the phone's notch or home bar.
+// - We also add extra bottom padding so the Save button isn't covered by the home handle.
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
@@ -10,6 +13,9 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
+
+// 👇 NEW: Safe Area imports (so we avoid the notch/home bar)
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { COLORS, RADIUS, SPACING } from '@/lib/theme';
 import HapticButton from '@/components/ui/HapticButton';
@@ -40,6 +46,9 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 export default function EditRecipe() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
+  // 🎒 Safe Area numbers that tell us how far away from edges we should be
+  const insets = useSafeAreaInsets();
+
   // auth/ownership
   const [userId, setUserId] = useState<string | null>(null);
   const [ownerId, setOwnerId] = useState<string | null>(null);
@@ -62,7 +71,7 @@ export default function EditRecipe() {
   const [img, setImg] = useState<ImageSourceState>({ kind: 'none' });
   const [loadingImport, setLoadingImport] = useState(false);
 
-  // creator header bits (👶 NEW)
+  // creator header bits
   const [creatorUsername, setCreatorUsername] = useState<string>('someone');
   const [creatorAvatar, setCreatorAvatar] = useState<string | null>(null);
 
@@ -89,8 +98,8 @@ export default function EditRecipe() {
         setIngredients(r.ingredients || []);
         setSteps(r.steps || []);
 
-        setCreatorUsername(r.creator || 'someone');       // 👶 NEW
-        setCreatorAvatar(r.creatorAvatar ?? null);         // 👶 NEW
+        setCreatorUsername(r.creator || 'someone');
+        setCreatorAvatar(r.creatorAvatar ?? null);
 
         const dbIsPrivate = Boolean(r.is_private);
         const dbMonet = r.monetization_eligible;
@@ -274,219 +283,234 @@ export default function EditRecipe() {
     }
   };
 
+  // 🧽 Loading + Not-allowed screens also sit inside SafeArea so they don't touch the notch
   if (loading) {
     return (
-      <View style={{ flex:1, backgroundColor: COLORS.bg, alignItems:'center', justifyContent:'center' }}>
-        <Text style={{ color: COLORS.text }}>Loading…</Text>
-      </View>
+      <SafeAreaView style={{ flex:1, backgroundColor: COLORS.bg }} edges={['top','left','right']}>
+        <View style={{ flex:1, alignItems:'center', justifyContent:'center' }}>
+          <Text style={{ color: COLORS.text }}>Loading…</Text>
+        </View>
+      </SafeAreaView>
     );
   }
   const canEditNow = !!userId && !!ownerId && userId === ownerId;
   if (!canEditNow) {
     return (
-      <View style={{ flex:1, backgroundColor: COLORS.bg, alignItems:'center', justifyContent:'center', padding:24 }}>
-        <Text style={{ color: COLORS.text, fontWeight: '800', textAlign:'center' }}>Only the owner can edit this recipe.</Text>
-        <HapticButton onPress={() => router.back()} style={{ marginTop:16, backgroundColor: COLORS.card, padding:12, borderRadius: RADIUS.lg }}>
-          <Text style={{ color: COLORS.accent, fontWeight:'800' }}>Go Back</Text>
-        </HapticButton>
-      </View>
+      <SafeAreaView style={{ flex:1, backgroundColor: COLORS.bg }} edges={['top','left','right']}>
+        <View style={{ flex:1, alignItems:'center', justifyContent:'center', padding:24 }}>
+          <Text style={{ color: COLORS.text, fontWeight: '800', textAlign:'center' }}>Only the owner can edit this recipe.</Text>
+          <HapticButton onPress={() => router.back()} style={{ marginTop:16, backgroundColor: COLORS.card, padding:12, borderRadius: RADIUS.lg }}>
+            <Text style={{ color: COLORS.accent, fontWeight:'800' }}>Go Back</Text>
+          </HapticButton>
+        </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: COLORS.bg }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 160 }}>
-        <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 8 }}>Edit Recipe</Text>
+    // 👇 SafeAreaView keeps us clear of the top/left/right edges.
+    // We handle bottom space manually inside the ScrollView using insets.bottom.
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={['top','left','right']}>
+      {/* This keeps the keyboard from covering inputs on iOS */}
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView
+          style={{ flex: 1 }}
+          // 👇 We add our normal padding + extra bottom padding for the home bar.
+          contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 160 + Math.max(0, insets.bottom) }}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 8 }}>Edit Recipe</Text>
 
-        {/* 👶 NEW: little creator header with avatar + callsign (tap → profile) */}
-        <View style={{ flexDirection:'row', alignItems:'center', marginBottom: 14 }}>
-          <TouchableOpacity onPress={() => router.push(`/u/${creatorUsername}`)} activeOpacity={0.7}>
-            {creatorAvatar ? (
-              <Image source={{ uri: creatorAvatar }} style={{ width:28, height:28, borderRadius:14, marginRight:8 }} />
-            ) : (
-              <View style={{ width:28, height:28, borderRadius:14, marginRight:8, backgroundColor:'#111827', alignItems:'center', justifyContent:'center' }}>
-                <Text style={{ color:'#e5e7eb', fontSize:12, fontWeight:'800' }}>{(creatorUsername||'U')[0]?.toUpperCase()}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => router.push(`/u/${creatorUsername}`)} activeOpacity={0.7}>
-            <Text style={{ color: COLORS.text, fontWeight:'800' }}>{creatorUsername}</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Title */}
-        <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
-        <TextInput
-          value={title}
-          onChangeText={setTitle}
-          placeholder="My Tasty Pizza"
-          placeholderTextColor="#64748b"
-          style={{ color:'white', backgroundColor:'#1e293b', borderRadius:12, padding:12, marginBottom:8 }}
-        />
-
-        {/* PRIVATE switch */}
-        <View style={{ flexDirection:'row', alignItems:'center', marginBottom:4 }}>
-          <Switch
-            value={isPrivate}
-            onValueChange={(v) => {
-              setIsPrivate(v);
-              if (v) setMonetizationEligible(false); // force OFF when private
-            }}
-            thumbColor={isPrivate ? '#22c55e' : '#e5e7eb'}
-            trackColor={{ false: '#374151', true: '#14532d' }}
-          />
-          <Text style={{ color: COLORS.text, fontWeight:'700', marginLeft:8 }}>Private</Text>
-        </View>
-        <Text style={{ color:'#94a3b8', marginBottom:8, fontSize:12 }}>
-          Private hides your recipe from the public feed and blocks creator earnings.
-        </Text>
-
-        {/* MONETIZATION switch — LOCKED if private OR imported */}
-        <View style={{ flexDirection:'row', alignItems:'center', marginBottom:4 }}>
-          <Switch
-            value={monetizationEffective}
-            disabled={isPrivate || !!(sourceUrlDb || pastedUrl)}
-            onValueChange={setMonetizationEligible}
-            thumbColor={monetizationEffective ? '#22c55e' : '#e5e7eb'}
-            trackColor={{ false: '#374151', true: '#14532d' }}
-          />
-          <Text style={{ color: COLORS.text, fontWeight:'700', marginLeft:8 }}>Monetization</Text>
-        </View>
-        <Text style={{ color:'#94a3b8', marginBottom:12, fontSize:12 }}>
-          {isPrivate
-            ? '🔒 Locked: recipe is Private.'
-            : (sourceUrlDb || pastedUrl)
-              ? '🌐 Locked: recipe has a source link (Imported).'
-              : 'When ON (default for public), the creator can earn on this recipe.'}
-        </Text>
-
-        {/* IMAGES — left current, right new (tap to use) */}
-        <Text style={{ color: COLORS.text, marginBottom: 8 }}>Images</Text>
-        <Text style={{ color:'#94a3b8', marginBottom: 10 }}>
-          Left = current. Right = new. Tap the right picture to set it!
-        </Text>
-
-        <View style={{ flexDirection:'row', gap: 12, marginBottom: 12 }}>
-          {/* left: current */}
-          <View style={{ flex: 1, backgroundColor: '#0b1220', borderRadius: 12, borderWidth: 1, borderColor: '#243042', padding: 8 }}>
-            <Text style={{ color:'#9CA3AF', marginBottom: 6, fontWeight:'700' }}>Current</Text>
-            {currentImageUrl ? (
-              <Image source={{ uri: currentImageUrl }} style={{ width:'100%', height:200, borderRadius:10 }} contentFit="cover" />
-            ) : (
-              <View style={{ height:200, borderRadius:10, backgroundColor:'#1F2937', borderWidth:1, borderColor:'#243042', alignItems:'center', justifyContent:'center' }}>
-                <Text style={{ color:'#9CA3AF' }}>No image yet</Text>
-              </View>
-            )}
+          {/* tiny creator header with avatar + callsign (tap → profile) */}
+          <View style={{ flexDirection:'row', alignItems:'center', marginBottom: 14 }}>
+            <TouchableOpacity onPress={() => router.push(`/u/${creatorUsername}`)} activeOpacity={0.7}>
+              {creatorAvatar ? (
+                <Image source={{ uri: creatorAvatar }} style={{ width:28, height:28, borderRadius:14, marginRight:8 }} />
+              ) : (
+                <View style={{ width:28, height:28, borderRadius:14, marginRight:8, backgroundColor:'#111827', alignItems:'center', justifyContent:'center' }}>
+                  <Text style={{ color:'#e5e7eb', fontSize:12, fontWeight:'800' }}>{(creatorUsername||'U')[0]?.toUpperCase()}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => router.push(`/u/${creatorUsername}`)} activeOpacity={0.7}>
+              <Text style={{ color: COLORS.text, fontWeight:'800' }}>{creatorUsername}</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* right: new (tap to use) */}
-          <TouchableOpacity
-            onPress={uploadPreviewAndSetImage}
-            activeOpacity={0.85}
-            style={{ flex: 1, backgroundColor: '#0b1220', borderRadius: 12, borderWidth: 1, borderColor: '#243042', padding: 8 }}
-          >
-            <Text style={{ color:'#9CA3AF', marginBottom: 6, fontWeight:'700' }}>New (tap to use)</Text>
-            {previewUri ? (
-              <Image source={{ uri: previewUri }} style={{ width:'100%', height:200, borderRadius:10 }} contentFit="cover" />
-            ) : (
-              <View style={{ height:200, borderRadius:10, backgroundColor:'#1F2937', borderWidth:1, borderColor:'#243042', alignItems:'center', justifyContent:'center', paddingHorizontal:8 }}>
-                <Text style={{ color:'#9CA3AF', textAlign:'center' }}>No new image yet{'\n'}Tip: add/import first</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        </View>
+          {/* Title */}
+          <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
+          <TextInput
+            value={title}
+            onChangeText={setTitle}
+            placeholder="My Tasty Pizza"
+            placeholderTextColor="#64748b"
+            style={{ color:'white', backgroundColor:'#1e293b', borderRadius:12, padding:12, marginBottom:8 }}
+          />
 
-        {/* add/choose photo */}
-        <TouchableOpacity onPress={chooseCameraOrGallery} style={{ backgroundColor: COLORS.card, padding:12, borderRadius:12, alignItems:'center', marginBottom:12 }}>
-          <Text style={{ color: COLORS.text, fontWeight:'800' }}>Add/Choose Photo…</Text>
-        </TouchableOpacity>
-
-        {/* import box */}
-        <View style={{ backgroundColor:'#111827', borderRadius:14, borderColor:'#243042', borderWidth:1, padding:12, marginBottom:12 }}>
-          <Text style={{ color:'#9CA3AF', marginBottom:6 }}>Re-import from link (pre-filled if we know it)</Text>
-          <View style={{ flexDirection:'row', alignItems:'center' }}>
-            <TextInput
-              value={pastedUrl}
-              onChangeText={setPastedUrl}
-              placeholder="https://www.tiktok.com/@user/video/…"
-              placeholderTextColor="#9CA3AF"
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={{ flex:1, color:'#E5E7EB', backgroundColor:'#1F2937', paddingHorizontal:12, paddingVertical:10, borderRadius:10, marginRight:8 }}
+          {/* PRIVATE switch */}
+          <View style={{ flexDirection:'row', alignItems:'center', marginBottom:4 }}>
+            <Switch
+              value={isPrivate}
+              onValueChange={(v) => {
+                setIsPrivate(v);
+                if (v) setMonetizationEligible(false); // force OFF when private
+              }}
+              thumbColor={isPrivate ? '#22c55e' : '#e5e7eb'}
+              trackColor={{ false: '#374151', true: '#14532d' }}
             />
-            <TouchableOpacity onPress={onPaste} style={{ backgroundColor:'#1F2937', paddingHorizontal:14, paddingVertical:10, borderRadius:10, marginRight:8 }}>
-              <Text style={{ color:'#E5E7EB', fontWeight:'600' }}>Paste</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={onImport} disabled={loadingImport} style={{ backgroundColor:'#60A5FA', paddingHorizontal:14, paddingVertical:10, borderRadius:10, opacity: loadingImport ? 0.6 : 1 }}>
-              <Text style={{ color:'#0B1120', fontWeight:'700' }}>{loadingImport ? 'Importing…' : 'Import'}</Text>
+            <Text style={{ color: COLORS.text, fontWeight:'700', marginLeft:8 }}>Private</Text>
+          </View>
+          <Text style={{ color:'#94a3b8', marginBottom:8, fontSize:12 }}>
+            Private hides your recipe from the public feed and blocks creator earnings.
+          </Text>
+
+          {/* MONETIZATION switch — LOCKED if private OR imported */}
+          <View style={{ flexDirection:'row', alignItems:'center', marginBottom:4 }}>
+            <Switch
+              value={monetizationEffective}
+              disabled={isPrivate || !!(sourceUrlDb || pastedUrl)}
+              onValueChange={setMonetizationEligible}
+              thumbColor={monetizationEffective ? '#22c55e' : '#e5e7eb'}
+              trackColor={{ false: '#374151', true: '#14532d' }}
+            />
+            <Text style={{ color: COLORS.text, fontWeight:'700', marginLeft:8 }}>Monetization</Text>
+          </View>
+          <Text style={{ color:'#94a3b8', marginBottom:12, fontSize:12 }}>
+            {isPrivate
+              ? '🔒 Locked: recipe is Private.'
+              : (sourceUrlDb || pastedUrl)
+                ? '🌐 Locked: recipe has a source link (Imported).'
+                : 'When ON (default for public), the creator can earn on this recipe.'}
+          </Text>
+
+          {/* IMAGES — left current, right new (tap to use) */}
+          <Text style={{ color: COLORS.text, marginBottom: 8 }}>Images</Text>
+          <Text style={{ color:'#94a3b8', marginBottom: 10 }}>
+            Left = current. Right = new. Tap the right picture to set it!
+          </Text>
+
+          <View style={{ flexDirection:'row', gap: 12, marginBottom: 12 }}>
+            {/* left: current */}
+            <View style={{ flex: 1, backgroundColor: '#0b1220', borderRadius: 12, borderWidth: 1, borderColor: '#243042', padding: 8 }}>
+              <Text style={{ color:'#9CA3AF', marginBottom: 6, fontWeight:'700' }}>Current</Text>
+              {currentImageUrl ? (
+                <Image source={{ uri: currentImageUrl }} style={{ width:'100%', height:200, borderRadius:10 }} contentFit="cover" />
+              ) : (
+                <View style={{ height:200, borderRadius:10, backgroundColor:'#1F2937', borderWidth:1, borderColor:'#243042', alignItems:'center', justifyContent:'center' }}>
+                  <Text style={{ color:'#9CA3AF' }}>No image yet</Text>
+                </View>
+              )}
+            </View>
+
+            {/* right: new (tap to use) */}
+            <TouchableOpacity
+              onPress={uploadPreviewAndSetImage}
+              activeOpacity={0.85}
+              style={{ flex: 1, backgroundColor: '#0b1220', borderRadius: 12, borderWidth: 1, borderColor: '#243042', padding: 8 }}
+            >
+              <Text style={{ color:'#9CA3AF', marginBottom: 6, fontWeight:'700' }}>New (tap to use)</Text>
+              {previewUri ? (
+                <Image source={{ uri: previewUri }} style={{ width:'100%', height:200, borderRadius:10 }} contentFit="cover" />
+              ) : (
+                <View style={{ height:200, borderRadius:10, backgroundColor:'#1F2937', borderWidth:1, borderColor:'#243042', alignItems:'center', justifyContent:'center', paddingHorizontal:8 }}>
+                  <Text style={{ color:'#9CA3AF', textAlign:'center' }}>No new image yet{'\n'}Tip: add/import first</Text>
+                </View>
+              )}
             </TouchableOpacity>
           </View>
-        </View>
 
-        {/* ingredients */}
-        <View style={{ marginBottom: 16 }}>
-          <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 8 }}>Ingredients</Text>
-          {ingredients.map((ing, i) => (
-            <View key={i} style={{ flexDirection:'row', alignItems:'center', marginBottom:8 }}>
+          {/* add/choose photo */}
+          <TouchableOpacity onPress={chooseCameraOrGallery} style={{ backgroundColor: COLORS.card, padding:12, borderRadius:12, alignItems:'center', marginBottom:12 }}>
+            <Text style={{ color: COLORS.text, fontWeight:'800' }}>Add/Choose Photo…</Text>
+          </TouchableOpacity>
+
+          {/* import box */}
+          <View style={{ backgroundColor:'#111827', borderRadius:14, borderColor:'#243042', borderWidth:1, padding:12, marginBottom:12 }}>
+            <Text style={{ color:'#9CA3AF', marginBottom:6 }}>Re-import from link (pre-filled if we know it)</Text>
+            <View style={{ flexDirection:'row', alignItems:'center' }}>
               <TextInput
-                value={ing}
-                onChangeText={(t)=>setIngredients(a => a.map((v, idx) => idx === i ? t : v))}
-                placeholder={`Ingredient ${i + 1}`}
-                placeholderTextColor="#64748b"
-                style={{ flex:1, color:'white', backgroundColor:'#1e293b', borderRadius:10, padding:10 }}
+                value={pastedUrl}
+                onChangeText={setPastedUrl}
+                placeholder="https://www.tiktok.com/@user/video/…"
+                placeholderTextColor="#9CA3AF"
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={{ flex:1, color:'#E5E7EB', backgroundColor:'#1F2937', paddingHorizontal:12, paddingVertical:10, borderRadius:10, marginRight:8 }}
               />
-              <TouchableOpacity onPress={()=>setIngredients(a => a.filter((_, idx) => idx !== i))} style={{ marginLeft:8, paddingVertical:10, paddingHorizontal:12, backgroundColor:'#7f1d1d', borderRadius:10 }}>
-                <Text style={{ color:'white', fontWeight:'800' }}>X</Text>
+              <TouchableOpacity onPress={onPaste} style={{ backgroundColor:'#1F2937', paddingHorizontal:14, paddingVertical:10, borderRadius:10, marginRight:8 }}>
+                <Text style={{ color:'#E5E7EB', fontWeight:'600' }}>Paste</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={onImport} disabled={loadingImport} style={{ backgroundColor:'#60A5FA', paddingHorizontal:14, paddingVertical:10, borderRadius:10, opacity: loadingImport ? 0.6 : 1 }}>
+                <Text style={{ color:'#0B1120', fontWeight:'700' }}>{loadingImport ? 'Importing…' : 'Import'}</Text>
               </TouchableOpacity>
             </View>
-          ))}
-          <HapticButton onPress={()=>setIngredients(a => [...a, ''])} style={{ marginTop:6, backgroundColor: COLORS.card, paddingVertical:12, borderRadius: RADIUS.lg, alignItems:'center' }}>
-            <Text style={{ color: COLORS.text, fontWeight:'800' }}>+ Add Ingredient</Text>
-          </HapticButton>
-        </View>
+          </View>
 
-        {/* steps */}
-        <View style={{ marginBottom: 20 }}>
-          <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 8 }}>Steps</Text>
-          {steps.map((st, i) => (
-            <View key={i} style={{ marginBottom: 10 }}>
-              <TextInput
-                value={st.text}
-                onChangeText={(t)=>setSteps(a => a.map((v, idx) => idx === i ? { ...v, text: t } : v))}
-                placeholder="Mix everything…"
-                placeholderTextColor="#64748b"
-                multiline
-                style={{ color:'white', backgroundColor:'#1e293b', borderRadius:10, padding:10, minHeight:60 }}
-              />
-              <View style={{ flexDirection:'row', alignItems:'center', marginTop:8 }}>
-                <Text style={{ color:'#94a3b8', marginRight:8 }}>Seconds (optional)</Text>
+          {/* ingredients */}
+          <View style={{ marginBottom: 16 }}>
+            <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 8 }}>Ingredients</Text>
+            {ingredients.map((ing, i) => (
+              <View key={i} style={{ flexDirection:'row', alignItems:'center', marginBottom:8 }}>
                 <TextInput
-                  value={st.seconds === null ? '' : String(st.seconds)}
-                  onChangeText={(txt)=>{
-                    const n = txt.replace(/[^\d]/g, '');
-                    const val = n === '' ? null : Math.min(24 * 60 * 60, parseInt(n, 10) || 0);
-                    setSteps(a => a.map((v, idx) => idx === i ? { ...v, seconds: val } : v));
-                  }}
-                  keyboardType="number-pad"
-                  placeholder="e.g., 90"
+                  value={ing}
+                  onChangeText={(t)=>setIngredients(a => a.map((v, idx) => idx === i ? t : v))}
+                  placeholder={`Ingredient ${i + 1}`}
                   placeholderTextColor="#64748b"
-                  style={{ color:'white', backgroundColor:'#1e293b', borderRadius:10, padding:10, width:100 }}
+                  style={{ flex:1, color:'white', backgroundColor:'#1e293b', borderRadius:10, padding:10 }}
                 />
+                <TouchableOpacity onPress={()=>setIngredients(a => a.filter((_, idx) => idx !== i))} style={{ marginLeft:8, paddingVertical:10, paddingHorizontal:12, backgroundColor:'#7f1d1d', borderRadius:10 }}>
+                  <Text style={{ color:'white', fontWeight:'800' }}>X</Text>
+                </TouchableOpacity>
               </View>
-            </View>
-          ))}
-          <HapticButton onPress={()=>setSteps(a => [...a, { text: '', seconds: null }])} style={{ marginTop:6, backgroundColor: COLORS.card, paddingVertical:12, borderRadius: RADIUS.lg, alignItems:'center' }}>
-            <Text style={{ color: COLORS.text, fontWeight:'800' }}>+ Add Step</Text>
+            ))}
+            <HapticButton onPress={()=>setIngredients(a => [...a, ''])} style={{ marginTop:6, backgroundColor: COLORS.card, paddingVertical:12, borderRadius: RADIUS.lg, alignItems:'center' }}>
+              <Text style={{ color: COLORS.text, fontWeight:'800' }}>+ Add Ingredient</Text>
+            </HapticButton>
+          </View>
+
+          {/* steps */}
+          <View style={{ marginBottom: 20 }}>
+            <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 8 }}>Steps</Text>
+            {steps.map((st, i) => (
+              <View key={i} style={{ marginBottom: 10 }}>
+                <TextInput
+                  value={st.text}
+                  onChangeText={(t)=>setSteps(a => a.map((v, idx) => idx === i ? { ...v, text: t } : v))}
+                  placeholder="Mix everything…"
+                  placeholderTextColor="#64748b"
+                  multiline
+                  style={{ color:'white', backgroundColor:'#1e293b', borderRadius:10, padding:10, minHeight:60 }}
+                />
+                <View style={{ flexDirection:'row', alignItems:'center', marginTop:8 }}>
+                  <Text style={{ color:'#94a3b8', marginRight:8 }}>Seconds (optional)</Text>
+                  <TextInput
+                    value={st.seconds === null ? '' : String(st.seconds)}
+                    onChangeText={(txt)=>{
+                      const n = txt.replace(/[^\d]/g, '');
+                      const val = n === '' ? null : Math.min(24 * 60 * 60, parseInt(n, 10) || 0);
+                      setSteps(a => a.map((v, idx) => idx === i ? { ...v, seconds: val } : v));
+                    }}
+                    keyboardType="number-pad"
+                    placeholder="e.g., 90"
+                    placeholderTextColor="#64748b"
+                    style={{ color:'white', backgroundColor:'#1e293b', borderRadius:10, padding:10, width:100 }}
+                  />
+                </View>
+              </View>
+            ))}
+            <HapticButton onPress={()=>setSteps(a => [...a, { text: '', seconds: null }])} style={{ marginTop:6, backgroundColor: COLORS.card, paddingVertical:12, borderRadius: RADIUS.lg, alignItems:'center' }}>
+              <Text style={{ color: COLORS.text, fontWeight:'800' }}>+ Add Step</Text>
+            </HapticButton>
+          </View>
+
+          {/* save */}
+          <HapticButton onPress={saveAll} disabled={saving} style={{ backgroundColor: COLORS.accent, paddingVertical: 14, borderRadius: RADIUS.xl, alignItems:'center' }}>
+            <Text style={{ color:'#001018', fontWeight:'900' }}>{saving ? 'Saving…' : 'Save Changes'}</Text>
           </HapticButton>
-        </View>
 
-        {/* save */}
-        <HapticButton onPress={saveAll} disabled={saving} style={{ backgroundColor: COLORS.accent, paddingVertical: 14, borderRadius: RADIUS.xl, alignItems:'center' }}>
-          <Text style={{ color:'#001018', fontWeight:'900' }}>{saving ? 'Saving…' : 'Save Changes'}</Text>
-        </HapticButton>
-
-        <View style={{ height: 24 }} />
-      </ScrollView>
-    </KeyboardAvoidingView>
+          <View style={{ height: 24 }} />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }

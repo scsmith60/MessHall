@@ -1,9 +1,10 @@
 // /app/cook/[id].tsx
-// COOK MODE with per-step timers:
+// COOK MODE with per-step timers + Exit button
 // - Loads steps from DB (via dataAPI) and uses each step's 'seconds'.
 // - If a step has no time, defaults to 60s.
 // - You can still +30s/-30s and Pause/Start.
 // - Auto-advance when a timer hits 0.
+// - NEW: Exit button to leave Cook Mode anytime.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, ScrollView, Text, View } from 'react-native';
@@ -115,6 +116,18 @@ export default function CookMode() {
     setIdx(i => i + 1);
   };
 
+  // NEW: Exit cook mode anytime
+  const exitCookMode = () => {
+    Alert.alert(
+      'Exit Cook Mode',
+      'Are you sure you want to leave? Your timer progress will be lost.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Exit', style: 'destructive', onPress: () => router.back() },
+      ]
+    );
+  };
+
   if (loading) {
     return (
       <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center' }}>
@@ -173,10 +186,13 @@ export default function CookMode() {
       </View>
 
       {/* NAV CONTROLS */}
-      <View style={{ flexDirection: 'row', gap: 10 }}>
+      <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
         <BigButton title="Back" onPress={goBack} style={{ flex: 1 }} />
         <BigButton title="Next Step" onPress={() => goNext('tap')} style={{ flex: 1, backgroundColor: COLORS.accent }} />
       </View>
+
+      {/* EXIT BUTTON */}
+      <BigButton title="Exit Cook Mode" onPress={exitCookMode} style={{ marginTop: 20, backgroundColor: '#b91c1c' }} />
     </ScrollView>
   );
 }

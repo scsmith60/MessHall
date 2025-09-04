@@ -1,9 +1,10 @@
 // app/(tabs)/index.tsx
 // HOME / SCUTTLEBUTT FEED
 // like I'm 5:
-// - We show a big list of recipe cards, with some sponsored cards sprinkled in.
-// - Pull down to refresh; scroll down to load more.
-// - NEW: we pass creatorAvatar and onOpenCreator so the card can show a face you can tap.
+// - This shows your main feed of recipe cards, with occasional sponsored cards.
+// - You can pull to refresh and infinite scroll.
+// - NEW: a tiny floating "search" bubble that opens the Search screen.
+// - We keep everything else the same so nothing breaks.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -14,14 +15,18 @@ import {
   View,
   Alert,
 } from 'react-native';
+import { router } from 'expo-router';
+
 import { COLORS, SPACING } from '../../lib/theme';
 import { dataAPI } from '../../lib/data';
 import RecipeCard from '../../components/RecipeCard';
 import SponsoredCard from '../../components/SponsoredCard';
 import { success } from '../../lib/haptics';
 import { recipeStore } from '../../lib/store';
-import { router } from 'expo-router';
 import { logAdEvent } from '../../lib/ads';
+
+// 👶 NEW: our subtle floating search button
+import SearchFab from '../../components/SearchFab';
 
 // ===== Types =====
 type SponsoredSlot = {
@@ -32,15 +37,15 @@ type SponsoredSlot = {
   cta?: string;
 };
 
-// 👶 Feed items we render (recipes + ads)
+// feed item can be a recipe or a sponsored slot
 type FeedItem =
   | {
       type: 'recipe';
       id: string;
       title: string;
       image: string;
-      creator: string;                 // callsign
-      creatorAvatar?: string | null;   // 👶 face picture URL
+      creator: string;
+      creatorAvatar?: string | null;
       knives: number;
       cooks: number;
       likes: number;
@@ -57,7 +62,6 @@ type FeedItem =
       slot?: SponsoredSlot;
     };
 
-// ===== Screen =====
 export default function HomeScreen() {
   const [data, setData] = useState<FeedItem[]>([]);
   const [page, setPage] = useState(0);
@@ -65,10 +69,10 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const PAGE_SIZE = 12;
 
-  // remember which ads we saw so we don't double count impressions
+  // remember which ads were seen
   const seenAdsRef = useRef<Set<string>>(new Set());
 
-  // load a page
+  // load a page of feed data
   const loadPage = useCallback(
     async (nextPage: number) => {
       if (loading) return;
@@ -76,11 +80,10 @@ export default function HomeScreen() {
       try {
         const items = await dataAPI.getFeedPage(nextPage, PAGE_SIZE);
 
-        // register recipes in the tiny store for other screens
-        const recipesOnly = items.filter(
-          (it) => it.type === 'recipe'
-        ) as Extract<FeedItem, { type: 'recipe' }>[];
-
+        // also push recipe basics into your in-memory store for other screens
+        const recipesOnly = items.filter((it) => it.type === 'recipe') as Array<
+          Extract<FeedItem, { type: 'recipe' }>
+        >;
         recipeStore.upsertMany(
           recipesOnly.map((r) => ({
             id: r.id,
@@ -104,7 +107,7 @@ export default function HomeScreen() {
     [loading]
   );
 
-  // first load
+  // initial load
   useEffect(() => {
     loadPage(0);
   }, []);
@@ -112,23 +115,20 @@ export default function HomeScreen() {
   // pull-to-refresh
   const onRefresh = async () => {
     setRefreshing(true);
-    seenAdsRef.current.clear(); // fresh session
+    seenAdsRef.current.clear();
     await loadPage(0);
     await success();
     setRefreshing(false);
   };
 
   // infinite scroll
-  const onEndReached = () => {
-    loadPage(page + 1);
-  };
+  const onEndReached = () => loadPage(page + 1);
 
-  // viewability: log ad impressions once per ad id
+  // ad impression tracking (only once per ad id)
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     for (const v of viewableItems) {
       const item: FeedItem | undefined = v?.item;
       if (!item || item.type !== 'sponsored') continue;
-
       const candidateId = (item.slot && item.slot.id) || item.id;
       if (candidateId && !seenAdsRef.current.has(candidateId)) {
         seenAdsRef.current.add(candidateId);
@@ -137,7 +137,7 @@ export default function HomeScreen() {
     }
   }).current;
 
-  // row
+  // how each row is drawn
   const renderItem = ({ item }: ListRenderItemInfo<FeedItem>) => {
     if (item.type === 'sponsored') {
       const slot: SponsoredSlot =
@@ -147,14 +147,13 @@ export default function HomeScreen() {
       return <SponsoredCard slot={slot as any} />;
     }
 
-    // 🥘 recipe card — pass avatar + tap handlers
     return (
       <RecipeCard
         id={item.id}
         title={item.title}
         image={item.image}
         creator={item.creator}
-        creatorAvatar={item.creatorAvatar || undefined} // 👶 NEW
+        creatorAvatar={item.creatorAvatar || undefined}
         knives={item.knives}
         cooks={item.cooks}
         likes={item.likes}
@@ -162,25 +161,33 @@ export default function HomeScreen() {
         ownerId={item.ownerId}
         onOpen={(id) => router.push(`/recipe/${id}`)}
         onSave={() => {}}
-        // name/avatar tap → open profile
         onOpenCreator={(username: string) => router.push(`/u/${username}`)}
       />
     );
   };
 
+  // NOTE: we wrap the list so the FAB can float above it
   return (
-    <FlatList
-      style={{ flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg }}
-      data={data}
-      keyExtractor={(it, idx) => it.type + '_' + (it as any).id + '_' + idx}
-      renderItem={renderItem}
-      ItemSeparatorComponent={() => <View style={{ height: SPACING.lg }} />}
-      onEndReachedThreshold={0.4}
-      onEndReached={onEndReached}
-      refreshControl={<RefreshControl tintColor="#fff" refreshing={refreshing} onRefresh={onRefresh} />}
-      ListFooterComponent={loading ? <ActivityIndicator style={{ marginVertical: 24 }} /> : null}
-      onViewableItemsChanged={onViewableItemsChanged}
-      viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
-    />
+    <View style={{ flex: 1 }}>
+      <FlatList
+        style={{ flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg }}
+        data={data}
+        keyExtractor={(it, idx) => it.type + '_' + (it as any).id + '_' + idx}
+        renderItem={renderItem}
+        ItemSeparatorComponent={() => <View style={{ height: SPACING.lg }} />}
+        onEndReachedThreshold={0.4}
+        onEndReached={onEndReached}
+        refreshControl={<RefreshControl tintColor="#fff" refreshing={refreshing} onRefresh={onRefresh} />}
+        ListFooterComponent={loading ? <ActivityIndicator style={{ marginVertical: 24 }} /> : null}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+      />
+
+      {/* 👶 Subtle Floating Search (smaller + translucent + on-brand) */}
+      <SearchFab
+        onPress={() => router.push('/search')}
+        bottomOffset={24} // sits just above the tab bar
+      />
+    </View>
   );
 }
