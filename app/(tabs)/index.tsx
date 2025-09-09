@@ -1,10 +1,8 @@
 // app/(tabs)/index.tsx
 // HOME / SCUTTLEBUTT FEED
 // like I'm 5:
-// - This shows your main feed of recipe cards, with occasional sponsored cards.
-// - You can pull to refresh and infinite scroll.
-// - NEW: a tiny floating "search" bubble that opens the Search screen.
-// - We keep everything else the same so nothing breaks.
+// - this shows the feed list
+// - we pass the real commentCount number into RecipeCard
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -24,11 +22,9 @@ import SponsoredCard from '../../components/SponsoredCard';
 import { success } from '../../lib/haptics';
 import { recipeStore } from '../../lib/store';
 import { logAdEvent } from '../../lib/ads';
-
-// 👶 NEW: our subtle floating search button
 import SearchFab from '../../components/SearchFab';
 
-// ===== Types =====
+// small helper type for sponsored items
 type SponsoredSlot = {
   id: string;
   brand?: string;
@@ -37,18 +33,19 @@ type SponsoredSlot = {
   cta?: string;
 };
 
-// feed item can be a recipe or a sponsored slot
+// the feed can show recipes or sponsored cards
 type FeedItem =
   | {
       type: 'recipe';
       id: string;
       title: string;
-      image: string;
+      image: string | null;
       creator: string;
       creatorAvatar?: string | null;
       knives: number;
       cooks: number;
       likes: number;
+      commentCount: number;   // <- the number we need to show 💬 on the card
       createdAt: string;
       ownerId: string;
     }
@@ -57,7 +54,7 @@ type FeedItem =
       id: string;
       brand: string;
       title: string;
-      image: string;
+      image: string | null;
       cta?: string;
       slot?: SponsoredSlot;
     };
@@ -69,7 +66,7 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const PAGE_SIZE = 12;
 
-  // remember which ads were seen
+  // remember which ads were already seen
   const seenAdsRef = useRef<Set<string>>(new Set());
 
   // load a page of feed data
@@ -80,7 +77,7 @@ export default function HomeScreen() {
       try {
         const items = await dataAPI.getFeedPage(nextPage, PAGE_SIZE);
 
-        // also push recipe basics into your in-memory store for other screens
+        // put basic recipe info into your in-memory store (used elsewhere)
         const recipesOnly = items.filter((it) => it.type === 'recipe') as Array<
           Extract<FeedItem, { type: 'recipe' }>
         >;
@@ -88,7 +85,7 @@ export default function HomeScreen() {
           recipesOnly.map((r) => ({
             id: r.id,
             title: r.title,
-            image: r.image,
+            image: r.image ?? null,
             creator: r.creator,
             knives: r.knives,
             cooks: r.cooks,
@@ -107,7 +104,7 @@ export default function HomeScreen() {
     [loading]
   );
 
-  // initial load
+  // first load
   useEffect(() => {
     loadPage(0);
   }, []);
@@ -124,7 +121,7 @@ export default function HomeScreen() {
   // infinite scroll
   const onEndReached = () => loadPage(page + 1);
 
-  // ad impression tracking (only once per ad id)
+  // track ad impressions once
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     for (const v of viewableItems) {
       const item: FeedItem | undefined = v?.item;
@@ -137,36 +134,41 @@ export default function HomeScreen() {
     }
   }).current;
 
-  // how each row is drawn
+  // how to draw each row
   const renderItem = ({ item }: ListRenderItemInfo<FeedItem>) => {
     if (item.type === 'sponsored') {
       const slot: SponsoredSlot =
         item.slot ??
         ({ id: item.id, brand: item.brand, title: item.title, image: item.image, cta: item.cta } as SponsoredSlot);
-
       return <SponsoredCard slot={slot as any} />;
     }
 
+    // IMPORTANT: we pass commentCount to the card here
     return (
       <RecipeCard
         id={item.id}
         title={item.title}
-        image={item.image}
+        image={item.image ?? null}
         creator={item.creator}
         creatorAvatar={item.creatorAvatar || undefined}
         knives={item.knives}
         cooks={item.cooks}
         likes={item.likes}
+        commentCount={item.commentCount ?? 0}
         createdAt={new Date(item.createdAt).getTime()}
         ownerId={item.ownerId}
         onOpen={(id) => router.push(`/recipe/${id}`)}
         onSave={() => {}}
         onOpenCreator={(username: string) => router.push(`/u/${username}`)}
+        onEdit={(id) => {
+          console.log('[go-edit] pushing /recipe/edit/[id] with id=', id);
+          router.push({ pathname: '/recipe/edit/[id]', params: { id } });
+        }}
       />
     );
   };
 
-  // NOTE: we wrap the list so the FAB can float above it
+  // list + floating search button
   return (
     <View style={{ flex: 1 }}>
       <FlatList
@@ -182,12 +184,7 @@ export default function HomeScreen() {
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
       />
-
-      {/* 👶 Subtle Floating Search (smaller + translucent + on-brand) */}
-      <SearchFab
-        onPress={() => router.push('/search')}
-        bottomOffset={24} // sits just above the tab bar
-      />
+      <SearchFab onPress={() => router.push('/search')} bottomOffset={24} />
     </View>
   );
 }

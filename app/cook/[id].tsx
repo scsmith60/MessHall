@@ -1,15 +1,24 @@
 // /app/cook/[id].tsx
-// COOK MODE with per-step timers + Exit button
-// - Loads steps from DB (via dataAPI) and uses each step's 'seconds'.
-// - If a step has no time, defaults to 60s.
-// - You can still +30s/-30s and Pause/Start.
-// - Auto-advance when a timer hits 0.
-// - NEW: Exit button to leave Cook Mode anytime.
+// COOK MODE (v5) — simple, airy layout (no big clumps)
+// like I'm 5: big round clock you tap; two tiny time chips; bottom bar for back/next; small Exit up top.
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, ScrollView, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  ScrollView,
+  Text,
+  View,
+  StyleSheet,
+  Pressable,
+  TouchableOpacity,
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
+import { Ionicons } from '@expo/vector-icons';
+
 import { COLORS, RADIUS, SPACING } from '../../lib/theme';
 import BigButton from '../../components/ui/BigButton';
 import { fmtMMSS, clamp } from '../../lib/timer';
@@ -17,23 +26,35 @@ import { speak, stopSpeak } from '../../lib/speak';
 import { success, warn } from '../../lib/haptics';
 import { dataAPI } from '../../lib/data';
 
+// ==== tiny look/feel knobs you can tweak ===========================
+const BG_SCALE = 1.12;        // how much we zoom the wallpaper image
+const BLUR_RADIUS = 3;        // tiny blur keeps it classy, not mushy
+const SCRIM_OPACITY = 0.40;   // dark sheet on photo so words pop
+const GRADIENT_TOP = 0.55;    // bottom gets darker near buttons
+const TIMER_SIZE = 220;       // big round clock size
+// ==================================================================
+
 const DEFAULT_STEP_SECONDS = 60;
 
 export default function CookMode() {
-  useKeepAwake();
+  useKeepAwake(); // keep screen on while cooking
 
   const { id } = useLocalSearchParams<{ id: string }>();
+  const insets = useSafeAreaInsets();
 
-  // Load the recipe with steps (including seconds)
-  const [title, setTitle] = useState<string>('');
+  // recipe bits
+  const [title, setTitle] = useState('Recipe');
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [steps, setSteps] = useState<Array<{ text: string; seconds: number | null }>>([]);
   const [loading, setLoading] = useState(true);
 
+  // timer bits
   const [idx, setIdx] = useState(0);
   const [seconds, setSeconds] = useState(DEFAULT_STEP_SECONDS);
   const [running, setRunning] = useState(false);
   const intervalRef = useRef<NodeJS.Timer | null>(null);
 
+  // 1) load recipe
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -41,15 +62,29 @@ export default function CookMode() {
         if (!id) return;
         const r = await dataAPI.getRecipeById(id);
         if (!alive) return;
-        if (!r) throw new Error('Missing recipe');
-        setTitle(r.title);
-        const s = (r.steps ?? []).map((x: any) => ({ text: x.text, seconds: typeof x.seconds === 'number' ? x.seconds : null }));
-        setSteps(s.length ? s : [
-          { text: `Get everything ready for ${r.title}.`, seconds: 60 },
-          { text: 'Heat the pan. Add oil and garlic.', seconds: 120 },
-          { text: 'Add the main ingredients. Cook until done.', seconds: 180 },
-          { text: 'Season, plate, and enjoy!', seconds: 30 }
-        ]);
+
+        setTitle(r?.title ?? 'Recipe');
+
+        // pick the best image we can find
+        const thumb: string | null =
+          r?.image?.url ?? r?.image ?? r?.photo ?? r?.originalImage ?? r?.cover ?? r?.hero ?? r?.thumbnail ?? null;
+        setImageUrl(thumb);
+
+        const s = (r?.steps ?? []).map((x: any) => ({
+          text: x.text,
+          seconds: typeof x.seconds === 'number' ? x.seconds : null,
+        }));
+
+        setSteps(
+          s.length
+            ? s
+            : [
+                { text: `Get everything ready for ${r?.title ?? 'your recipe'}.`, seconds: 60 },
+                { text: 'Heat the pan. Add oil and garlic.', seconds: 120 },
+                { text: 'Add the main ingredients. Cook until done.', seconds: 180 },
+                { text: 'Season, plate, and enjoy!', seconds: 30 },
+              ]
+        );
         setIdx(0);
       } catch (e) {
         console.log('Cook load error', e);
@@ -59,10 +94,12 @@ export default function CookMode() {
         if (alive) setLoading(false);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [id]);
 
-  // When we land on a step, load its time and speak it
+  // 2) when step changes, reset timer + speak
   useEffect(() => {
     if (!steps.length) return;
     const s = steps[idx];
@@ -74,13 +111,15 @@ export default function CookMode() {
     return () => stopSpeak();
   }, [idx, steps]);
 
+  // 3) ticking
   useEffect(() => {
     if (!running) {
-      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      intervalRef.current = null;
       return;
     }
     intervalRef.current = setInterval(() => {
-      setSeconds(prev => {
+      setSeconds((prev) => {
         const next = clamp(prev - 1, 0, 99 * 60);
         if (next === 0) {
           success();
@@ -90,109 +129,247 @@ export default function CookMode() {
         return next;
       });
     }, 1000);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
   }, [running]);
 
-  const startPause = () => setRunning(r => !r);
-  const add30 = () => setSeconds(s => clamp(s + 30, 0, 99 * 60));
-  const minus30 = () => setSeconds(s => clamp(s - 30, 0, 99 * 60));
+  // helpers
+  const startPause = () => setRunning((r) => !r);
+  const add30 = () => setSeconds((s) => clamp(s + 30, 0, 99 * 60));
+  const minus30 = () => setSeconds((s) => clamp(s - 30, 0, 99 * 60));
 
   const goBack = () => {
     if (idx === 0) {
       warn();
-      Alert.alert('At the Beginning', 'This is the first step.');
+      Alert.alert('At the beginning', 'This is the first step.');
       return;
     }
-    setIdx(i => i - 1);
+    setIdx((i) => i - 1);
   };
-  const goNext = (_reason?: 'timer' | 'tap') => {
+  const goNext = (_why?: 'timer' | 'tap') => {
     if (idx >= steps.length - 1) {
       success();
-      Alert.alert('All Done!', 'Cook Mode complete. Bon appétit!', [
-        { text: 'Back to Recipe', onPress: () => router.back() }
-      ]);
+      Alert.alert('All done!', 'Cook Mode complete. Bon appétit!', [{ text: 'Back to Recipe', onPress: () => router.back() }]);
       return;
     }
-    setIdx(i => i + 1);
+    setIdx((i) => i + 1);
   };
 
-  // NEW: Exit cook mode anytime
   const exitCookMode = () => {
-    Alert.alert(
-      'Exit Cook Mode',
-      'Are you sure you want to leave? Your timer progress will be lost.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Exit', style: 'destructive', onPress: () => router.back() },
-      ]
-    );
+    Alert.alert('Exit Cook Mode', 'Leave now? Your timer progress will be lost.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Exit', style: 'destructive', onPress: () => router.back() },
+    ]);
   };
 
   if (loading) {
     return (
-      <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center' }}>
+      <View style={[styles.flex, styles.center, { backgroundColor: COLORS.bg }]}>
         <Text style={{ color: COLORS.text }}>Loading…</Text>
       </View>
     );
   }
 
+  // BACKGROUND stays inside safe area frame (no notch overlap)
+  const bgFrameStyle = {
+    position: 'absolute' as const,
+    left: 0,
+    right: 0,
+    top: insets.top,
+    bottom: insets.bottom,
+    overflow: 'hidden' as const,
+  };
+
+  // height of floating bottom bar so we pad scroll content
+  const bottomBarHeight = 68 + insets.bottom + 12;
+
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 32 }}>
-      {/* TITLE */}
-      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Cooking:</Text>
-      <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 10 }}>{title}</Text>
-
-      {/* PROGRESS */}
-      <View style={{ flexDirection: 'row', marginBottom: 8, alignItems: 'center' }}>
-        {steps.map((_, i) => (
-          <View
-            key={i}
-            style={{
-              height: 8,
-              flex: 1,
-              marginRight: i < steps.length - 1 ? 6 : 0,
-              borderRadius: 999,
-              backgroundColor: i <= idx ? COLORS.accent : '#1f2937'
-            }}
+    <View style={styles.flex}>
+      {/* ===== BACKGROUND ===== */}
+      <View style={bgFrameStyle} pointerEvents="none">
+        {imageUrl ? (
+          <Image
+            source={{ uri: imageUrl }}
+            style={[StyleSheet.absoluteFill, { transform: [{ scale: BG_SCALE }] }]}
+            contentFit="cover"
+            contentPosition="center"
+            transition={120}
+            blurRadius={BLUR_RADIUS}
           />
-        ))}
-      </View>
-      <Text style={{ color: COLORS.subtext, marginBottom: 16 }}>
-        Step {idx + 1} of {steps.length}
-      </Text>
+        ) : (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: COLORS.bg }]} />
+        )}
 
-      {/* STEP TEXT */}
-      <View style={{ backgroundColor: COLORS.card, borderRadius: RADIUS.xl, padding: 16, marginBottom: 16 }}>
-        <Text style={{ color: COLORS.text, fontSize: 18 }}>
-          {steps[idx]?.text}
-        </Text>
-      </View>
-
-      {/* TIMER DISPLAY */}
-      <View style={{ alignItems: 'center', marginBottom: 16 }}>
-        <Text style={{ color: COLORS.text, fontSize: 48, fontWeight: '900', letterSpacing: 2 }}>
-          {fmtMMSS(seconds)}
-        </Text>
-        <Text style={{ color: COLORS.subtext, marginTop: 6 }}>
-          {running ? 'Timer running…' : 'Tap Start to begin countdown'}
-        </Text>
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: `rgba(2,6,23,${SCRIM_OPACITY})` }]} />
+        <LinearGradient
+          colors={['transparent', 'rgba(2,6,23,0.6)', 'rgba(2,6,23,0.9)']}
+          locations={[0, GRADIENT_TOP, 1]}
+          style={StyleSheet.absoluteFill}
+        />
       </View>
 
-      {/* TIMER CONTROLS */}
-      <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
-        <BigButton title={running ? 'Pause' : 'Start'} onPress={startPause} style={{ flex: 1, backgroundColor: running ? '#1f2937' : COLORS.accent }} />
-        <BigButton title="+30s" onPress={add30} style={{ width: 100 }} />
-        <BigButton title="-30s" onPress={minus30} style={{ width: 100 }} />
-      </View>
+      {/* ===== FOREGROUND ===== */}
+      <SafeAreaView style={styles.flex}>
+        {/* Top row with tiny Exit button so the big red bar isn't needed */}
+        <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: 6, flexDirection: 'row', justifyContent: 'flex-end' }}>
+          <TouchableOpacity onPress={exitCookMode} style={styles.exitPill} accessibilityLabel="Exit Cook Mode">
+            <Ionicons name="close" size={16} color={COLORS.text} />
+            <Text style={styles.exitPillText}>Exit</Text>
+          </TouchableOpacity>
+        </View>
 
-      {/* NAV CONTROLS */}
-      <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
-        <BigButton title="Back" onPress={goBack} style={{ flex: 1 }} />
-        <BigButton title="Next Step" onPress={() => goNext('tap')} style={{ flex: 1, backgroundColor: COLORS.accent }} />
-      </View>
+        <ScrollView
+          style={{ flex: 1, backgroundColor: 'transparent' }}
+          contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: bottomBarHeight }}
+        >
+          {/* Header: label + title */}
+          <Text style={styles.miniLabel}>Cooking:</Text>
+          <Text style={styles.title}>{title}</Text>
 
-      {/* EXIT BUTTON */}
-      <BigButton title="Exit Cook Mode" onPress={exitCookMode} style={{ marginTop: 20, backgroundColor: '#b91c1c' }} />
-    </ScrollView>
+          {/* Progress dots */}
+          <View style={styles.progressRow}>
+            {steps.map((_, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.progressDot,
+                  {
+                    marginRight: i < steps.length - 1 ? 6 : 0,
+                    backgroundColor: i <= idx ? COLORS.accent : 'rgba(255,255,255,0.18)',
+                  },
+                ]}
+              />
+            ))}
+          </View>
+          <Text style={styles.stepCount}>
+            Step {idx + 1} of {steps.length}
+          </Text>
+
+          {/* Step card (slim) */}
+          <View style={styles.card}>
+            <Text style={styles.cardText}>{steps[idx]?.text}</Text>
+          </View>
+
+          {/* ==== BIG ROUND TIMER (tap to start/pause) ==== */}
+          <View style={{ alignItems: 'center', marginTop: 8, marginBottom: 14 }}>
+            <Pressable onPress={startPause} style={[styles.timerCircle, { width: TIMER_SIZE, height: TIMER_SIZE, borderRadius: TIMER_SIZE / 2, borderColor: running ? COLORS.accent : 'rgba(255,255,255,0.15)' }]}>
+              <Text style={styles.timerText}>{fmtMMSS(seconds)}</Text>
+              <Text style={styles.timerHint}>{running ? 'Tap to pause' : 'Tap to start'}</Text>
+            </Pressable>
+
+            {/* Small pill chips for time nudge */}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+              <Pill title="-30s" icon="remove" onPress={minus30} />
+              <Pill title="+30s" icon="add" onPress={add30} />
+            </View>
+          </View>
+        </ScrollView>
+
+        {/* Floating bottom bar: Back / Next only */}
+        <View style={[styles.bottomBar, { paddingBottom: 12 + insets.bottom }]}>
+          <BigButton title="Back" onPress={goBack} style={[styles.barBtn]} />
+          <BigButton title="Next Step" onPress={() => goNext('tap')} style={[styles.barBtn, { backgroundColor: COLORS.accent }]} />
+        </View>
+      </SafeAreaView>
+    </View>
   );
 }
+
+// --- tiny pill component for +/-30s ---------------------------------
+function Pill({ title, icon, onPress }: { title: string; icon: keyof typeof Ionicons.glyphMap; onPress: () => void }) {
+  return (
+    <TouchableOpacity onPress={onPress} style={pillStyles.wrap} activeOpacity={0.9}>
+      <Ionicons name={icon} size={16} color="#e2e8f0" />
+      <Text style={pillStyles.txt}>{title}</Text>
+    </TouchableOpacity>
+  );
+}
+
+const pillStyles = StyleSheet.create({
+  wrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    height: 36,
+    borderRadius: 999,
+    backgroundColor: 'rgba(2,6,23,0.55)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  txt: { color: '#e2e8f0', fontWeight: '600' },
+});
+
+// --- styles ---------------------------------------------------------
+const styles = StyleSheet.create({
+  flex: { flex: 1 },
+  center: { alignItems: 'center', justifyContent: 'center' },
+
+  miniLabel: { color: COLORS.subtext, marginBottom: 6 },
+  title: { color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 12 },
+
+  progressRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  progressDot: { height: 8, flex: 1, borderRadius: 999 },
+  stepCount: { color: COLORS.subtext, marginBottom: 12 },
+
+  card: {
+    backgroundColor: 'rgba(15,23,42,0.42)',
+    borderRadius: RADIUS.xl,
+    padding: 16,
+    marginBottom: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  cardText: { color: COLORS.text, fontSize: 18 },
+
+  // big round timer look
+  timerCircle: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(2,6,23,0.45)',
+    borderWidth: 2,
+  },
+  timerText: { color: COLORS.text, fontSize: 48, fontWeight: '900', letterSpacing: 1 },
+  timerHint: { color: COLORS.subtext, marginTop: 6 },
+
+  // small Exit pill up top
+  exitPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    height: 32,
+    borderRadius: 999,
+    backgroundColor: 'rgba(2,6,23,0.55)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  exitPillText: { color: COLORS.text, fontWeight: '700' },
+
+  // floating bottom bar with two tidy buttons
+  bottomBar: {
+    position: 'absolute',
+    left: SPACING.lg,
+    right: SPACING.lg,
+    bottom: 0,
+    paddingTop: 10,
+    flexDirection: 'row',
+    gap: 10,
+    backgroundColor: 'rgba(2,6,23,0.55)',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    // shadow for iOS + subtle elevation for Android
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 6,
+  },
+  barBtn: {
+    flex: 1,
+    height: 48,
+  },
+});

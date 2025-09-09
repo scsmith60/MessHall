@@ -1,13 +1,11 @@
 // app/(tabs)/profile.tsx
 //
 // LIKE I'M 5:
-// • We did NOT move your header around. Gear + Edit Profile stay in the same spot.
-// • The blue "Connect a store" banner shows ONLY when you have 0 stores connected.
-// • Tapping the gear opens a pretty bottom-sheet with "Manage Stores" inside.
-// • Everything else (tabs, cards, edit modal) stays the same.
-//
-// If the gear ever "does nothing", it means the settings modal isn't showing.
-// In this file the gear flips a switch (showSettings=true) and the modal appears.
+// • SAFE AREA: We added a special wrapper (SafeAreaView) so the screen sits
+//   below the clock/battery area. No more hiding under the notch!
+// • We also read the safe edges (insets) and add bottom padding so nothing
+//   gets stuck under the iPhone home bar.
+// • Everything else (gear button, edit modal, tabs, grids) stays the same.
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
@@ -23,6 +21,10 @@ import {
   Modal,
   Pressable,
 } from "react-native";
+
+// 🧢 NEW: Safe Area helpers so we don't sit under the status bar (clock/battery)
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { useRouter } from "expo-router";
@@ -90,6 +92,9 @@ export default function Profile() {
   const router = useRouter();
   const { session } = useAuth();
   const userId = session?.user?.id ?? null;
+
+  // 🧭 NEW: Ask the phone how big the "notch" and "home bar" areas are
+  const insets = useSafeAreaInsets();
 
   // profile info
   const [email, setEmail] = useState<string>("");
@@ -446,7 +451,7 @@ export default function Profile() {
       Alert.alert("Saved", "Profile updated.");
     } catch (e: any) {
       console.log("saveProfileFields error:", e?.message || e);
-      Alert.alert("Could not save", e.message ?? String(e));
+      Alert.alert("Could not save", e?.message ?? String(e));
     }
   }
 
@@ -534,291 +539,316 @@ export default function Profile() {
       .catch(() => setConnectedStores(0));
   }, [userId]);
 
+  // ✅ RETURN: Wrap everything in SafeAreaView so we don't sit under the status bar.
+  //    - edges={['top']} = only pad the top safe area (we handle bottom manually)
+  //    - ScrollView gets contentInsetAdjustmentBehavior on iOS to play nice with system bars
+  //    - We add extra bottom padding using insets.bottom so buttons aren't hidden by the home bar
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
-      {/* HEADER — keep original layout: avatar | name/bio | gear + edit */}
-      <View style={{ padding: SCREEN_PADDING, paddingBottom: 0 }}>
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <Avatar />
-          <View style={{ marginLeft: 12, flex: 1 }}>
-            <Text numberOfLines={1} style={{ color: COLORS.text, fontSize: 20, fontWeight: "900" }}>
-              {username || "Anonymous"}
-            </Text>
-            <Text numberOfLines={3} style={{ color: COLORS.sub, marginTop: 4 }}>
-              {bio?.trim() ? bio : "Cooking enthusiast sharing simple and delicious recipes."}
-            </Text>
-          </View>
-
-          {/* Gear (opens settings bottom-sheet) */}
-          <TouchableOpacity
-            onPress={() => setShowSettings(true)}
-            style={{ backgroundColor: COLORS.card2, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, marginRight: 8 }}
-            activeOpacity={0.85}
-          >
-            <Text style={{ color: COLORS.text, fontWeight: "900" }}>⚙️</Text>
-          </TouchableOpacity>
-
-          {/* Edit Profile pill */}
-          <TouchableOpacity
-            onPress={() => setShowEdit(true)}
-            style={{ backgroundColor: COLORS.accent, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999 }}
-          >
-            <Text style={{ color: "#041016", fontWeight: "900" }}>Edit Profile</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Stats row */}
-        <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
-          <View style={{ flex: 1 }}>
-            <Stat label="Recipes" value={recipeCount} />
-          </View>
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={0.8} onPress={() => username && router.push(`/u/${username}/followers`)}>
-            <Stat label="Followers" value={followers} />
-          </TouchableOpacity>
-          <TouchableOpacity style={{ flex: 1 }} activeOpacity={0.8} onPress={() => username && router.push(`/u/${username}/following`)}>
-            <Stat label="Following" value={following} />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Stat label="Medals" value={totalMedals} />
-          </View>
-        </View>
-
-        {/* Onboarding banner: show only when no stores connected */}
-        {connectedStores === 0 && (
-          <TouchableOpacity
-            onPress={() => router.push("/profile/stores")}
-            activeOpacity={0.9}
-            style={{
-              marginTop: 12,
-              backgroundColor: "#0b1220",
-              borderRadius: 12,
-              padding: 12,
-              borderWidth: 1,
-              borderColor: COLORS.border,
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 10,
-            }}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: COLORS.text, fontWeight: "900" }}>Connect a store</Text>
-              <Text style={{ color: COLORS.sub, marginTop: 2 }}>
-                Link Amazon, Walmart, Kroger or H-E-B for 1-tap “Send to Cart”.
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top"]}>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: COLORS.bg }}
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={{
+          // Make sure bottom content isn't hidden by the home indicator
+          paddingBottom: Math.max(40, insets.bottom + 16),
+        }}
+      >
+        {/* HEADER — keep original layout: avatar | name/bio | gear + edit */}
+        <View style={{ padding: SCREEN_PADDING, paddingBottom: 0 /* Safe top handled by SafeAreaView */ }}>
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            <Avatar />
+            <View style={{ marginLeft: 12, flex: 1 }}>
+              <Text numberOfLines={1} style={{ color: COLORS.text, fontSize: 20, fontWeight: "900" }}>
+                {username || "Anonymous"}
+              </Text>
+              <Text numberOfLines={3} style={{ color: COLORS.sub, marginTop: 4 }}>
+                {bio?.trim() ? bio : "Cooking enthusiast sharing simple and delicious recipes."}
               </Text>
             </View>
-            <Text style={{ color: COLORS.accent, fontWeight: "900" }}>Set up →</Text>
-          </TouchableOpacity>
-        )}
 
-        {/* Tabs */}
-        <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
-          {(
-            ["recipes", "remixes", "cooked", "saved"] as const
-          ).map((t) => {
-            const active = tab === t;
-            return (
-              <TouchableOpacity
-                key={t}
-                onPress={() => setTab(t)}
-                style={{
-                  paddingHorizontal: 16,
-                  paddingVertical: 10,
-                  borderRadius: 999,
-                  backgroundColor: active ? COLORS.accent : "transparent",
-                  borderWidth: 1,
-                  borderColor: COLORS.accent,
-                }}
-              >
-                <Text style={{ color: active ? "#041016" : COLORS.text, fontWeight: "900" }}>
-                  {t === "recipes" ? "Recipes" : t === "remixes" ? "Remixes" : t === "cooked" ? "Cooked" : "Saved"}
+            {/* Gear (opens settings bottom-sheet) */}
+            <TouchableOpacity
+              onPress={() => setShowSettings(true)}
+              style={{ backgroundColor: COLORS.card2, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, marginRight: 8 }}
+              activeOpacity={0.85}
+            >
+              <Text style={{ color: COLORS.text, fontWeight: "900" }}>⚙️</Text>
+            </TouchableOpacity>
+
+            {/* Edit Profile pill */}
+            <TouchableOpacity
+              onPress={() => setShowEdit(true)}
+              style={{ backgroundColor: COLORS.accent, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999 }}
+            >
+              <Text style={{ color: "#041016", fontWeight: "900" }}>Edit Profile</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Stats row */}
+          <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+            <View style={{ flex: 1 }}>
+              <Stat label="Recipes" value={recipeCount} />
+            </View>
+            <TouchableOpacity style={{ flex: 1 }} activeOpacity={0.8} onPress={() => username && router.push(`/u/${username}/followers`)}>
+              <Stat label="Followers" value={followers} />
+            </TouchableOpacity>
+            <TouchableOpacity style={{ flex: 1 }} activeOpacity={0.8} onPress={() => username && router.push(`/u/${username}/following`)}>
+              <Stat label="Following" value={following} />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Stat label="Medals" value={totalMedals} />
+            </View>
+          </View>
+
+          {/* Onboarding banner: show only when no stores connected */}
+          {connectedStores === 0 && (
+            <TouchableOpacity
+              onPress={() => router.push("/profile/stores")}
+              activeOpacity={0.9}
+              style={{
+                marginTop: 12,
+                backgroundColor: "#0b1220",
+                borderRadius: 12,
+                padding: 12,
+                borderWidth: 1,
+                borderColor: COLORS.border,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: COLORS.text, fontWeight: "900" }}>Connect a store</Text>
+                <Text style={{ color: COLORS.sub, marginTop: 2 }}>
+                  Link Amazon, Walmart, Kroger or H-E-B for 1-tap “Send to Cart”.
                 </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </View>
-
-      {/* Grids per tab */}
-      <View style={{ paddingHorizontal: SCREEN_PADDING, marginTop: 14 }}>
-        {tab === "recipes" && (
-          recipesLoading ? (
-            <ActivityIndicator />
-          ) : (
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
-              {recipes.map((r) => <RecipeThumb key={String(r.id)} r={r} />)}
-            </View>
-          )
-        )}
-
-        {tab === "remixes" && (
-          remixesLoading ? (
-            <ActivityIndicator />
-          ) : (
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
-              {remixRecipes.map((r) => <RecipeThumb key={String(r.id)} r={r} />)}
-            </View>
-          )
-        )}
-
-        {tab === "cooked" && (
-          cookedLoading ? (
-            <ActivityIndicator />
-          ) : (
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
-              {cookedRecipes.map((r) => <RecipeThumb key={String(r.id)} r={r} />)}
-            </View>
-          )
-        )}
-
-        {/* Saved tab */}
-        {tab === "saved" && (
-          savedLoading ? (
-            <ActivityIndicator />
-          ) : (
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
-              {savedRecipes.length === 0 ? (
-                <Text style={{ color: COLORS.sub, paddingVertical: 8 }}>
-                  You haven’t saved any recipes yet.
-                </Text>
-              ) : (
-                savedRecipes.map((r) => (
-                  <RecipeThumb key={String(r.id)} r={r} onRemove={handleUnsave} />
-                ))
-              )}
-            </View>
-          )
-        )}
-      </View>
-
-      {/* Edit Profile modal (same as before, just tidy) */}
-      <Modal visible={showEdit} transparent animationType="fade" onRequestClose={() => setShowEdit(false)}>
-        <Pressable onPress={() => setShowEdit(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, alignItems: "center", justifyContent: "center" }}>
-          <Pressable onPress={() => {}} style={{ width: "92%", backgroundColor: COLORS.card, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
-            <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18, marginBottom: 12 }}>Edit Profile</Text>
-
-            <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Bio</Text>
-            <TextInput
-              value={editBio}
-              onChangeText={setEditBio}
-              placeholder="Say hi…"
-              placeholderTextColor="#6b7280"
-              style={{ color: COLORS.text, backgroundColor: COLORS.card2, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12 }}
-              multiline
-            />
-
-            <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Avatar</Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
-              {editAvatar ? (
-                <Image source={{ uri: editAvatar }} style={{ width: 56, height: 56, borderRadius: 28 }} />
-              ) : avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={{ width: 56, height: 56, borderRadius: 28 }} />
-              ) : (
-                <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: COLORS.card2 }} />
-              )}
-
-              <TouchableOpacity onPress={pickImage} style={{ backgroundColor: COLORS.accent, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10 }}>
-                <Text style={{ color: "#041016", fontWeight: "900" }}>{uploading ? "Uploading…" : "Pick image"}</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <TouchableOpacity onPress={() => setShowEdit(false)} style={{ flex: 1, backgroundColor: COLORS.card2, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}>
-                <Text style={{ color: COLORS.text, fontWeight: "800" }}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={saveProfileFields} style={{ flex: 1, backgroundColor: COLORS.button, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}>
-                <Text style={{ color: "#062113", fontWeight: "900" }}>Save</Text>
-              </TouchableOpacity>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* ⚙️ Settings bottom-sheet (sleek) */}
-      <Modal visible={showSettings} transparent animationType="fade" onRequestClose={() => setShowSettings(false)}>
-        {/* tap outside to close */}
-        <Pressable onPress={() => setShowSettings(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, justifyContent: "flex-end" }}>
-          {/* sheet container */}
-          <Pressable onPress={() => {}} style={{ backgroundColor: COLORS.card, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 20, borderTopWidth: 1, borderColor: COLORS.border }}>
-            {/* grabber */}
-            <View style={{ alignItems: "center", paddingBottom: 10 }}>
-              <View style={{ height: 4, width: 44, borderRadius: 2, backgroundColor: "#324156" }} />
-            </View>
-
-            <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 12 }}>
-              {/* Manage Stores */}
-              <TouchableOpacity
-                onPress={() => { setShowSettings(false); router.push("/profile/stores"); }}
-                activeOpacity={0.9}
-                style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
-              >
-                <Text style={{ color: COLORS.text, fontWeight: "900" }}>Manage Stores</Text>
-                <Text style={{ color: COLORS.sub, marginTop: 4 }}>
-                  {connectedStores > 0 ? `${connectedStores} connected` : "Not connected yet"}
-                </Text>
-              </TouchableOpacity>
-
-              {/* Email (read-only) */}
-              <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
-                <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Email</Text>
-                <Text style={{ color: COLORS.text }}>{email || "—"}</Text>
               </View>
+              <Text style={{ color: COLORS.accent, fontWeight: "900" }}>Set up →</Text>
+            </TouchableOpacity>
+          )}
 
-              {/* Callsign editor */}
-              <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
-                <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Callsign (username)</Text>
-                <TextInput
-                  value={username}
-                  onChangeText={setUsername}
-                  placeholder="your_name"
-                  placeholderTextColor="#6b7280"
-                  style={{
-                    backgroundColor: COLORS.card2,
-                    color: COLORS.text,
-                    paddingHorizontal: 12,
-                    paddingVertical: 10,
-                    borderRadius: 10,
-                    borderWidth: 1,
-                    borderColor: "#263041",
-                    marginBottom: 8,
-                  }}
-                />
-                {!!checking && <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Checking availability…</Text>}
-                <Text style={{ color: COLORS.sub, marginBottom: 10 }}>Tip: 3+ characters. Spaces turn into underscores.</Text>
-
+          {/* Tabs */}
+          <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
+            {(
+              ["recipes", "remixes", "cooked", "saved"] as const
+            ).map((t) => {
+              const active = tab === t;
+              return (
                 <TouchableOpacity
-                  disabled={!canSave}
-                  onPress={handleSave}
+                  key={t}
+                  onPress={() => setTab(t)}
                   style={{
-                    backgroundColor: canSave ? COLORS.button : COLORS.disabled,
-                    paddingVertical: 12,
-                    borderRadius: 12,
-                    alignItems: "center",
+                    paddingHorizontal: 16,
+                    paddingVertical: 10,
+                    borderRadius: 999,
+                    backgroundColor: active ? COLORS.accent : "transparent",
+                    borderWidth: 1,
+                    borderColor: COLORS.accent,
                   }}
                 >
-                  <Text style={{ color: canSave ? "#062113" : "#93a3b8", fontWeight: "900" }}>Save Callsign</Text>
+                  <Text style={{ color: active ? "#041016" : COLORS.text, fontWeight: "900" }}>
+                    {t === "recipes" ? "Recipes" : t === "remixes" ? "Remixes" : t === "cooked" ? "Cooked" : "Saved"}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        {/* Grids per tab */}
+        <View style={{ paddingHorizontal: SCREEN_PADDING, marginTop: 14 }}>
+          {tab === "recipes" && (
+            recipesLoading ? (
+              <ActivityIndicator />
+            ) : (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
+                {recipes.map((r) => <RecipeThumb key={String(r.id)} r={r} />)}
+              </View>
+            )
+          )}
+
+          {tab === "remixes" && (
+            remixesLoading ? (
+              <ActivityIndicator />
+            ) : (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
+                {remixRecipes.map((r) => <RecipeThumb key={String(r.id)} r={r} />)}
+              </View>
+            )
+          )}
+
+          {tab === "cooked" && (
+            cookedLoading ? (
+              <ActivityIndicator />
+            ) : (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
+                {cookedRecipes.map((r) => <RecipeThumb key={String(r.id)} r={r} />)}
+              </View>
+            )
+          )}
+
+          {/* Saved tab */}
+          {tab === "saved" && (
+            savedLoading ? (
+              <ActivityIndicator />
+            ) : (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
+                {savedRecipes.length === 0 ? (
+                  <Text style={{ color: COLORS.sub, paddingVertical: 8 }}>
+                    You haven’t saved any recipes yet.
+                  </Text>
+                ) : (
+                  savedRecipes.map((r) => (
+                    <RecipeThumb key={String(r.id)} r={r} onRemove={handleUnsave} />
+                  ))
+                )}
+              </View>
+            )
+          )}
+        </View>
+
+        {/* Edit Profile modal (same as before, just tidy) */}
+        <Modal visible={showEdit} transparent animationType="fade" onRequestClose={() => setShowEdit(false)}>
+          <Pressable onPress={() => setShowEdit(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, alignItems: "center", justifyContent: "center" }}>
+            <Pressable onPress={() => {}} style={{ width: "92%", backgroundColor: COLORS.card, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
+              <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18, marginBottom: 12 }}>Edit Profile</Text>
+
+              <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Bio</Text>
+              <TextInput
+                value={editBio}
+                onChangeText={setEditBio}
+                placeholder="Say hi…"
+                placeholderTextColor="#6b7280"
+                style={{ color: COLORS.text, backgroundColor: COLORS.card2, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12 }}
+                multiline
+              />
+
+              <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Avatar</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                {editAvatar ? (
+                  <Image source={{ uri: editAvatar }} style={{ width: 56, height: 56, borderRadius: 28 }} />
+                ) : avatarUrl ? (
+                  <Image source={{ uri: avatarUrl }} style={{ width: 56, height: 56, borderRadius: 28 }} />
+                ) : (
+                  <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: COLORS.card2 }} />
+                )}
+
+                <TouchableOpacity onPress={pickImage} style={{ backgroundColor: COLORS.accent, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10 }}>
+                  <Text style={{ color: "#041016", fontWeight: "900" }}>{uploading ? "Uploading…" : "Pick image"}</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Sign out */}
-              <TouchableOpacity
-                onPress={signOut}
-                style={{ backgroundColor: COLORS.red, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}
-              >
-                <Text style={{ color: "#fff", fontWeight: "900" }}>Sign Out</Text>
-              </TouchableOpacity>
-
-              {/* Close */}
-              <TouchableOpacity
-                onPress={() => setShowSettings(false)}
-                style={{ backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
-              >
-                <Text style={{ color: COLORS.text, fontWeight: "800" }}>Close</Text>
-              </TouchableOpacity>
-            </ScrollView>
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                <TouchableOpacity onPress={() => setShowEdit(false)} style={{ flex: 1, backgroundColor: COLORS.card2, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "800" }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={saveProfileFields} style={{ flex: 1, backgroundColor: COLORS.button, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}>
+                  <Text style={{ color: "#062113", fontWeight: "900" }}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </Pressable>
           </Pressable>
-        </Pressable>
-      </Modal>
-    </ScrollView>
+        </Modal>
+
+        {/* ⚙️ Settings bottom-sheet (sleek) */}
+        <Modal visible={showSettings} transparent animationType="fade" onRequestClose={() => setShowSettings(false)}>
+          {/* tap outside to close */}
+          <Pressable onPress={() => setShowSettings(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, justifyContent: "flex-end" }}>
+            {/* sheet container — add a little bottom padding for the home indicator */}
+            <Pressable
+              onPress={() => {}}
+              style={{
+                backgroundColor: COLORS.card,
+                borderTopLeftRadius: 20,
+                borderTopRightRadius: 20,
+                paddingHorizontal: 16,
+                paddingTop: 12,
+                paddingBottom: Math.max(20, insets.bottom + 12), // 👈 NEW: respect bottom safe area
+                borderTopWidth: 1,
+                borderColor: COLORS.border,
+              }}
+            >
+              {/* grabber */}
+              <View style={{ alignItems: "center", paddingBottom: 10 }}>
+                <View style={{ height: 4, width: 44, borderRadius: 2, backgroundColor: "#324156" }} />
+              </View>
+
+              <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 12 }}>
+                {/* Manage Stores */}
+                <TouchableOpacity
+                  onPress={() => { setShowSettings(false); router.push("/profile/stores"); }}
+                  activeOpacity={0.9}
+                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Manage Stores</Text>
+                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                    {connectedStores > 0 ? `${connectedStores} connected` : "Not connected yet"}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Email (read-only) */}
+                <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Email</Text>
+                  <Text style={{ color: COLORS.text }}>{email || "—"}</Text>
+                </View>
+
+                {/* Callsign editor */}
+                <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Callsign (username)</Text>
+                  <TextInput
+                    value={username}
+                    onChangeText={setUsername}
+                    placeholder="your_name"
+                    placeholderTextColor="#6b7280"
+                    style={{
+                      backgroundColor: COLORS.card2,
+                      color: COLORS.text,
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      borderRadius: 10,
+                      borderWidth: 1,
+                      borderColor: "#263041",
+                      marginBottom: 8,
+                    }}
+                  />
+                  {!!checking && <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Checking availability…</Text>}
+                  <Text style={{ color: COLORS.sub, marginBottom: 10 }}>Tip: 3+ characters. Spaces turn into underscores.</Text>
+
+                  <TouchableOpacity
+                    disabled={!canSave}
+                    onPress={handleSave}
+                    style={{
+                      backgroundColor: canSave ? COLORS.button : COLORS.disabled,
+                      paddingVertical: 12,
+                      borderRadius: 12,
+                      alignItems: "center",
+                    }}
+                  >
+                    <Text style={{ color: canSave ? "#062113" : "#93a3b8", fontWeight: "900" }}>Save Callsign</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Sign out */}
+                <TouchableOpacity
+                  onPress={signOut}
+                  style={{ backgroundColor: COLORS.red, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "900" }}>Sign Out</Text>
+                </TouchableOpacity>
+
+                {/* Close */}
+                <TouchableOpacity
+                  onPress={() => setShowSettings(false)}
+                  style={{ backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "800" }}>Close</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </ScrollView>
+    </SafeAreaView>
   );
 }

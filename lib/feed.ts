@@ -1,405 +1,355 @@
-// lib/feed.ts
-// 🧸 LIKE I'M 5: This file builds your Home Feed list.
-// What it does:
-// 1) Figures out who "I" am (the logged-in user).
-// 2) Finds all the people I follow.
-// 3) Gets their newest recipes from the database (newest first).
-// 4) If I follow nobody (or they have no recipes), it shows global/trending recipes.
-// 5) It mixes in sponsored cards after every N recipes.
-// 6) It returns items in the shape your Home screen expects.
-//
-// You do NOT need a separate "mocks" file. If you still want temporary fake
-// recipes for testing, you can keep the tiny helper at the bottom and toggle it on/off.
+// components/RecipeCard.tsx
+// LIKE I'M 5:
+// - Show one recipe card.
+// - The green medal pill now shows the **author's** knives (from props).
+// - We REMOVED all the code that added/subtracted medals on the phone.
+// - When you tap ❤️ or ✅, we only change likes/cooks locally;
+//   the database robots adjust the author's knives.
 
-import { supabase } from './supabase';
-import { listFollowing } from './data'; // we use your existing helper to get who I follow
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import {
+  Alert, Image, Share, StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Pressable,
+} from 'react-native';
+import SwipeCard from './ui/SwipeCard';
+import HapticButton from './ui/HapticButton';
+import { COLORS, RADIUS } from '../lib/theme';
+import { compactNumber, timeAgo } from '../lib/utils';
+import { tap, success, warn } from '../lib/haptics';
+import { dataAPI } from '../lib/data';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useUserId } from '../lib/auth';
+import { supabase } from '../lib/supabase';
+import { router } from 'expo-router';
 
-// ───────────────────────────────────────────────────────────────────────────────
-// TYPES that match what app/(tabs)/index.tsx expects
-// ───────────────────────────────────────────────────────────────────────────────
-
-type RecipeFeedItemForHome = {
-  type: 'recipe';
+type Props = {
   id: string;
   title: string;
   image: string;
-  creator: string;                 // callsign / username like "@chefjules"
-  creatorAvatar?: string | null;   // face picture URL
+  creator: string;
+  creatorAvatar?: string | null;
+
+  // 👇 THIS is the AUTHOR'S knives coming from feed.ts (profiles.knives)
   knives: number;
+
   cooks: number;
   likes: number;
-  createdAt: string;               // ISO string (index.tsx turns it into a Date)
-  ownerId: string;                 // who posted it
+  commentCount?: number;
+  createdAt: number | string;
+  ownerId: string;
+  onOpen?: (id: string) => void;
+  onSave?: (id: string) => void;
+  onOpenCreator?: (username: string) => void;
+  onOpenComments?: (id: string) => void;
+  rating?: number;
+  ratingCount?: number;
+  onLikedChange?: (id: string, liked: boolean) => void;
+  onCooked?: (id: string, cooked: boolean) => void;
+  onEdit?: (id: string) => void;
 };
 
-type SponsoredSlot = {
-  id: string;
-  brand?: string;
-  title?: string;
-  image?: string;
-  cta?: string;
-};
+export default function RecipeCard(props: Props) {
+  const {
+    id, title, image, creator, creatorAvatar, createdAt, onOpen, onSave, onLikedChange,
+    onCooked, onOpenCreator, onOpenComments, onEdit,
+  } = props;
 
-type SponsoredFeedItemForHome = {
-  type: 'sponsored';
-  id: string;          // we’ll use the creativeId here so impressions are unique
-  brand: string;
-  title: string;
-  image: string;
-  cta?: string;
-  slot?: SponsoredSlot; // index.tsx can use this too
-};
+  const { userId } = useUserId();
+  const isOwner = useMemo(() => !!userId && userId === props.ownerId, [userId, props.ownerId]);
 
-export type FeedItemForHome = RecipeFeedItemForHome | SponsoredFeedItemForHome;
+  // 🧮 LOCAL counters we ARE allowed to nudge for snappy UI
+  const [cooks, setCooks]   = useState<number>(props.cooks ?? 0);
+  const [likes, setLikes]   = useState<number>(props.likes ?? 0);
+  const [liked, setLiked]   = useState<boolean>(false);
+  const commentCount        = props.commentCount ?? 0;
+  const [cooked, setCooked] = useState<boolean>(false);
+  const [savingCook, setSavingCook] = useState<boolean>(false);
 
-// ───────────────────────────────────────────────────────────────────────────────
-// CONFIG
-// ───────────────────────────────────────────────────────────────────────────────
+  // 💚 AUTHOR knives come from props and are NOT modified locally
+  const authorKnives = props.knives ?? 0;
 
-// After how many recipe cards should we show an ad card?
-const AD_FREQUENCY = 5;
+  const deepLink = `messhall://recipe/${id}`;
 
-// Safety caps so we never fetch huge payloads by accident
-const MAX_SLOTS = 100;
-const MAX_CREATIVES = 1000;
+  // 🍳 figure out if I already cooked this
+  useEffect(() => {
+    let gone = false;
+    (async () => {
+      if (!userId) { setCooked(false); return; }
+      const { data } = await supabase.from('recipe_cooks').select('id').eq('recipe_id', id).eq('user_id', userId).maybeSingle();
+      if (!gone) setCooked(!!data);
+    })().catch(() => {});
+    return () => { gone = true; };
+  }, [id, userId]);
 
-// ───────────────────────────────────────────────────────────────────────────────
-// TINY HELPERS (like little lego blocks)
-// ───────────────────────────────────────────────────────────────────────────────
+  const save  = () => { success(); onSave?.(id); };
+  const share = async () => { success(); await Share.share({ message: `${title} on MessHall — ${deepLink}` }); };
 
-// pick one thing from an array (for weighted picks we have a real helper below)
-function pickOne<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
+  const open = async () => { await tap(); (onOpen ?? onOpenComments)?.(id) ?? onOpen?.(id); };
 
-// choose ONE by weight (bigger weight = more likely)
-function weightedPick<T extends { weight: number }>(items: T[]): T | null {
-  if (!items?.length) return null;
-  const total = items.reduce((sum, it) => sum + Math.max(0, it.weight || 0), 0);
-  if (total <= 0) return items[0];
-  let r = Math.random() * total;
-  for (const it of items) {
-    r -= Math.max(0, it.weight || 0);
-    if (r <= 0) return it;
-  }
-  return items[items.length - 1] ?? null;
-}
-
-// Just to be neat
-function nowIso() {
-  return new Date().toISOString();
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// ADS (REAL) — get active slots + their creatives, pick ONE creative per slot
-// and format it for the Home screen.
-// ───────────────────────────────────────────────────────────────────────────────
-
-type RawSlot = {
-  id: string;
-  brand: string;
-  starts_at: string;
-  ends_at: string;
-  is_active: boolean;
-  weight?: number; // optional slot-level weight (unused in simple picking but kept for future)
-};
-
-type RawCreative = {
-  id: string;
-  slot_id: string;
-  title: string;
-  image_url: string;
-  cta: string | null;
-  cta_url: string | null;
-  weight: number;
-  is_active: boolean;
-};
-
-async function fetchSponsoredForHome(): Promise<SponsoredFeedItemForHome[]> {
-  const now = nowIso();
-
-  // 1) Active slots where start <= now <= end and is_active = true
-  const { data: slots, error: slotErr } = await supabase
-    .from('sponsored_slots')
-    .select('id, brand, starts_at, ends_at, is_active, weight')
-    .lte('starts_at', now)
-    .gte('ends_at', now)
-    .order('starts_at', { ascending: false })
-    .limit(MAX_SLOTS);
-
-  if (slotErr) {
-    console.log('[feed] slots error:', slotErr.message);
-    return [];
-  }
-
-  const activeSlots: RawSlot[] = (slots ?? []).filter((s) => s.is_active);
-  if (!activeSlots.length) return [];
-
-  // 2) All creatives for those slots
-  const slotIds = activeSlots.map((s) => s.id);
-  const { data: creatives, error: crErr } = await supabase
-    .from('sponsored_creatives')
-    .select('id, slot_id, title, image_url, cta, cta_url, weight, is_active')
-    .in('slot_id', slotIds)
-    .limit(MAX_CREATIVES);
-
-  if (crErr) {
-    console.log('[feed] creatives error:', crErr.message);
-    return [];
-  }
-
-  // 3) Pick exactly ONE creative per slot (by creative weight) and map to Home shape
-  const out: SponsoredFeedItemForHome[] = [];
-  for (const slot of activeSlots) {
-    const options = (creatives ?? []).filter((c) => c.slot_id === slot.id && c.is_active);
-    if (!options.length) continue;
-    const pick = weightedPick(options);
-    if (!pick) continue;
-
-    out.push({
-      type: 'sponsored',
-      id: pick.id, // use creative id so impressions/clicks de-dup nicely
-      brand: slot.brand,
-      title: pick.title,
-      image: pick.image_url,
-      cta: pick.cta ?? 'Learn more',
-      // index.tsx can also read "slot" if it wants richer info
-      slot: {
-        id: slot.id,
-        brand: slot.brand,
-        title: pick.title,
-        image: pick.image_url,
-        cta: pick.cta ?? undefined,
-      },
-    });
-  }
-
-  return out;
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// RECIPES (REAL) — two paths:
-//   A) Following feed: recipes where owner_id ∈ myFollowingIds
-//   B) Global/trending: recipes for everybody (fallback)
-// We also separately fetch profile data to attach username + avatar.
-// ───────────────────────────────────────────────────────────────────────────────
-
-type RawRecipe = {
-  id: string;
-  title: string;
-  image_url: string | null;
-  created_at: string;
-  owner_id: string;
-  cooks_count?: number | null;
-  knives_count?: number | null;
-  likes_count?: number | null;
-};
-
-type RawProfile = {
-  id: string;
-  username: string | null;
-  avatar_url: string | null;
-};
-
-// Get the logged-in user's id (viewer)
-async function getViewerId(): Promise<string | null> {
-  const { data, error } = await supabase.auth.getUser();
-  if (error) {
-    console.log('[feed] auth getUser error:', error.message);
-    return null;
-  }
-  return data?.user?.id ?? null;
-}
-
-// Query N recipes by owners, with pagination
-async function fetchRecipesByOwners(
-  ownerIds: string[],
-  page: number,
-  size: number
-): Promise<RawRecipe[]> {
-  if (!ownerIds.length) return [];
-  const from = page * size;
-  const to = from + size - 1;
-
-  const { data, error } = await supabase
-    .from('recipes')
-    .select('id, title, image_url, created_at, owner_id, cooks_count, knives_count, likes_count')
-    .in('owner_id', ownerIds)
-    .order('created_at', { ascending: false })
-    .range(from, to);
-
-  if (error) {
-    console.log('[feed] recipes (following) error:', error.message);
-    return [];
-  }
-  return (data ?? []) as RawRecipe[];
-}
-
-// Query N global recipes (fallback)
-async function fetchGlobalRecipes(page: number, size: number): Promise<RawRecipe[]> {
-  const from = page * size;
-  const to = from + size - 1;
-
-  const { data, error } = await supabase
-    .from('recipes')
-    .select('id, title, image_url, created_at, owner_id, cooks_count, knives_count, likes_count')
-    .order('created_at', { ascending: false })
-    .range(from, to);
-
-  if (error) {
-    console.log('[feed] recipes (global) error:', error.message);
-    return [];
-  }
-  return (data ?? []) as RawRecipe[];
-}
-
-// Get profiles for many owners in one go
-async function fetchProfilesForOwners(ownerIds: string[]): Promise<Map<string, RawProfile>> {
-  if (!ownerIds.length) return new Map();
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, username, avatar_url')
-    .in('id', ownerIds);
-
-  if (error) {
-    console.log('[feed] profiles error:', error.message);
-    return new Map();
-  }
-
-  const map = new Map<string, RawProfile>();
-  for (const p of data as RawProfile[]) map.set(p.id, p);
-  return map;
-}
-
-// Map raw DB recipe rows + profiles into Home Feed recipe items
-function mapRecipesToHome(
-  rows: RawRecipe[],
-  profileMap: Map<string, RawProfile>
-): RecipeFeedItemForHome[] {
-  return rows.map((r) => {
-    const prof = profileMap.get(r.owner_id);
-    const username = prof?.username || 'anonymous';
-    // Ensure it starts with @ if your app style prefers that:
-    const creatorHandle = username.startsWith('@') ? username : `@${username}`;
-
-    return {
-      type: 'recipe',
-      id: r.id,
-      title: r.title,
-      image: r.image_url || '', // fallback to empty if missing
-      creator: creatorHandle,
-      creatorAvatar: prof?.avatar_url ?? null,
-      knives: (r.knives_count ?? 0) | 0,
-      cooks: (r.cooks_count ?? 0) | 0,
-      likes: (r.likes_count ?? 0) | 0,
-      createdAt: r.created_at,   // keep as ISO string for index.tsx
-      ownerId: r.owner_id,
-    };
-  });
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// PUBLIC: fetchFeedPage(page, size)
-// This is what your Home screen calls (via dataAPI.getFeedPage).
-// It returns a list of mixed items: recipe cards + sponsored cards sprinkled in.
-// ───────────────────────────────────────────────────────────────────────────────
-
-export async function fetchFeedPage(page: number, size = 12): Promise<FeedItemForHome[]> {
-  // 0) figure out who I am
-  const me = await getViewerId();
-
-  // 1) find who I follow (use your existing helper)
-  let followingIds: string[] = [];
-  if (me) {
+  // ❤️ LIKE — only adjust like count locally; DB handles knives for author
+  const toggleLike = async () => {
     try {
-      // listFollowing returns [{ id, username, avatar_url, ... }] for people I follow
-      const people = await listFollowing(me);
-      followingIds = (people as any[]).map((p) => p.id).filter(Boolean);
+      const { liked: nowLiked, likesCount } = await dataAPI.toggleLike(id);
+      setLiked(nowLiked);
+      setLikes(prev => typeof likesCount === 'number' ? likesCount : Math.max(0, prev + (nowLiked ? 1 : -1)));
+      onLikedChange?.(id, nowLiked);
+      await tap();
+    } catch {
+      await warn();
+      Alert.alert('Sign in required', 'Please sign in to like recipes.');
+    }
+  };
+
+  // ✅ COOKED — only adjust cooks count locally; DO NOT touch knives here
+  const toggleCooked = useCallback(async () => {
+    if (!userId) { await warn(); Alert.alert('Please sign in to record cooks.'); return; }
+    if (isOwner) { Alert.alert('Heads up', "You can’t medal your own recipe."); return; }
+    if (savingCook) return;
+    try {
+      setSavingCook(true);
+      if (cooked) {
+        // optimistic down
+        setCooked(false);
+        setCooks(n => Math.max(0, n - 1));
+        const { error } = await supabase.from('recipe_cooks').delete().eq('user_id', userId).eq('recipe_id', id);
+        if (error) { setCooked(true); setCooks(n => n + 1); throw error; }
+        await tap();
+      } else {
+        // optimistic up
+        setCooked(true);
+        setCooks(n => n + 1);
+        const { error } = await supabase.from('recipe_cooks').insert({ user_id: userId, recipe_id: id as any });
+        // ignore unique violation
+        // @ts-ignore
+        if (error && error.code !== '23505') { setCooked(false); setCooks(n => Math.max(0, n - 1)); throw error; }
+        await success();
+      }
+      onCooked?.(id, !cooked);
     } catch (e: any) {
-      console.log('[feed] listFollowing error:', e?.message);
+      await warn();
+      Alert.alert('Oops', e?.message ?? 'Could not update cooked state.');
+    } finally {
+      setSavingCook(false);
     }
-  }
+  }, [userId, isOwner, cooked, id, savingCook, onCooked]);
 
-  // 2) fetch recipes for following; if empty, fallback to global
-  let rawRecipes: RawRecipe[] = [];
-  if (followingIds.length > 0) {
-    rawRecipes = await fetchRecipesByOwners(followingIds, page, size);
-  }
-  if (rawRecipes.length === 0) {
-    rawRecipes = await fetchGlobalRecipes(page, size);
-  }
+  const openComments = async () => { await tap(); (onOpenComments ?? onOpen)?.(id); };
 
-  // 3) attach profile info (username + avatar)
-  const ownerIds = Array.from(new Set(rawRecipes.map((r) => r.owner_id)));
-  const profileMap = await fetchProfilesForOwners(ownerIds);
-  const recipes: RecipeFeedItemForHome[] = mapRecipesToHome(rawRecipes, profileMap);
+  // tiny subcomponents for the stat row
+  const MedalStat   = ({ count }: { count: number }) => (<View style={styles.medalStat}><Text style={styles.stat}>{compactNumber(count)}</Text><MaterialCommunityIcons name="medal-outline" size={14} color={COLORS.subtext} /></View>);
+  const LikeStat    = ({ count }: { count: number }) => (<View style={styles.likeStat}><Ionicons name="heart" size={14} color="#F87171" /><Text style={styles.stat}>{compactNumber(count)}</Text></View>);
+  const CommentStat = ({ count }: { count: number }) => (
+    <TouchableOpacity onPress={openComments} activeOpacity={0.85} style={styles.commentChip}>
+      <Ionicons name="chatbubble-ellipses-outline" size={14} color={COLORS.text} />
+      <Text style={styles.commentChipText}>{compactNumber(count)}</Text>
+    </TouchableOpacity>
+  );
 
-  // 4) get sponsored items (one creative per active slot)
-  const ads: SponsoredFeedItemForHome[] = await fetchSponsoredForHome();
+  const OwnerChip = () => (<View style={styles.ownerChip}><Text style={styles.ownerChipText}>Your recipe</Text></View>);
 
-  // 5) sprinkle in ads after every N recipes
-  const mixed: FeedItemForHome[] = [];
-  let adIndex = 0;
-  for (let i = 0; i < recipes.length; i++) {
-    mixed.push(recipes[i]);
-
-    const hitBoundary = (i + 1) % AD_FREQUENCY === 0;
-    const haveAd = adIndex < ads.length;
-    if (hitBoundary && haveAd) {
-      mixed.push(ads[adIndex]);
-      adIndex++;
+  const AvatarTiny = ({ size = 22 }: { size?: number }) => {
+    const letter = (creator || 'U').slice(0, 1).toUpperCase();
+    if (creatorAvatar && creatorAvatar.trim().length > 0) {
+      return <Image source={{ uri: creatorAvatar }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#0b1220' }} />;
     }
-  }
+    return (
+      <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#0b1220', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#243042' }}>
+        <Text style={{ color: COLORS.text, fontSize: size * 0.6, fontWeight: '800' }}>{letter}</Text>
+      </View>
+    );
+  };
 
-  // If there were fewer recipes than a full page AND we still have ads left,
-  // you can optionally drop one more ad at the end (totally optional).
-  // if (recipes.length < size && adIndex < ads.length) {
-  //   mixed.push(ads[adIndex]);
-  // }
+  const openCreator = () => { if (typeof onOpenCreator === 'function' && creator) onOpenCreator(creator); };
 
-  return mixed;
+  return (
+    <SwipeCard onSave={save} onShare={share}>
+      {/* BIG PRESS: the whole card opens the recipe */}
+      <HapticButton onPress={open} style={{ borderRadius: RADIUS.xl }}>
+        <View>
+
+          {/* ==== IMAGE + TITLE ==== */}
+          <View style={styles.imageWrap}>
+            <Image source={{ uri: image }} style={styles.img} resizeMode="cover" />
+
+            {/* ✏️ EDIT BUTTON (only if YOU own it) */}
+            {isOwner && (
+              <Pressable
+                onStartShouldSetResponder={() => true}
+                onPressIn={(e) => e.stopPropagation()}
+                onPress={(e) => { e.stopPropagation(); onEdit ? onEdit(id) : router.push({ pathname: '/recipe/edit/[id]', params: { id } }); }}
+                hitSlop={12}
+                style={styles.editFab}
+                accessibilityLabel="Edit recipe"
+              >
+                <MaterialCommunityIcons name="pencil" size={16} color="#e5e7eb" />
+              </Pressable>
+            )}
+
+            {/* title pill */}
+            <View style={styles.titleSticker}>
+              <Text style={styles.titleText} numberOfLines={2}>{title}</Text>
+            </View>
+          </View>
+
+          {/* ==== META ROW ==== */}
+          <View style={styles.row}>
+            <TouchableOpacity onPress={openCreator} activeOpacity={0.8} style={styles.creatorWrap}>
+              <AvatarTiny />
+              <Text style={styles.creator} numberOfLines={1}>{creator}</Text>
+            </TouchableOpacity>
+
+            {/* 💚 GREEN MEDAL PILL — shows AUTHOR'S knives; never changed locally */}
+            {authorKnives > 0 && (
+              <View style={styles.pill}>
+                <MaterialCommunityIcons name="medal" size={12} color="#E5E7EB" />
+                <Text style={styles.pillText}>{compactNumber(authorKnives)}</Text>
+              </View>
+            )}
+
+            <View style={{ flex: 1 }} />
+            <Text style={styles.dim}>{timeAgo(createdAt as any)}</Text>
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* ==== STATS + LIKE ==== */}
+          <View style={[styles.row, { marginTop: 6 }]}>
+            <MedalStat count={cooks} />
+            <View style={{ width: 10 }} />
+            <LikeStat count={likes} />
+            <View style={{ width: 10 }} />
+            <CommentStat count={commentCount} />
+            <View style={{ flex: 1 }} />
+            {!isOwner && (
+              <HapticButton onPress={toggleLike} style={[styles.likeBtn, liked && styles.likeBtnActive]}>
+                <Ionicons name={liked ? 'heart' : 'heart-outline'} size={16} color={liked ? COLORS.accent : COLORS.text} style={{ marginRight: 6 }} />
+                <Text style={[styles.likeText, liked && { color: COLORS.accent, fontWeight: '800' }]}>Like</Text>
+              </HapticButton>
+            )}
+          </View>
+
+          {/* ==== COOKED + COMMENTS ==== */}
+          {!isOwner ? (
+            <>
+              <View style={styles.actionRow}>
+                <HapticButton onPress={toggleCooked} disabled={savingCook} style={[styles.cookedButton, cooked && styles.cookedButtonActive, savingCook && { opacity: 0.7 }]}>
+                  {savingCook ? (
+                    <>
+                      <ActivityIndicator />
+                      <Text style={styles.cookedText}>{'Saving…'}</Text>
+                    </>
+                  ) : cooked ? (
+                    <>
+                      <Ionicons name="checkmark-circle" size={16} color="#CFF8D6" />
+                      <Text style={[styles.cookedText, { color: '#CFF8D6' }]}>Cooked</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Ionicons name="restaurant-outline" size={16} color="#E5E7EB" />
+                      <Text style={styles.cookedText}>I cooked</Text>
+                    </>
+                  )}
+                </HapticButton>
+              </View>
+              <View style={{ marginTop: 8 }}>
+                <HapticButton onPress={openComments} style={styles.commentsButton}>
+                  <Ionicons name="chatbubble-ellipses-outline" size={18} color={COLORS.text} />
+                  <Text style={styles.commentsText}>View comments</Text>
+                  <View style={styles.commentsBadge}><Text style={styles.commentsBadgeText}>{compactNumber(commentCount)}</Text></View>
+                </HapticButton>
+              </View>
+            </>
+          ) : (
+            <>
+              <View style={styles.ownerChip}><Text style={styles.ownerChipText}>Your recipe</Text></View>
+              <View style={{ marginTop: 8 }}>
+                <HapticButton onPress={openComments} style={styles.commentsButton}>
+                  <Ionicons name="chatbubble-ellipses-outline" size={18} color={COLORS.text} />
+                  <Text style={styles.commentsText}>View comments</Text>
+                  <View style={styles.commentsBadge}><Text style={styles.commentsBadgeText}>{compactNumber(commentCount)}</Text></View>
+                </HapticButton>
+              </View>
+            </>
+          )}
+        </View>
+      </HapticButton>
+    </SwipeCard>
+  );
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// OPTIONAL: tiny mock helper if you ever want to test w/o DB.
-// To use: swap calls in fetchFeedPage to `fetchRecipeMocks(size)`.
-// Keep this here during development; remove later if you want.
-// ───────────────────────────────────────────────────────────────────────────────
+const styles = StyleSheet.create({
+  imageWrap: { position: 'relative', marginBottom: 8 },
+  img: { width: '100%', height: 240, borderRadius: 16 },
 
-const sampleImages = [
-  'https://images.unsplash.com/photo-1504674900247-0877df9cc836?q=80&w=1200&auto=format&fit=crop',
-  'https://images.unsplash.com/photo-1495195134817-aeb325a55b65?q=80&w=1200&auto=format&fit=crop',
-  'https://images.unsplash.com/photo-1551183053-bf91a1d81141?q=80&w=1200&auto=format&fit=crop',
-  'https://images.unsplash.com/photo-1544025162-d76694265947?q=80&w=1200&auto=format&fit=crop',
-];
-const sampleTitles = [
-  'Grilled Chicken Tacos',
-  '5-Minute Avocado Toast',
-  'One-Pot Creamy Pasta',
-  'Smoky Sheet-Pan Salmon',
-  'Weeknight Stir-Fry',
-  'Crispy Garlic Potatoes',
-];
-const sampleCreators = ['@chefjules', '@spicepilot', '@noodle_mom', '@grilldad'];
+  editFab: {
+    position: 'absolute', top: 10, right: 10, width: 30, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(2,6,23,0.7)', borderWidth: 1, borderColor: '#2c3a4d',
+    alignItems: 'center', justifyContent: 'center', zIndex: 10, elevation: 10,
+  },
 
-// ⚠️ DEV-ONLY: fake recipes
-async function fetchRecipeMocks(count: number): Promise<RecipeFeedItemForHome[]> {
-  const items: RecipeFeedItemForHome[] = [];
-  for (let i = 0; i < count; i++) {
-    const created = new Date(Date.now() - Math.floor(Math.random() * 86_400_000 * 7)).toISOString();
-    items.push({
-      type: 'recipe',
-      id: Math.random().toString(36).slice(2),
-      title: pickOne(sampleTitles),
-      image: pickOne(sampleImages),
-      creator: pickOne(sampleCreators),
-      creatorAvatar: null,
-      knives: Math.floor(Math.random() * 25),
-      cooks: Math.floor(Math.random() * 20_000) + 20,
-      likes: Math.floor(Math.random() * 500),
-      createdAt: created,
-      ownerId: 'dev_owner',
-    });
-  }
-  return items;
-}
+  titleSticker: {
+    position: 'absolute', left: 10, bottom: 10, maxWidth: '85%',
+    backgroundColor: 'rgba(2, 6, 23, 0.55)', paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 10, borderWidth: 1, borderColor: '#2c3a4d',
+  },
+  titleText: { color: COLORS.text, fontSize: 16, fontWeight: '900' },
+
+  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  creatorWrap: { flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: '55%' },
+  creator: { color: COLORS.text, fontWeight: '600', fontSize: 14 },
+  dim: { color: COLORS.subtext, fontSize: 12 },
+  stat: { color: COLORS.subtext, fontSize: 13 },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: '#2c3a4d', opacity: 0.8, marginTop: 2 },
+
+  medalStat: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  likeStat: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+
+  pill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: '#0b3b2e', paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 999, borderWidth: 1, borderColor: '#134e4a', marginLeft: 8,
+  },
+  pillText: { color: '#E5E7EB', fontSize: 11, fontWeight: '800' },
+
+  likeBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 999, borderWidth: 1, borderColor: '#2c3a4d', backgroundColor: 'transparent',
+  },
+  likeBtnActive: { borderColor: COLORS.accent, backgroundColor: '#0b1220' },
+  likeText: { color: COLORS.text, fontWeight: '700', fontSize: 13 },
+
+  actionRow: { marginTop: 6 },
+  cookedButton: {
+    backgroundColor: '#1e293b', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14,
+    alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8,
+    borderWidth: 1, borderColor: '#2c3a4d',
+  },
+  cookedButtonActive: { backgroundColor: '#14532d', borderColor: '#134e4a' },
+  cookedText: { color: '#E5E7EB', fontWeight: '900', fontSize: 14 },
+
+  ownerChip: {
+    marginTop: 8, alignSelf: 'flex-start', backgroundColor: '#1f2937',
+    borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6,
+    borderWidth: 1, borderColor: '#2c3a4d',
+  },
+  ownerChipText: { color: COLORS.subtext, fontWeight: '800' },
+
+  commentChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999,
+    borderWidth: 1, borderColor: '#2c3a4d', backgroundColor: '#0b1220',
+  },
+  commentChipText: { color: COLORS.text, fontWeight: '700', fontSize: 12 },
+
+  commentsButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    borderRadius: 12, borderWidth: 1, borderColor: '#2c3a4d',
+    paddingVertical: 10, justifyContent: 'center',
+  },
+  commentsText: { color: COLORS.text, fontWeight: '800', fontSize: 14 },
+  commentsBadge: {
+    marginLeft: 6, paddingHorizontal: 8, paddingVertical: 2,
+    borderRadius: 999, backgroundColor: '#0b1220', borderWidth: 1, borderColor: '#2c3a4d',
+  },
+  commentsBadgeText: { color: COLORS.text, fontWeight: '800', fontSize: 12 },
+});

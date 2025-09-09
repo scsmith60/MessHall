@@ -35,7 +35,10 @@
     "react-native-svg": "15.11.2",
     "react-native-url-polyfill": "^2.0.0",
     "react-native-view-shot": "4.0.3",
-    "react-native-webview": "13.13.5"
+    "react-native-webview": "13.13.5",
+    "expo-blur": "~14.1.5",
+    "expo-linear-gradient": "~14.1.5",
+    "react-native-safe-area-context": "5.4.0"
   },
   "devDependencies": {
     "@types/react": "~19.0.0",
