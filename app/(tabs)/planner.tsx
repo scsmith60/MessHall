@@ -1,11 +1,8 @@
 // app/(tabs)/planner.tsx
-// 🗓️ Weekly Meal Planner (kid-easy):
-// - Sponsor banner rotates DAILY using slot.weight × creative.weight
-// - Uses active_from/active_to on BOTH tables (no slot_key, no start_date)
-// - Swipe week left/right; tap a day to focus; long-press day for options
-// - Add many recipes per day; shows minutes & servings
-// - Uses recipes.minutes (NOT prep_minutes)
-// - NEW: day strip bubbles STACK VERTICALLY inside the tall day card
+// Like I'm 5: We make the page safe (top/bottom padding) and scrollable.
+// 1) Wrap everything in SafeAreaView so it doesn't hide under the camera/battery.
+// 2) Give the ScrollView extra bottom padding so the green button never covers content.
+// 3) Tell the PanGestureHandler to ONLY react to horizontal swipes (so vertical scroll works).
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -33,12 +30,13 @@ import { useLocalSearchParams } from "expo-router";
 import dayjs from "dayjs";
 import isoWeek from "dayjs/plugin/isoWeek";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-// change this import to your relative path if you don’t use "@"
+import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context"; // ✅ safe area
 import { supabase } from "@/lib/supabase";
+import PlannerSlots from "@/components/PlannerSlots";
 
 dayjs.extend(isoWeek);
 
-// 🎨 Theme
+// 🎨 Colors
 const COLORS = {
   bg: "#0f172a",
   card: "#111827",
@@ -82,6 +80,8 @@ function MiniRecipeBubble({ url }: { url?: string | null }) {
 }
 
 export default function PlannerScreen() {
+  const insets = useSafeAreaInsets(); // ✅ how much top/bottom space the phone needs
+
   // deep-link from feed: ?recipeId=&date=
   const { recipeId, date } = useLocalSearchParams<{ recipeId?: string; date?: string }>();
 
@@ -345,6 +345,13 @@ export default function PlannerScreen() {
     }
   };
 
+  // ✅ IMPORTANT: make pan only react to horizontal moves so vertical scrolling works
+  const panProps = {
+    onEnded: onPanEnd,
+    activeOffsetX: [-30, 30], // must move left/right ≥ 30px to activate
+    failOffsetY: [-18, 18],   // if it moves vertically more than 18px, fail pan (let ScrollView handle it)
+  } as const;
+
   // ----- picker -----
   const openPicker = () => {
     Haptics.selectionAsync();
@@ -417,231 +424,285 @@ export default function PlannerScreen() {
     ]);
   };
 
-  // ----- UI -----
+  // 🆕 Step 3 helper: pick the “Dinner” recipe = last recipe on the selected day (if any)
+  const dinnerRecipeForSelectedDay = useMemo(() => {
+    const list = weekMeals[selectedDate] ?? [];
+    const last = list[list.length - 1];
+    if (!last?.recipe) return undefined;
+    // PlannerSlots understands totalMinutes, so we pass recipes.minutes into that field.
+    return {
+      id: last.recipe.id,
+      title: last.recipe.title,
+      totalMinutes: last.recipe.minutes ?? undefined,
+    };
+  }, [weekMeals, selectedDate]);
+
+  // ---------- UI ----------
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
-      <PanGestureHandler onEnded={onPanEnd}>
-        <View style={styles.container}>
-          {/* Sponsor banner */}
-          <View style={styles.sponsorWrap}>
-            {loadingSponsor ? (
-              <View style={[styles.sponsorCard, { alignItems: "center", justifyContent: "center" }]}>
-                <ActivityIndicator />
-              </View>
-            ) : sponsor ? (
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  if (sponsor.cta_url) Linking.openURL(sponsor.cta_url);
-                }}
-                activeOpacity={0.9}
-                style={styles.sponsorCard}
-              >
-                <View style={{ flexDirection: "row", alignItems: "center" }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.sponsorEyebrow}>Sponsored by {sponsor.brand}</Text>
-                    <Text style={styles.sponsorTitle} numberOfLines={1}>
-                      {sponsor.headline || "This week’s dinners"}
-                    </Text>
-                    {!!sponsor.cta_text && (
-                      <View style={styles.ctaPill}>
-                        <Text style={styles.ctaText}>{sponsor.cta_text}</Text>
-                        <Ionicons name="chevron-forward" size={14} color={COLORS.text} />
+      {/* ✅ Safe area so nothing hides under status bar / home bar */}
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "bottom"]}>
+        {/* Only handle left/right swipes; vertical scroll goes to the ScrollView below */}
+        <PanGestureHandler {...panProps}>
+          <View style={[styles.container, { paddingTop: 4 }]}>
+            {/* Sponsor banner */}
+            <View style={styles.sponsorWrap}>
+              {loadingSponsor ? (
+                <View style={[styles.sponsorCard, { alignItems: "center", justifyContent: "center" }]}>
+                  <ActivityIndicator />
+                </View>
+              ) : sponsor ? (
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    if (sponsor.cta_url) Linking.openURL(sponsor.cta_url);
+                  }}
+                  activeOpacity={0.9}
+                  style={styles.sponsorCard}
+                >
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.sponsorEyebrow}>Sponsored by {sponsor.brand}</Text>
+                      <Text style={styles.sponsorTitle} numberOfLines={1}>
+                        {sponsor.headline || "This week’s dinners"}
+                      </Text>
+                      {!!sponsor.cta_text && (
+                        <View style={styles.ctaPill}>
+                          <Text style={styles.ctaText}>{sponsor.cta_text}</Text>
+                          <Ionicons name="chevron-forward" size={14} color={COLORS.text} />
+                        </View>
+                      )}
+                    </View>
+                    {sponsor.image_url ? (
+                      <Image source={{ uri: sponsor.image_url }} style={styles.sponsorImg} />
+                    ) : (
+                      <View style={[styles.sponsorImg, { alignItems: "center", justifyContent: "center" }]}>
+                        <Ionicons name="leaf" size={28} color={COLORS.messhall} />
                       </View>
                     )}
                   </View>
-                  {sponsor.image_url ? (
-                    <Image source={{ uri: sponsor.image_url }} style={styles.sponsorImg} />
-                  ) : (
-                    <View style={[styles.sponsorImg, { alignItems: "center", justifyContent: "center" }]}>
-                      <Ionicons name="leaf" size={28} color={COLORS.messhall} />
-                    </View>
-                  )}
-                </View>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
+            {/* Week header */}
+            <View style={styles.headerRow}>
+              <TouchableOpacity
+                onPress={() => { Haptics.selectionAsync(); setAnchor((p) => p.subtract(7, "day")); }}
+                style={styles.iconBtn}
+              >
+                <Ionicons name="chevron-back" size={18} color={COLORS.text} />
               </TouchableOpacity>
-            ) : null}
-          </View>
 
-          {/* Week header */}
-          <View style={styles.headerRow}>
-            <TouchableOpacity
-              onPress={() => { Haptics.selectionAsync(); setAnchor((p) => p.subtract(7, "day")); }}
-              style={styles.iconBtn}
+              <Text style={styles.headerText}>Week of {dateRangeLabel}</Text>
+
+              <TouchableOpacity
+                onPress={() => { Haptics.selectionAsync(); setAnchor((p) => p.add(7, "day")); }}
+                style={styles.iconBtn}
+              >
+                <Ionicons name="chevron-forward" size={18} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Day strip (horizontal) */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: 16 }}
+              // ✅ let iOS/Android adjust for safe area automatically
+              contentInsetAdjustmentBehavior="automatic"
             >
-              <Ionicons name="chevron-back" size={18} color={COLORS.text} />
-            </TouchableOpacity>
+              {weekDays.map((d) => {
+                const ymd = d.format("YYYY-MM-DD");
+                const isSelected = selectedDate === ymd;
+                const meals = weekMeals[ymd] || [];
+                return (
+                  <TouchableOpacity
+                    key={ymd}
+                    onPress={() => { Haptics.selectionAsync(); setSelectedDate(ymd); }}
+                    onLongPress={() => onDayLongPress(ymd)}
+                    style={[
+                      styles.dayPill,
+                      isSelected && { borderColor: COLORS.messhall, backgroundColor: "#0b1220" },
+                    ]}
+                    activeOpacity={0.9}
+                  >
+                    <Text style={[styles.dayLabel, isSelected && { color: COLORS.messhall }]}>
+                      {d.format("ddd").toUpperCase()}
+                    </Text>
 
-            <Text style={styles.headerText}>Week of {dateRangeLabel}</Text>
-
-            <TouchableOpacity
-              onPress={() => { Haptics.selectionAsync(); setAnchor((p) => p.add(7, "day")); }}
-              style={styles.iconBtn}
-            >
-              <Ionicons name="chevron-forward" size={18} color={COLORS.text} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Day strip (NEW: vertical bubbles inside tall card) */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 16 }}
-          >
-            {weekDays.map((d) => {
-              const ymd = d.format("YYYY-MM-DD");
-              const isSelected = selectedDate === ymd;
-              const meals = weekMeals[ymd] || [];
-              return (
-                <TouchableOpacity
-                  key={ymd}
-                  onPress={() => { Haptics.selectionAsync(); setSelectedDate(ymd); }}
-                  onLongPress={() => onDayLongPress(ymd)}
-                  style={[
-                    styles.dayPill,
-                    isSelected && { borderColor: COLORS.messhall, backgroundColor: "#0b1220" },
-                  ]}
-                  activeOpacity={0.9}
-                >
-                  <Text style={[styles.dayLabel, isSelected && { color: COLORS.messhall }]}>
-                    {d.format("ddd").toUpperCase()}
-                  </Text>
-
-                  {/* ⭐️ stack tiny bubbles VERTICALLY down the tall bar */}
-                  <View style={styles.dayBubbleColumn}>
-                    {(meals.slice(0, 8)).map((m) => (
-                      <MiniRecipeBubble key={m.id} url={m.recipe?.image_url} />
-                    ))}
-                    {meals.length === 0 && <MiniRecipeBubble />}
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-
-          {/* Selected day — vertical meal list */}
-          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 80 }}>
-            <Text style={styles.gridTitle}>{dayjs(selectedDate).format("dddd, MMM D")}</Text>
-
-            {loadingMeals ? (
-              <ActivityIndicator />
-            ) : (
-              <>
-                {(weekMeals[selectedDate] ?? []).map((m) => (
-                  <View key={m.id} style={styles.mealRow}>
-                    <Image source={{ uri: m.recipe?.image_url ?? "" }} style={styles.mealImg} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.mealTitle} numberOfLines={1}>
-                        {m.recipe?.title || "Untitled"}
-                      </Text>
-                      <Text style={styles.mealMeta}>
-                        {m.recipe?.servings ? `${m.recipe?.servings} servings` : ""}{" "}
-                        {m.recipe?.minutes ? `• ${m.recipe?.minutes}m` : ""}
-                      </Text>
+                    {/* ⭐️ stack tiny bubbles VERTICALLY down the tall bar */}
+                    <View style={styles.dayBubbleColumn}>
+                      {(meals.slice(0, 8)).map((m) => (
+                        <MiniRecipeBubble key={m.id} url={m.recipe?.image_url} />
+                      ))}
+                      {meals.length === 0 && <MiniRecipeBubble />}
                     </View>
-                    <TouchableOpacity
-                      onPress={async () => {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        try {
-                          const { error } = await supabase.from("planner_meals").delete().eq("id", m.id);
-                          if (error) throw error;
-                          await loadMeals();
-                        } catch (e: any) {
-                          Alert.alert("Oops", e.message ?? "Could not remove recipe.");
-                        }
-                      }}
-                      style={styles.deleteBtn}
-                    >
-                      <Ionicons name="trash" size={16} color="#ef4444" />
-                    </TouchableOpacity>
-                  </View>
-                ))}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
 
-                {/* add another meal */}
-                <TouchableOpacity onPress={openPicker} style={styles.addSlot}>
-                  <Ionicons name="add" size={20} color={COLORS.accent} />
-                  <Text style={styles.addSlotText}>Add Meal</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </ScrollView>
+            {/* Selected day — vertical meal list */}
+            <ScrollView
+              style={{ flex: 1 }}
+              // ✅ room at the bottom so the floating green button never covers content
+              contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 200 }}
+              contentInsetAdjustmentBehavior="automatic"
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.selectedHeaderRow}>
+                <Text style={styles.gridTitle}>{dayjs(selectedDate).format("dddd, MMM D")}</Text>
 
-          {/* Floating shopping list (stub) */}
-          <TouchableOpacity
-            onPress={() => {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert("Shopping list", "We’ll generate this from your planned recipes next 🛒");
-            }}
-            style={styles.fab}
-          >
-            <Ionicons name="cart" size={18} color={COLORS.text} />
-            <Text style={{ color: COLORS.text, fontWeight: "700", marginLeft: 8 }}>
-              Generate Shopping List
-            </Text>
-          </TouchableOpacity>
-
-          {/* Recipe picker */}
-          <Modal visible={pickerOpen} animationType="slide" onRequestClose={() => setPickerOpen(false)}>
-            <View style={[styles.modalWrap, { paddingTop: Platform.select({ ios: 54, android: 24 }) }]}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
-                  Add recipe to {dayjs(selectedDate).format("ddd, MMM D")}
-                </Text>
-                <TouchableOpacity onPress={() => setPickerOpen(false)} style={styles.iconBtn}>
-                  <Ionicons name="close" size={22} color={COLORS.text} />
+                {/* Small “Add Meal” pill in the header so it’s always visible */}
+                <TouchableOpacity onPress={openPicker} style={styles.addSmall}>
+                  <Ionicons name="add" size={16} color={COLORS.accent} />
+                  <Text style={styles.addSmallText}>Add Meal</Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.searchRow}>
-                <Ionicons name="search" size={16} color={COLORS.subtext} />
-                <TextInput
-                  placeholder="Search my recipes..."
-                  placeholderTextColor={COLORS.subtext}
-                  style={styles.searchInput}
-                  value={pickerQuery}
-                  onChangeText={setPickerQuery}
-                  onSubmitEditing={searchRecipes}
-                  returnKeyType="search"
+              {/* COMPACT time-slot box (short) */}
+              <View style={{ marginBottom: 10 }}>
+                <PlannerSlots
+                  variant="compact"
+                  date={dayjs(selectedDate).toDate()}
+                  meals={[
+                    {
+                      id: "dinner",
+                      label: "Dinner",
+                      targetTime: "18:30", // default “ready by” time
+                      recipe: (() => {
+                        const list = weekMeals[selectedDate] ?? [];
+                        const last = list[list.length - 1];
+                        return last?.recipe
+                          ? { id: last.recipe.id, title: last.recipe.title, totalMinutes: last.recipe.minutes ?? undefined }
+                          : undefined;
+                      })(),
+                    },
+                  ]}
                 />
-                <TouchableOpacity onPress={searchRecipes} style={styles.searchBtn}>
-                  <Text style={{ color: COLORS.text, fontWeight: "700" }}>Search</Text>
-                </TouchableOpacity>
               </View>
 
-              <ScrollView style={{ flex: 1 }}>
-                {pickerLoading && <ActivityIndicator style={{ marginTop: 16 }} />}
-                {!pickerLoading && pickerResults?.length === 0 && (
-                  <Text style={{ color: COLORS.subtext, textAlign: "center", marginTop: 24 }}>
-                    No recipes found. Try a different word.
-                  </Text>
-                )}
-                <View style={{ padding: 16, gap: 12 }}>
-                  {(pickerResults ?? []).map((r) => (
-                    <TouchableOpacity
-                      key={r.id}
-                      onPress={() =>
-                        handleAddRecipeToDate(r.id, selectedDate).then(() => setPickerOpen(false))
-                      }
-                      style={styles.pickRow}
-                    >
-                      <Image source={{ uri: r.image_url ?? "" }} style={styles.pickImg} />
+              {loadingMeals ? (
+                <ActivityIndicator />
+              ) : (
+                <>
+                  {(weekMeals[selectedDate] ?? []).map((m) => (
+                    <View key={m.id} style={styles.mealRow}>
+                      <Image source={{ uri: m.recipe?.image_url ?? "" }} style={styles.mealImg} />
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.pickTitle} numberOfLines={1}>
-                          {r.title}
+                        <Text style={styles.mealTitle} numberOfLines={1}>
+                          {m.recipe?.title || "Untitled"}
                         </Text>
-                        <Text style={styles.pickMeta}>
-                          {r.servings ? `${r.servings} servings` : ""}
-                          {r.minutes ? ` • ${r.minutes}m` : ""}
+                        <Text style={styles.mealMeta}>
+                          {m.recipe?.servings ? `${m.recipe?.servings} servings` : ""}{" "}
+                          {m.recipe?.minutes ? `• ${m.recipe?.minutes}m` : ""}
                         </Text>
                       </View>
-                      <Ionicons name="add-circle" size={22} color={COLORS.messhall} />
-                    </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={async () => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          try {
+                            const { error } = await supabase.from("planner_meals").delete().eq("id", m.id);
+                            if (error) throw error;
+                            await loadMeals();
+                          } catch (e: any) {
+                            Alert.alert("Oops", e.message ?? "Could not remove recipe.");
+                          }
+                        }}
+                        style={styles.deleteBtn}
+                      >
+                        <Ionicons name="trash" size={16} color="#ef4444" />
+                      </TouchableOpacity>
+                    </View>
                   ))}
+
+                  {/* Optional: dashed add at bottom (small & left) */}
+                  <TouchableOpacity onPress={openPicker} style={styles.addSlot}>
+                    <Ionicons name="add" size={18} color={COLORS.accent} />
+                    <Text style={styles.addSlotText}>Add Meal</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </ScrollView>
+
+            {/* Floating shopping list — lifted above home bar using safe area */}
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Alert.alert("Shopping list", "We’ll generate this from your planned recipes next 🛒");
+              }}
+              style={[styles.fab, { bottom: insets.bottom + 18 }]} // ✅ not covering content
+            >
+              <Ionicons name="cart" size={18} color={COLORS.text} />
+              <Text style={{ color: COLORS.text, fontWeight: "700", marginLeft: 8 }}>
+                Generate Shopping List
+              </Text>
+            </TouchableOpacity>
+
+            {/* Recipe picker */}
+            <Modal visible={pickerOpen} animationType="slide" onRequestClose={() => setPickerOpen(false)}>
+              <View style={[styles.modalWrap, { paddingTop: Platform.select({ ios: 54, android: 24 }) }]}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>
+                    Add recipe to {dayjs(selectedDate).format("ddd, MMM D")}
+                  </Text>
+                  <TouchableOpacity onPress={() => setPickerOpen(false)} style={styles.iconBtn}>
+                    <Ionicons name="close" size={22} color={COLORS.text} />
+                  </TouchableOpacity>
                 </View>
-              </ScrollView>
-            </View>
-          </Modal>
-        </View>
-      </PanGestureHandler>
+
+                <View style={styles.searchRow}>
+                  <Ionicons name="search" size={16} color={COLORS.subtext} />
+                  <TextInput
+                    placeholder="Search my recipes..."
+                    placeholderTextColor={COLORS.subtext}
+                    style={styles.searchInput}
+                    value={pickerQuery}
+                    onChangeText={setPickerQuery}
+                    onSubmitEditing={searchRecipes}
+                    returnKeyType="search"
+                  />
+                  <TouchableOpacity onPress={searchRecipes} style={styles.searchBtn}>
+                    <Text style={{ color: COLORS.text, fontWeight: "700" }}>Search</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <ScrollView style={{ flex: 1 }}>
+                  {pickerLoading && <ActivityIndicator style={{ marginTop: 16 }} />}
+                  {!pickerLoading && pickerResults?.length === 0 && (
+                    <Text style={{ color: COLORS.subtext, textAlign: "center", marginTop: 24 }}>
+                      No recipes found. Try a different word.
+                    </Text>
+                  )}
+                  <View style={{ padding: 16, gap: 12 }}>
+                    {(pickerResults ?? []).map((r) => (
+                      <TouchableOpacity
+                        key={r.id}
+                        onPress={() => handleAddRecipeToDate(r.id, selectedDate).then(() => setPickerOpen(false))}
+                        style={styles.pickRow}
+                      >
+                        <Image source={{ uri: r.image_url ?? "" }} style={styles.pickImg} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.pickTitle} numberOfLines={1}>
+                            {r.title}
+                          </Text>
+                          <Text style={styles.pickMeta}>
+                            {r.servings ? `${r.servings} servings` : ""}
+                            {r.minutes ? ` • ${r.minutes}m` : ""}
+                          </Text>
+                        </View>
+                        <Ionicons name="add-circle" size={22} color={COLORS.messhall} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </ScrollView>
+              </View>
+            </Modal>
+          </View>
+        </PanGestureHandler>
+      </SafeAreaView>
     </GestureHandlerRootView>
   );
 }
@@ -726,7 +787,13 @@ const styles = StyleSheet.create({
   miniBubbleImg: { width: "100%", height: "100%" },
 
   // selected day list
-  gridTitle: { color: COLORS.subtext, marginBottom: 10, fontWeight: "700", fontSize: 16 },
+  selectedHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  gridTitle: { color: COLORS.subtext, marginBottom: 0, fontWeight: "700", fontSize: 16 },
   mealRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -750,24 +817,42 @@ const styles = StyleSheet.create({
     backgroundColor: "#00000020",
   },
 
-  // add slot
+  // small "Add Meal" pill in header
+  addSmall: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: COLORS.accent,
+    backgroundColor: "transparent",
+  },
+  addSmallText: { color: COLORS.accent, fontWeight: "700" },
+
+  // optional dashed add at bottom (make it small + left so it never gets covered)
   addSlot: {
+    alignSelf: "flex-start",
     borderStyle: "dashed",
     borderWidth: 1.5,
     borderColor: COLORS.accent,
     borderRadius: 10,
-    height: 42,
+    height: 40,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
     flexDirection: "row",
+    marginTop: 2,
   },
   addSlotText: { color: COLORS.accent, fontWeight: "700" },
 
   // floating button
   fab: {
     position: "absolute",
-    bottom: 18,
     alignSelf: "center",
     backgroundColor: COLORS.messhall,
     paddingHorizontal: 16,

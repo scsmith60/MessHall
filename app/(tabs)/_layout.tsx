@@ -1,19 +1,18 @@
 // app/(tabs)/_layout.tsx
-// ✅ Known-good Tabs layout that always mounts the tab bar.
-// - Logs when the layout mounts (so we know Tabs are alive)
-// - Keeps your admin-only Owner tab
-// - Uses RequireAuth *after* Tabs mount so the bar is not short-circuited
+// Like I'm 5: This file draws the bottom tab bar.
+// We list ONLY the tabs we want. For any extra screens that live in (tabs)
+// (like public-profile), we add them with href:null so they stay usable
+// in navigation BUT do NOT show up as a tab button.
 
 import React, { useEffect, useState, useCallback } from "react";
-import { Tabs } from "expo-router";
+import { Tabs, Redirect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
-import { Redirect } from "expo-router";
 
 const COLORS = { bg: "#0b1220", border: "#1f2937", text: "#cbd5e1", active: "#22c55e" };
 
-// 🔎 tiny icon helper
+// tiny helper to draw icons
 const makeIcon =
   (name: React.ComponentProps<typeof Ionicons>["name"]) =>
   ({ color, size }: { color: string; size: number }) =>
@@ -23,13 +22,13 @@ export default function TabsLayout() {
   console.log("[TabsLayout] mount");
   const { isLoggedIn, loading } = useAuth();
 
-  // 🧱 IMPORTANT: never block mounting Tabs; just *redirect after* they appear
+  // If not logged in, gently redirect away after Tabs tries to mount
   if (!loading && !isLoggedIn) {
     console.log("[TabsLayout] not logged in → redirect to /(auth)/login");
     return <Redirect href="/(auth)/login" />;
   }
 
-  // Admin tab
+  // Check if user is admin (for the Owner tab)
   const [isAdmin, setIsAdmin] = useState(false);
   const [ready, setReady] = useState(false);
 
@@ -66,25 +65,29 @@ export default function TabsLayout() {
         tabBarStyle: { backgroundColor: COLORS.bg, borderTopColor: COLORS.border },
       }}
     >
-      {/* 🏠 Home (file: app/(tabs)/index.tsx) */}
+      {/* ✅ ONLY the tabs we want visible */}
       <Tabs.Screen name="index"   options={{ title: "Home",    tabBarIcon: makeIcon("home") }} />
-      {/* 📷 Capture */}
       <Tabs.Screen name="capture" options={{ title: "Capture", tabBarIcon: makeIcon("camera") }} />
-      {/* 🗓️ Planner */}
       <Tabs.Screen name="planner" options={{ title: "Planner", tabBarIcon: makeIcon("calendar") }} />
-      {/* 🛒 Shop */}
       <Tabs.Screen name="shop"    options={{ title: "Shop",    tabBarIcon: makeIcon("cart") }} />
-      {/* 👤 Profile */}
       <Tabs.Screen name="profile" options={{ title: "Profile", tabBarIcon: makeIcon("person") }} />
-      {/* 📊 Owner (admin only) */}
+
+      {/* 👑 Owner tab (shows only if admin; hidden for everyone else) */}
       <Tabs.Screen
         name="owner"
         options={{
           title: "Owner",
           tabBarIcon: makeIcon("stats-chart"),
-          href: ready && isAdmin ? undefined : null, // hide when not admin or still checking
+          href: ready && isAdmin ? undefined : null, // hide until we know, or if not admin
         }}
       />
+
+      {/* 🫥 HIDE any public-profile routes that accidentally live in (tabs) */}
+      {/* If these routes exist, they'll be usable via router.push(), but NOT shown as a tab. */}
+      <Tabs.Screen name="public-profile" options={{ href: null }} />
+      <Tabs.Screen name="public-profiles" options={{ href: null }} />
+      <Tabs.Screen name="public-profile/[id]" options={{ href: null }} />
+      {/* Add more here if your filenames differ (tell me the exact name and I’ll add it) */}
     </Tabs>
   );
 }
