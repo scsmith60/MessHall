@@ -1,20 +1,17 @@
 // components/RecipeCard.tsx
 // LIKE I'M 5 🍪:
-// - This is a card that shows one yummy recipe.
-// - You can tap the big picture to open the recipe.
-// - You can tap the tiny circle picture (avatar) to open the creator's profile.
-// - We send BOTH the creator's username and their secret uid so we never lose them.
-//
-// WHAT LIVES WHERE?
-// - "profiles" table has the user (id = uid, username, avatar_url, knives).
-// - "recipes" table has the recipe (id, owner_id, title, image_url/image, likes/cooks).
-//
-// WHAT COUNTS CAN WE CHANGE ON THE PHONE?
-// - likes ❤️ and "I cooked" 🏅 counts can be nudged locally for snappy UI.
-// - The green medal on the BYLINE is the author's total "knives" from profiles;
-//   we DO NOT change that here.
+// - This draws the recipe card in the feed.
+// - If the recipe is PRIVATE, we show an orange "🔒 Private" pill on the photo.
+// - If the photo is missing, we draw a safe placeholder so nothing breaks.
+// - We make stuff "quiet" (memoized) so big lists don't flicker.
 
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+  memo,
+} from "react";
 import {
   Alert,
   Image,
@@ -38,34 +35,30 @@ import { dataAPI } from "@/lib/data";
 import { useUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 
-// 🧰 Props this card needs from the feed
+// 🧰 Props the card needs
 type Props = {
-  id: string;                     // recipe id
-  title: string;                  // recipe title
-  image: string;                  // recipe image url
-  creator: string;                // creator's USERNAME/handle (not display name)
-  creatorAvatar?: string | null;  // avatar URL
-
-  // 💚 Author's profile "knives" (green medals) — from profiles.knives
+  id: string;
+  title: string;
+  image?: string | null;          // may be empty/null; we guard it
+  creator: string;
+  creatorAvatar?: string | null;
   knives: number;
-
-  // public counters we can show + nudge locally
-  cooks: number;                  // how many people cooked it (medals for the recipe)
-  likes: number;                  // likes count
+  cooks: number;
+  likes: number;
   commentCount?: number;
-
-  createdAt: number | string;     // posted time
-  ownerId: string;                // creator's uid (profiles.id) — IMPORTANT
-  onOpen?: (id: string) => void;  // open recipe callback
+  createdAt: number | string;
+  ownerId: string;
+  isPrivate?: boolean;            // 🔒 TRUE when recipe is private
+  onOpen?: (id: string) => void;
   onSave?: (id: string) => void;
-  onOpenCreator?: (username: string) => void;   // parent can override
+  onOpenCreator?: (username: string) => void;
   onOpenComments?: (id: string) => void;
   onLikedChange?: (id: string, liked: boolean) => void;
   onCooked?: (id: string, cooked: boolean) => void;
-  onEdit?: (id: string) => void;  // owner can edit
+  onEdit?: (id: string) => void;
 };
 
-export default function RecipeCard(props: Props) {
+function RecipeCard(props: Props) {
   const {
     id,
     title,
@@ -73,6 +66,7 @@ export default function RecipeCard(props: Props) {
     creator,
     creatorAvatar,
     createdAt,
+    isPrivate,
     onOpen,
     onSave,
     onLikedChange,
@@ -89,7 +83,7 @@ export default function RecipeCard(props: Props) {
     [userId, props.ownerId]
   );
 
-  // ✅ Counters we ARE allowed to nudge locally (for snappy feel)
+  // ✅ counters for snappy UI
   const [cooks, setCooks] = useState<number>(props.cooks ?? 0);
   const [likes, setLikes] = useState<number>(props.likes ?? 0);
   const [liked, setLiked] = useState<boolean>(false);
@@ -98,13 +92,13 @@ export default function RecipeCard(props: Props) {
   const [cooked, setCooked] = useState<boolean>(false);
   const [savingCook, setSavingCook] = useState<boolean>(false);
 
-  // 💚 Author knives come straight from props; we do NOT change them here.
-  const authorKnives = props.knives ?? 0;
+  // 🖼️ safe image URL or null for fallback
+  const imgUri = useMemo(() => {
+    const s = typeof image === "string" ? image.trim() : "";
+    return s.length > 0 ? s : null;
+  }, [image]);
 
-  // deep link text for native share
-  const deepLink = `messhall://recipe/${id}`;
-
-  // 🍳 figure out if *I* already cooked this (for the "I cooked" toggle)
+  // 🍳 did I cook this already?
   useEffect(() => {
     let gone = false;
     (async () => {
@@ -126,27 +120,41 @@ export default function RecipeCard(props: Props) {
   }, [id, userId]);
 
   // 💾 swipe-right save
-  const save = () => {
+  const save = useCallback(() => {
     success();
     onSave?.(id);
-  };
+  }, [id, onSave]);
 
   // 📤 share
-  const share = async () => {
+  const share = useCallback(async () => {
     success();
-    await Share.share({
-      message: `${title} on MessHall — ${deepLink}`,
-    });
-  };
+    await Share.share({ message: `${title} on MessHall — messhall://recipe/${id}` });
+  }, [id, title]);
 
   // 🔍 open the recipe (tap big card)
-  const open = async () => {
+  const open = useCallback(async () => {
     await tap();
-    (onOpenComments ?? onOpen)?.(id) ?? onOpen?.(id);
-  };
+    (onOpen ?? onOpenComments)?.(id);
+  }, [id, onOpen, onOpenComments]);
 
-  // ❤️ toggle like (we nudge local likes; DB triggers handle anything else)
-  const toggleLike = async () => {
+  // 👤 open the creator profile
+  const openCreator = useCallback(async () => {
+    if (!creator) return;
+    await tap();
+
+    if (typeof onOpenCreator === "function") {
+      onOpenCreator(creator);
+      return;
+    }
+
+    router.push({
+      pathname: "/u/[username]",
+      params: { username: creator, uid: props.ownerId },
+    });
+  }, [creator, onOpenCreator, props.ownerId]);
+
+  // ❤️ like
+  const toggleLike = useCallback(async () => {
     try {
       const { liked: nowLiked, likesCount } = await dataAPI.toggleLike(id);
       setLiked(nowLiked);
@@ -161,9 +169,9 @@ export default function RecipeCard(props: Props) {
       await warn();
       Alert.alert("Sign in required", "Please sign in to like recipes.");
     }
-  };
+  }, [id, onLikedChange]);
 
-  // 🍽️ toggle "I cooked" (optimistic; never touches profile medals here)
+  // 🍽️ cooked
   const toggleCooked = useCallback(async () => {
     if (!userId) {
       await warn();
@@ -180,7 +188,6 @@ export default function RecipeCard(props: Props) {
       setSavingCook(true);
 
       if (cooked) {
-        // optimistic down
         setCooked(false);
         setCooks((n) => Math.max(0, n - 1));
 
@@ -191,7 +198,6 @@ export default function RecipeCard(props: Props) {
           .eq("recipe_id", id);
 
         if (error) {
-          // rollback
           setCooked(true);
           setCooks((n) => n + 1);
           throw error;
@@ -199,7 +205,6 @@ export default function RecipeCard(props: Props) {
         onCooked?.(id, false);
         await tap();
       } else {
-        // optimistic up
         setCooked(true);
         setCooks((n) => n + 1);
 
@@ -207,10 +212,9 @@ export default function RecipeCard(props: Props) {
           .from("recipe_cooks")
           .insert({ user_id: userId, recipe_id: id as any });
 
-        // ignore "already exists"
+        // ignore unique
         // @ts-ignore
         if (error && error.code !== "23505") {
-          // rollback
           setCooked(false);
           setCooks((n) => Math.max(0, n - 1));
           throw error;
@@ -226,118 +230,39 @@ export default function RecipeCard(props: Props) {
     }
   }, [userId, isOwner, cooked, id, savingCook, onCooked]);
 
-  // 💬 open comments
-  const openComments = async () => {
+  // 💬 comments button
+  const openComments = useCallback(async () => {
     await tap();
     (onOpenComments ?? onOpen)?.(id);
-  };
-
-  // 🧁 tiny stat chips (medals/likes/comments)
-  const MedalStat = ({ count }: { count: number }) => (
-    <View style={styles.medalStat}>
-      <Text style={styles.stat}>{compactNumber(count)}</Text>
-      <MaterialCommunityIcons
-        name="medal-outline"
-        size={14}
-        color={COLORS.subtext}
-      />
-    </View>
-  );
-  const LikeStat = ({ count }: { count: number }) => (
-    <View style={styles.likeStat}>
-      <Ionicons name="heart" size={14} color="#F87171" />
-      <Text style={styles.stat}>{compactNumber(count)}</Text>
-    </View>
-  );
-  const CommentStat = ({ count }: { count: number }) => (
-    <TouchableOpacity
-      onPress={openComments}
-      activeOpacity={0.85}
-      style={styles.commentChip}
-    >
-      <Ionicons
-        name="chatbubble-ellipses-outline"
-        size={14}
-        color={COLORS.text}
-      />
-      <Text style={styles.commentChipText}>{compactNumber(count)}</Text>
-    </TouchableOpacity>
-  );
-
-  // 👤 small avatar (uses letter when no image)
-  const AvatarTiny = ({ size = 22 }: { size?: number }) => {
-    const letter = (creator || "U").slice(0, 1).toUpperCase();
-    if (creatorAvatar && creatorAvatar.trim().length > 0) {
-      return (
-        <Image
-          source={{ uri: creatorAvatar }}
-          style={{
-            width: size,
-            height: size,
-            borderRadius: size / 2,
-            backgroundColor: "#0b1220",
-          }}
-        />
-      );
-    }
-    return (
-      <View
-        style={{
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          backgroundColor: "#0b1220",
-          alignItems: "center",
-          justifyContent: "center",
-          borderWidth: 1,
-          borderColor: "#243042",
-        }}
-      >
-        <Text
-          style={{
-            color: COLORS.text,
-            fontSize: size * 0.6,
-            fontWeight: "800",
-          }}
-        >
-          {letter}
-        </Text>
-      </View>
-    );
-  };
-
-  // 🚪 OPEN CREATOR PROFILE — IMPORTANT PART
-  // We pass BOTH username and uid so the profile page can find them
-  // even if the username case/format is odd.
-  const openCreator = async () => {
-    if (!creator) return;
-    await tap();
-
-    if (typeof onOpenCreator === "function") {
-      onOpenCreator(creator);
-      return;
-    }
-
-    router.push({
-      pathname: "/u/[username]",
-      params: {
-        username: creator,     // pretty handle (e.g., "Beta")
-        uid: props.ownerId,    // secret profiles.id (never wrong)
-      },
-    });
-  };
+  }, [id, onOpen, onOpenComments]);
 
   // 🎨 UI
   return (
     <SwipeCard onSave={save} onShare={share}>
-      {/* Tap the big card to open the recipe */}
       <HapticButton onPress={open} style={{ borderRadius: RADIUS.xl }}>
         <View>
           {/* ===== IMAGE + TITLE ===== */}
           <View style={styles.imageWrap}>
-            <Image source={{ uri: image }} style={styles.img} resizeMode="cover" />
+            {imgUri ? (
+              <Image source={{ uri: imgUri }} style={styles.img} resizeMode="cover" />
+            ) : (
+              // 🧱 fallback so empty URL never crashes
+              <View style={[styles.img, styles.imgFallback]}>
+                <Ionicons name="image-outline" size={28} color={COLORS.subtext} />
+                <Text style={styles.fallbackText}>No photo yet</Text>
+              </View>
+            )}
 
-            {/* ✏️ Edit FAB (only if you own it) */}
+            {/* 🔒 Private pill (icon + text) */}
+            {isPrivate && (
+              <View pointerEvents="none" style={styles.privateChip} accessibilityLabel="Private">
+                {/* use MaterialCommunityIcons 'lock' so it ALWAYS shows */}
+                <MaterialCommunityIcons name="lock" size={12} color="#FFF7D6" />
+                <Text style={styles.privateChipText}>Private</Text>
+              </View>
+            )}
+
+            {/* ✏️ Edit button (owners only) */}
             {isOwner && (
               <Pressable
                 onStartShouldSetResponder={() => true}
@@ -346,10 +271,7 @@ export default function RecipeCard(props: Props) {
                   e.stopPropagation();
                   onEdit
                     ? onEdit(id)
-                    : router.push({
-                        pathname: "/recipe/edit/[id]",
-                        params: { id },
-                      });
+                    : router.push({ pathname: "/recipe/edit/[id]", params: { id } });
                 }}
                 hitSlop={12}
                 style={styles.editFab}
@@ -367,27 +289,20 @@ export default function RecipeCard(props: Props) {
             </View>
           </View>
 
-          {/* ===== BYLINE (avatar + name + green medal) ===== */}
+          {/* ===== BYLINE ===== */}
           <View style={styles.row}>
-            {/* 👇 Tap avatar/name to open creator profile */}
-            <TouchableOpacity
-              onPress={openCreator}
-              activeOpacity={0.8}
-              style={styles.creatorWrap}
-            >
-              <AvatarTiny />
+            <TouchableOpacity onPress={openCreator} activeOpacity={0.8} style={styles.creatorWrap}>
+              <AvatarTiny creator={creator} creatorAvatar={creatorAvatar} />
               <Text style={styles.creator} numberOfLines={1}>
                 {creator}
               </Text>
             </TouchableOpacity>
 
-            {/* 💚 Author's profile knives (green medal) */}
-            {authorKnives > 0 && (
+            {/* 💚 author medal count */}
+            {props.knives > 0 && (
               <View style={styles.pill}>
                 <MaterialCommunityIcons name="medal" size={12} color="#E5E7EB" />
-                <Text style={styles.pillText}>
-                  {compactNumber(authorKnives)}
-                </Text>
+                <Text style={styles.pillText}>{compactNumber(props.knives)}</Text>
               </View>
             )}
 
@@ -397,13 +312,13 @@ export default function RecipeCard(props: Props) {
 
           <View style={styles.divider} />
 
-          {/* ===== STATS row ===== */}
+          {/* ===== STATS ===== */}
           <View style={[styles.row, { marginTop: 6 }]}>
             <MedalStat count={cooks} />
             <View style={{ width: 10 }} />
             <LikeStat count={likes} />
             <View style={{ width: 10 }} />
-            <CommentStat count={commentCount} />
+            <CommentStat count={commentCount} openComments={openComments} />
 
             <View style={{ flex: 1 }} />
 
@@ -430,7 +345,7 @@ export default function RecipeCard(props: Props) {
             )}
           </View>
 
-          {/* ===== COOK + COMMENTS ===== */}
+          {/* ===== ACTIONS ===== */}
           {!isOwner ? (
             <>
               <View style={styles.actionRow}>
@@ -450,22 +365,12 @@ export default function RecipeCard(props: Props) {
                     </>
                   ) : cooked ? (
                     <>
-                      <Ionicons
-                        name="checkmark-circle"
-                        size={16}
-                        color="#CFF8D6"
-                      />
-                      <Text style={[styles.cookedText, { color: "#CFF8D6" }]}>
-                        Cooked
-                      </Text>
+                      <Ionicons name="checkmark-circle" size={16} color="#CFF8D6" />
+                      <Text style={[styles.cookedText, { color: "#CFF8D6" }]}>Cooked</Text>
                     </>
                   ) : (
                     <>
-                      <Ionicons
-                        name="restaurant-outline"
-                        size={16}
-                        color="#E5E7EB"
-                      />
+                      <Ionicons name="restaurant-outline" size={16} color="#E5E7EB" />
                       <Text style={styles.cookedText}>I cooked</Text>
                     </>
                   )}
@@ -474,16 +379,10 @@ export default function RecipeCard(props: Props) {
 
               <View style={{ marginTop: 8 }}>
                 <HapticButton onPress={openComments} style={styles.commentsButton}>
-                  <Ionicons
-                    name="chatbubble-ellipses-outline"
-                    size={18}
-                    color={COLORS.text}
-                  />
+                  <Ionicons name="chatbubble-ellipses-outline" size={18} color={COLORS.text} />
                   <Text style={styles.commentsText}>View comments</Text>
                   <View style={styles.commentsBadge}>
-                    <Text style={styles.commentsBadgeText}>
-                      {compactNumber(commentCount)}
-                    </Text>
+                    <Text style={styles.commentsBadgeText}>{compactNumber(commentCount)}</Text>
                   </View>
                 </HapticButton>
               </View>
@@ -495,16 +394,10 @@ export default function RecipeCard(props: Props) {
               </View>
               <View style={{ marginTop: 8 }}>
                 <HapticButton onPress={openComments} style={styles.commentsButton}>
-                  <Ionicons
-                    name="chatbubble-ellipses-outline"
-                    size={18}
-                    color={COLORS.text}
-                  />
+                  <Ionicons name="chatbubble-ellipses-outline" size={18} color={COLORS.text} />
                   <Text style={styles.commentsText}>View comments</Text>
                   <View style={styles.commentsBadge}>
-                    <Text style={styles.commentsBadgeText}>
-                      {compactNumber(commentCount)}
-                    </Text>
+                    <Text style={styles.commentsBadgeText}>{compactNumber(commentCount)}</Text>
                   </View>
                 </HapticButton>
               </View>
@@ -516,10 +409,128 @@ export default function RecipeCard(props: Props) {
   );
 }
 
-// 🎀 Styles (just boxes and colors)
+/* -------------------------
+   Tiny helpers (memo = fewer re-renders)
+------------------------- */
+
+const AvatarTiny = memo(function AvatarTiny({
+  size = 22,
+  creator,
+  creatorAvatar,
+}: {
+  size?: number;
+  creator: string;
+  creatorAvatar?: string | null;
+}) {
+  const letter = (creator || "U").slice(0, 1).toUpperCase();
+  if (creatorAvatar && creatorAvatar.trim().length > 0) {
+    return (
+      <Image
+        source={{ uri: creatorAvatar }}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: "#0b1220",
+        }}
+      />
+    );
+  }
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: "#0b1220",
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+        borderColor: "#243042",
+      }}
+    >
+      <Text
+        style={{
+          color: COLORS.text,
+          fontSize: size * 0.6,
+          fontWeight: "800",
+        }}
+      >
+        {letter}
+      </Text>
+    </View>
+  );
+});
+
+const MedalStat = memo(function MedalStat({ count }: { count: number }) {
+  return (
+    <View style={styles.medalStat}>
+      <Text style={styles.stat}>{compactNumber(count)}</Text>
+      <MaterialCommunityIcons name="medal-outline" size={14} color={COLORS.subtext} />
+    </View>
+  );
+});
+
+const LikeStat = memo(function LikeStat({ count }: { count: number }) {
+  return (
+    <View style={styles.likeStat}>
+      <Ionicons name="heart" size={14} color="#F87171" />
+      <Text style={styles.stat}>{compactNumber(count)}</Text>
+    </View>
+  );
+});
+
+const CommentStat = memo(function CommentStat({
+  count,
+  openComments,
+}: {
+  count: number;
+  openComments: () => void;
+}) {
+  return (
+    <TouchableOpacity onPress={openComments} activeOpacity={0.85} style={styles.commentChip}>
+      <Ionicons name="chatbubble-ellipses-outline" size={14} color={COLORS.text} />
+      <Text style={styles.commentChipText}>{compactNumber(count)}</Text>
+    </TouchableOpacity>
+  );
+});
+
+/* -------------------------
+   Styles
+------------------------- */
 const styles = StyleSheet.create({
   imageWrap: { position: "relative", marginBottom: 8 },
   img: { width: "100%", height: 240, borderRadius: 16 },
+
+  // 🧱 fallback block when there is no image URL
+  imgFallback: {
+    backgroundColor: "#0b1220",
+    borderWidth: 1,
+    borderColor: "#2c3a4d",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  fallbackText: { color: COLORS.subtext, fontSize: 12, fontWeight: "700" },
+
+  // 🔒 orange "Private" pill (visible on dark photos)
+  privateChip: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    // NOTE: avoid `gap` on older RN — we space with marginRight on icon
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(245, 158, 11, 0.92)", // amber-500 w/ opacity
+    borderWidth: 1,
+    borderColor: "rgba(252, 211, 77, 0.95)",      // amber-300 border
+    zIndex: 10,
+    elevation: 10,
+  },
+  privateChipText: { color: "#111827", fontSize: 11, fontWeight: "900", marginLeft: 6 },
 
   editFab: {
     position: "absolute",
@@ -553,12 +564,7 @@ const styles = StyleSheet.create({
 
   row: { flexDirection: "row", alignItems: "center", marginBottom: 6 },
 
-  creatorWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    maxWidth: "55%",
-  },
+  creatorWrap: { flexDirection: "row", alignItems: "center", maxWidth: "55%" },
   creator: { color: COLORS.text, fontWeight: "600", fontSize: 14 },
   dim: { color: COLORS.subtext, fontSize: 12 },
   stat: { color: COLORS.subtext, fontSize: 13 },
@@ -569,8 +575,8 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  medalStat: { flexDirection: "row", alignItems: "center", gap: 6 },
-  likeStat: { flexDirection: "row", alignItems: "center", gap: 6 },
+  medalStat: { flexDirection: "row", alignItems: "center" },
+  likeStat: { flexDirection: "row", alignItems: "center" },
 
   pill: {
     flexDirection: "row",
@@ -662,3 +668,6 @@ const styles = StyleSheet.create({
   },
   commentsBadgeText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
 });
+
+// ✅ memoized export so FlatList/VirtualizedList don’t re-render every card all the time
+export default memo(RecipeCard);

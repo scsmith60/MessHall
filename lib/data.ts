@@ -1,26 +1,26 @@
 // lib/data.ts
-// LIKE YOU'RE 5:
-// - This file is a helper. Screens ask it for stuff (feed, details, search).
-// - We always hide other people's PRIVATE recipes.
-// - We use the database nicely and send back clean objects for the UI.
+// LIKE YOU'RE 5 🧸
+// - This file talks to the database (Supabase) and gives screens clean data.
+// - It hides other people’s private recipes.
+// - It still shows *your* private recipes to *you* (so your feed & profile look right).
 
-import { supabase } from "./supabase"; // 👉 change to "./supabase" if that's your file
+import { supabase } from "./supabase";
 import {
   replaceRecipeImage as replaceRecipeImageUpload,
   deleteRecipeAssets,
 } from "./uploads";
 
-/* ──────────────────────────────────────────────────────────
-   Tiny helper types (labels so TypeScript is happy)
-   ────────────────────────────────────────────────────────── */
+/* -----------------------------------------------------------
+   Tiny types to make TypeScript happy
+----------------------------------------------------------- */
 type StepRow = { text: string; seconds: number | null };
 type UserStats = { medals_total: number; cooks_total: number };
 
-/* ──────────────────────────────────────────────────────────
-   Public API (what screens import and use)
-   ────────────────────────────────────────────────────────── */
+/* -----------------------------------------------------------
+   Public API (what screens import)
+----------------------------------------------------------- */
 export interface DataAPI {
-  // FEED LIST
+  // FEED LIST (home)
   getFeedPage(
     page: number,
     size: number
@@ -33,13 +33,13 @@ export interface DataAPI {
           image: string | null;
           creator: string;
           creatorAvatar?: string | null;
-          knives: number; // creator lifetime medals (profiles.knives)
-          cooks: number; // this recipe’s cooks count
-          likes: number; // ❤️ count
-          commentCount: number; // 💬 count (from recipes.comment_count)
+          knives: number;        // creator lifetime medals (profiles.knives)
+          cooks: number;         // this recipe’s cooks_count
+          likes: number;         // this recipe’s likes_count
+          commentCount: number;  // this recipe’s comment_count
           createdAt: string;
           ownerId: string;
-          is_private?: boolean; // 🔒 used so UI can double-check privacy
+          is_private?: boolean;  // 🔒 for the lock chip on the card
         }
       | {
           type: "sponsored";
@@ -76,7 +76,7 @@ export interface DataAPI {
   toggleLike(recipeId: string): Promise<{ liked: boolean; likesCount: number }>;
   markCooked(recipeId: string): Promise<void>;
 
-  // CREATOR STATS (for medal pill or profile)
+  // CREATOR STATS (for profile)
   getUserStats(userId: string): Promise<UserStats | null>;
 
   // OWNER HELPERS
@@ -103,7 +103,7 @@ export interface DataAPI {
   // IMAGE REPLACE
   replaceRecipeImage(recipeId: string, sourceUri: string): Promise<string>;
 
-  // SEARCH (advanced + simple)
+  // SEARCH
   searchRecipesAdvanced(args: {
     text?: string;
     maxMinutes?: number;
@@ -112,12 +112,11 @@ export interface DataAPI {
     excludeIngredients?: string[];
     limit?: number;
   }): Promise<Array<{ id: string; title: string; image: string | null; creator: string }>>;
-
   searchRecipes(query: string): Promise<
     Array<{ id: string; title: string; image: string | null; creator: string }>
   >;
 
-  // 💬 COMMENTS (hide/unhide/delete) + count refresher
+  // COMMENTS
   hideComment(commentId: string): Promise<void>;
   unhideComment(commentId: string): Promise<void>;
   deleteComment(commentId: string): Promise<void>;
@@ -126,18 +125,18 @@ export interface DataAPI {
   ): Promise<{ likes: number; cooks: number; comments: number }>;
 }
 
-/* ──────────────────────────────────────────────────────────
+/* -----------------------------------------------------------
    Private helpers
-   ────────────────────────────────────────────────────────── */
+----------------------------------------------------------- */
 
-// 🧑 Who am I? (throws if not signed in)
+// who am i (throws if not signed in)
 async function getViewerIdStrict(): Promise<string> {
   const { data, error } = await supabase.auth.getUser();
   if (error || !data?.user?.id) throw new Error("Not signed in");
   return data.user.id;
 }
 
-// 👑 Who owns a recipe?
+// who owns a recipe
 async function getOwnerId(recipeId: string): Promise<string | null> {
   const { data, error } = await supabase
     .from("recipes")
@@ -148,7 +147,7 @@ async function getOwnerId(recipeId: string): Promise<string | null> {
   return data?.user_id ?? null;
 }
 
-// 🚫 No liking your own recipe
+// no liking your own recipe
 async function assertNotOwnerForLike(recipeId: string, viewerId: string): Promise<void> {
   const ownerId = await getOwnerId(recipeId);
   if (ownerId && ownerId === viewerId) {
@@ -156,7 +155,7 @@ async function assertNotOwnerForLike(recipeId: string, viewerId: string): Promis
   }
 }
 
-// 🚫 No cooking your own recipe
+// no cooking your own recipe
 async function assertNotOwnerForCook(recipeId: string, viewerId: string): Promise<void> {
   const ownerId = await getOwnerId(recipeId);
   if (ownerId && ownerId === viewerId) {
@@ -164,20 +163,28 @@ async function assertNotOwnerForCook(recipeId: string, viewerId: string): Promis
   }
 }
 
-/* ──────────────────────────────────────────────────────────
+/* -----------------------------------------------------------
    Main Data API
-   ────────────────────────────────────────────────────────── */
+----------------------------------------------------------- */
 export const dataAPI: DataAPI = {
-  /* FEED LIST
-     Like you're 5: we grab a page of recipes.
-     IMPORTANT: we ask the database for ONLY public recipes (is_private = false).
-     EXTRA SAFE: we include `is_private` so the UI can double-check.
-  */
+  /* -------------------------------------------------------
+     FEED LIST
+     Like I'm 5:
+     - If signed in → show PUBLIC recipes OR (PRIVATE & mine)
+     - If logged out → show only PUBLIC
+     - We apply pagination AFTER the filter
+  ------------------------------------------------------- */
   async getFeedPage(page, size) {
+    // what slice of the list do we want?
     const from = page * size;
     const to = from + size - 1;
 
-    const { data: recipes, error } = await supabase
+    // who is looking?
+    const { data: auth } = await supabase.auth.getUser();
+    const viewerId: string | null = auth?.user?.id ?? null;
+
+    // base select
+    let q = supabase
       .from("recipes")
       .select(`
         id,
@@ -187,20 +194,29 @@ export const dataAPI: DataAPI = {
         likes_count,
         comment_count,
         created_at,
-        minutes,
-        diet_tags,
-        main_ingredients,
         user_id,
         is_private,
         profiles!recipes_user_id_fkey (username, avatar_url, knives)
       `)
-      .eq("is_private", false) // 🔒 only public
-      .order("created_at", { ascending: false })
-      .range(from, to);
+      .order("created_at", { ascending: false });
 
+    // IMPORTANT: filter FIRST
+    if (viewerId) {
+      // public OR (private AND mine)
+      q = q.or(
+        `and(is_private.eq.false),and(is_private.eq.true,user_id.eq.${viewerId})`
+      );
+    } else {
+      q = q.eq("is_private", false);
+    }
+
+    // THEN paginate
+    q = q.range(from, to);
+
+    const { data: recipes, error } = await q;
     if (error) throw error;
 
-    // (Optional) sponsored slots to sprinkle into the feed
+    // optional: ads we may sprinkle in
     const nowIso = new Date().toISOString();
     const { data: ads } = await supabase
       .from("sponsored_slots")
@@ -208,7 +224,7 @@ export const dataAPI: DataAPI = {
       .lte("active_from", nowIso)
       .or(`active_to.is.null,active_to.gte.${nowIso}`);
 
-    // Build the feed list (recipes + sometimes an ad)
+    // shape rows for the UI
     const out: Array<
       | {
           type: "recipe";
@@ -237,7 +253,7 @@ export const dataAPI: DataAPI = {
 
     let adIdx = 0;
     (recipes ?? []).forEach((r: any, i: number) => {
-      // 🍬 sprinkle ads (every ~6 items)
+      // sprinkle an ad every ~6 cards (optional)
       if (ads && i > 0 && i % 6 === 4 && adIdx < ads.length) {
         const a = ads[adIdx++];
         out.push({
@@ -250,7 +266,6 @@ export const dataAPI: DataAPI = {
         });
       }
 
-      // 📦 push the recipe item
       out.push({
         type: "recipe",
         id: String(r.id),
@@ -264,20 +279,18 @@ export const dataAPI: DataAPI = {
         commentCount: Number(r.comment_count ?? 0),
         createdAt: r.created_at,
         ownerId: r.user_id,
-        is_private: !!r.is_private,
+        is_private: !!r.is_private, // 🔒 card uses this for the lock
       });
     });
 
-    // 🎒 extra belt (keeps us safe even if DB sends a private row by mistake)
-    return out.filter((it: any) => it.type !== "recipe" || it.is_private !== true);
+    // NOTE: do NOT filter the list again here.
+    // The DB filter already did the right thing (includes your own privates).
+    return out;
   },
 
-  /* ONE RECIPE DETAILS
-     Like you're 5: we fetch one recipe + the author profile,
-     and we list ingredients + steps in order.
-     NOTE: RLS should block private recipes from strangers,
-     so this will return null if you don't own it and it's private.
-  */
+  /* -------------------------------------------------------
+     ONE RECIPE DETAILS
+  ------------------------------------------------------- */
   async getRecipeById(id) {
     const { data: r, error } = await supabase
       .from("recipes")
@@ -332,9 +345,9 @@ export const dataAPI: DataAPI = {
     };
   },
 
-  /* SAVE / LIKE / COOK
-     Simple toggles with friendly checks.
-  */
+  /* -------------------------------------------------------
+     SAVE / LIKE / COOK
+  ------------------------------------------------------- */
   async toggleSave(recipeId: string) {
     const userId = await getViewerIdStrict();
 
@@ -413,15 +426,14 @@ export const dataAPI: DataAPI = {
       .from("recipe_cooks")
       .insert({ user_id: userId, recipe_id: recipeId });
 
-    // ignore duplicate unique error
+    // ignore "already cooked" unique error
     // @ts-ignore
     if (error && error.code !== "23505") throw error;
   },
 
-  /* CREATOR STATS
-     medals_total = profiles.knives (author medals)
-     cooks_total = sum of your recipes’ cooks_count (fast + simple)
-  */
+  /* -------------------------------------------------------
+     CREATOR STATS
+  ------------------------------------------------------- */
   async getUserStats(userId: string) {
     const [{ data: prof }, { data: cookRows, error: cookErr }] = await Promise.all([
       supabase.from("profiles").select("knives").eq("id", userId).maybeSingle(),
@@ -440,7 +452,9 @@ export const dataAPI: DataAPI = {
     };
   },
 
-  /* OWNER HELPERS */
+  /* -------------------------------------------------------
+     OWNER HELPERS
+  ------------------------------------------------------- */
   async getRecipeOwnerId(recipeId: string) {
     return await getOwnerId(recipeId);
   },
@@ -459,7 +473,6 @@ export const dataAPI: DataAPI = {
   async deleteRecipe(recipeId: string) {
     const { error } = await supabase.from("recipes").delete().eq("id", recipeId);
     if (error) throw error;
-    // best-effort: clean storage assets
     try {
       await deleteRecipeAssets(recipeId);
     } catch {
@@ -467,7 +480,9 @@ export const dataAPI: DataAPI = {
     }
   },
 
-  /* FULL EDIT FLOW */
+  /* -------------------------------------------------------
+     FULL EDIT FLOW
+  ------------------------------------------------------- */
   async updateRecipeFull(args) {
     const {
       id,
@@ -481,7 +496,6 @@ export const dataAPI: DataAPI = {
       minutes,
     } = args;
 
-    // base fields
     const { error: baseErr } = await supabase
       .from("recipes")
       .update({
@@ -495,7 +509,6 @@ export const dataAPI: DataAPI = {
       .eq("id", id);
     if (baseErr) throw baseErr;
 
-    // ingredients (replace all)
     const { error: delIngErr } = await supabase
       .from("recipe_ingredients")
       .delete()
@@ -504,13 +517,10 @@ export const dataAPI: DataAPI = {
 
     if (ingredients?.length) {
       const rows = ingredients.map((text, i) => ({ recipe_id: id, pos: i, text }));
-      const { error: insIngErr } = await supabase
-        .from("recipe_ingredients")
-        .insert(rows);
+      const { error: insIngErr } = await supabase.from("recipe_ingredients").insert(rows);
       if (insIngErr) throw insIngErr;
     }
 
-    // steps (replace all)
     const { error: delStepErr } = await supabase
       .from("recipe_steps")
       .delete()
@@ -524,14 +534,14 @@ export const dataAPI: DataAPI = {
         text: s.text,
         seconds: s.seconds,
       }));
-      const { error: insStepErr } = await supabase
-        .from("recipe_steps")
-        .insert(rows);
+      const { error: insStepErr } = await supabase.from("recipe_steps").insert(rows);
       if (insStepErr) throw insStepErr;
     }
   },
 
-  /* IMAGE REPLACE */
+  /* -------------------------------------------------------
+     IMAGE REPLACE
+  ------------------------------------------------------- */
   async replaceRecipeImage(recipeId: string, sourceUri: string) {
     const url = await replaceRecipeImageUpload(recipeId, sourceUri);
     const { error } = await supabase
@@ -542,9 +552,9 @@ export const dataAPI: DataAPI = {
     return url;
   },
 
-  /* ADVANCED SEARCH
-     Like you're 5: we only search PUBLIC recipes.
-  */
+  /* -------------------------------------------------------
+     ADVANCED SEARCH (PUBLIC ONLY)
+  ------------------------------------------------------- */
   async searchRecipesAdvanced({
     text,
     maxMinutes,
@@ -566,7 +576,7 @@ export const dataAPI: DataAPI = {
         profiles!recipes_user_id_fkey (username)
       `
       )
-      .eq("is_private", false) // 🔒 only public
+      .eq("is_private", false)
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -589,15 +599,13 @@ export const dataAPI: DataAPI = {
     }));
   },
 
-  /* SIMPLE SEARCH
-     Like you're 5: also only public.
-     We add the is_private filter in BOTH phases (title search + ingredient search).
-  */
+  /* -------------------------------------------------------
+     SIMPLE SEARCH (PUBLIC ONLY)
+  ------------------------------------------------------- */
   async searchRecipes(query: string) {
     const q = (query || "").trim();
     if (!q) return [];
 
-    // (A) title match — PUBLIC ONLY
     const { data: titleRows, error: titleErr } = await supabase
       .from("recipes")
       .select(
@@ -609,7 +617,7 @@ export const dataAPI: DataAPI = {
         profiles!recipes_user_id_fkey (username)
       `
       )
-      .eq("is_private", false) // 🔒 only public
+      .eq("is_private", false)
       .ilike("title", `%${q}%`)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -617,7 +625,6 @@ export const dataAPI: DataAPI = {
     if (titleErr) throw titleErr;
     let rows = titleRows ?? [];
 
-    // (B) if no title hits, try ingredient text matches
     if (!rows.length) {
       const { data: ingMatches } = await supabase
         .from("recipe_ingredients")
@@ -642,7 +649,7 @@ export const dataAPI: DataAPI = {
           `
           )
           .in("id", ids)
-          .eq("is_private", false) // 🔒 only public
+          .eq("is_private", false)
           .order("created_at", { ascending: false })
           .limit(50);
         rows = byIng ?? [];
@@ -657,7 +664,9 @@ export const dataAPI: DataAPI = {
     }));
   },
 
-  /* 💬 COMMENTS */
+  /* -------------------------------------------------------
+     COMMENTS
+  ------------------------------------------------------- */
   async hideComment(commentId: string) {
     const { error } = await supabase
       .from("recipe_comments")
@@ -675,10 +684,7 @@ export const dataAPI: DataAPI = {
   },
 
   async deleteComment(commentId: string) {
-    const { error } = await supabase
-      .from("recipe_comments")
-      .delete()
-      .eq("id", commentId);
+    const { error } = await supabase.from("recipe_comments").delete().eq("id", commentId);
     if (error) throw error;
   },
 
@@ -697,18 +703,15 @@ export const dataAPI: DataAPI = {
   },
 };
 
-/* ──────────────────────────────────────────────────────────
+/* -----------------------------------------------------------
    Social / follow helpers (named exports used elsewhere)
-   ────────────────────────────────────────────────────────── */
-
-// Who am I? (throws if not signed in) – duplicate on purpose for other modules
+----------------------------------------------------------- */
 async function viewerIdStrict(): Promise<string> {
   const { data, error } = await supabase.auth.getUser();
   if (error || !data?.user?.id) throw new Error("Not signed in");
   return data.user.id;
 }
 
-// Find a user's id from their callsign (username). Returns null if not found.
 export async function getUserIdByUsername(username: string): Promise<string | null> {
   const clean = (username || "").trim();
   if (!clean) return null;
@@ -721,10 +724,7 @@ export async function getUserIdByUsername(username: string): Promise<string | nu
   return data?.id ?? null;
 }
 
-// People who follow TARGET (→ rows about the FOLLOWERS).
-export async function listFollowers(targetUserId: string): Promise<
-  Array<{ id: string; username: string | null; avatar_url: string | null; bio: string | null }>
-> {
+export async function listFollowers(targetUserId: string) {
   if (!targetUserId) return [];
   const { data, error } = await supabase
     .from("follows")
@@ -747,10 +747,7 @@ export async function listFollowers(targetUserId: string): Promise<
     }));
 }
 
-// People TARGET is following (→ rows about the FOLLOWING).
-export async function listFollowing(targetUserId: string): Promise<
-  Array<{ id: string; username: string | null; avatar_url: string | null; bio: string | null }>
-> {
+export async function listFollowing(targetUserId: string) {
   if (!targetUserId) return [];
   const { data, error } = await supabase
     .from("follows")
@@ -773,7 +770,6 @@ export async function listFollowing(targetUserId: string): Promise<
     }));
 }
 
-// Do *I* (viewer) follow `otherUserId`? Returns true/false.
 export async function getFollowState(otherUserId: string): Promise<boolean> {
   const me = await viewerIdStrict();
   if (!otherUserId || otherUserId === me) return false;
@@ -790,7 +786,6 @@ export async function getFollowState(otherUserId: string): Promise<boolean> {
   return !!data;
 }
 
-// Follow/unfollow `otherUserId`. Returns the NEW state (true = following).
 export async function toggleFollow(otherUserId: string): Promise<boolean> {
   const me = await viewerIdStrict();
   if (!otherUserId || otherUserId === me) throw new Error("Cannot follow yourself");
