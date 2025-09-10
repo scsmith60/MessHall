@@ -1,9 +1,10 @@
 // lib/data.ts
-// PURPOSE: a friendly helper file that talks to the database for our screens.
-// Like you're 5: Screens ask this file for stuff (like "give me the feed"),
-// and this file asks the database nicely and returns clean objects.
+// LIKE YOU'RE 5:
+// - This file is a helper. Screens ask it for stuff (feed, details, search).
+// - We always hide other people's PRIVATE recipes.
+// - We use the database nicely and send back clean objects for the UI.
 
-import { supabase } from "./supabase";
+import { supabase } from "./supabase"; // 👉 change to "./supabase" if that's your file
 import {
   replaceRecipeImage as replaceRecipeImageUpload,
   deleteRecipeAssets,
@@ -38,6 +39,7 @@ export interface DataAPI {
           commentCount: number; // 💬 count (from recipes.comment_count)
           createdAt: string;
           ownerId: string;
+          is_private?: boolean; // 🔒 used so UI can double-check privacy
         }
       | {
           type: "sponsored";
@@ -57,7 +59,7 @@ export interface DataAPI {
     image: string | null;
     creator: string;
     creatorAvatar?: string | null;
-    knives: number;        // 👈 from profiles.knives (author’s medals)
+    knives: number;
     cooks: number;
     createdAt: string;
     ingredients: string[];
@@ -66,7 +68,7 @@ export interface DataAPI {
     monetization_eligible: boolean;
     sourceUrl: string | null;
     image_url?: string | null;
-    commentCount?: number; // (optional) handy on details screens
+    commentCount?: number;
   } | null>;
 
   // SAVE / LIKE / COOK
@@ -115,7 +117,7 @@ export interface DataAPI {
     Array<{ id: string; title: string; image: string | null; creator: string }>
   >;
 
-  // 💬 COMMENTS (NEW) — we mutate the base table so DB triggers keep counts right
+  // 💬 COMMENTS (hide/unhide/delete) + count refresher
   hideComment(commentId: string): Promise<void>;
   unhideComment(commentId: string): Promise<void>;
   deleteComment(commentId: string): Promise<void>;
@@ -128,16 +130,15 @@ export interface DataAPI {
    Private helpers
    ────────────────────────────────────────────────────────── */
 
-// Who am I? (throws if not signed in)
+// 🧑 Who am I? (throws if not signed in)
 async function getViewerIdStrict(): Promise<string> {
   const { data, error } = await supabase.auth.getUser();
   if (error || !data?.user?.id) throw new Error("Not signed in");
   return data.user.id;
 }
 
-// Who owns a recipe?
+// 👑 Who owns a recipe?
 async function getOwnerId(recipeId: string): Promise<string | null> {
-  // Like I’m 5: look at the recipe row and read its user_id.
   const { data, error } = await supabase
     .from("recipes")
     .select("user_id")
@@ -147,7 +148,7 @@ async function getOwnerId(recipeId: string): Promise<string | null> {
   return data?.user_id ?? null;
 }
 
-// No liking your own recipe
+// 🚫 No liking your own recipe
 async function assertNotOwnerForLike(recipeId: string, viewerId: string): Promise<void> {
   const ownerId = await getOwnerId(recipeId);
   if (ownerId && ownerId === viewerId) {
@@ -155,7 +156,7 @@ async function assertNotOwnerForLike(recipeId: string, viewerId: string): Promis
   }
 }
 
-// No cooking your own recipe
+// 🚫 No cooking your own recipe
 async function assertNotOwnerForCook(recipeId: string, viewerId: string): Promise<void> {
   const ownerId = await getOwnerId(recipeId);
   if (ownerId && ownerId === viewerId) {
@@ -169,15 +170,13 @@ async function assertNotOwnerForCook(recipeId: string, viewerId: string): Promis
 export const dataAPI: DataAPI = {
   /* FEED LIST
      Like you're 5: we grab a page of recipes.
-     IMPORTANT: we select `comment_count` so the card shows the right 💬 number.
-     SUPER IMPORTANT: we read the GREEN MEDAL from profiles.knives (author).
+     IMPORTANT: we ask the database for ONLY public recipes (is_private = false).
+     EXTRA SAFE: we include `is_private` so the UI can double-check.
   */
   async getFeedPage(page, size) {
     const from = page * size;
     const to = from + size - 1;
 
-    // Ask the DB for recipes + creator profile (username/avatar/KNIVES).
-    // NOTE: No comments or emojis inside this string, only commas.
     const { data: recipes, error } = await supabase
       .from("recipes")
       .select(`
@@ -192,14 +191,16 @@ export const dataAPI: DataAPI = {
         diet_tags,
         main_ingredients,
         user_id,
+        is_private,
         profiles!recipes_user_id_fkey (username, avatar_url, knives)
       `)
+      .eq("is_private", false) // 🔒 only public
       .order("created_at", { ascending: false })
       .range(from, to);
 
     if (error) throw error;
 
-    // Optional: fetch sponsored slots to sprinkle into feed
+    // (Optional) sponsored slots to sprinkle into the feed
     const nowIso = new Date().toISOString();
     const { data: ads } = await supabase
       .from("sponsored_slots")
@@ -222,13 +223,21 @@ export const dataAPI: DataAPI = {
           commentCount: number;
           createdAt: string;
           ownerId: string;
+          is_private?: boolean;
         }
-      | { type: "sponsored"; id: string; brand: string; title: string; image: string | null; cta: string | null }
+      | {
+          type: "sponsored";
+          id: string;
+          brand: string;
+          title: string;
+          image: string | null;
+          cta: string | null;
+        }
     > = [];
 
     let adIdx = 0;
     (recipes ?? []).forEach((r: any, i: number) => {
-      // sprinkle ads
+      // 🍬 sprinkle ads (every ~6 items)
       if (ads && i > 0 && i % 6 === 4 && adIdx < ads.length) {
         const a = ads[adIdx++];
         out.push({
@@ -241,7 +250,7 @@ export const dataAPI: DataAPI = {
         });
       }
 
-      // 👇 GREEN MEDAL comes from the AUTHOR profile (profiles.knives)
+      // 📦 push the recipe item
       out.push({
         type: "recipe",
         id: String(r.id),
@@ -249,21 +258,25 @@ export const dataAPI: DataAPI = {
         image: r.image_url ?? null,
         creator: r.profiles?.username ?? "someone",
         creatorAvatar: r.profiles?.avatar_url ?? null,
-        knives: Number(r.profiles?.knives ?? 0),     // ✅ FIXED: author’s knives (not user_stats)
+        knives: Number(r.profiles?.knives ?? 0),
         cooks: Number(r.cooks_count ?? 0),
         likes: Number(r.likes_count ?? 0),
         commentCount: Number(r.comment_count ?? 0),
         createdAt: r.created_at,
         ownerId: r.user_id,
+        is_private: !!r.is_private,
       });
     });
 
-    return out;
+    // 🎒 extra belt (keeps us safe even if DB sends a private row by mistake)
+    return out.filter((it: any) => it.type !== "recipe" || it.is_private !== true);
   },
 
   /* ONE RECIPE DETAILS
      Like you're 5: we fetch one recipe + the author profile,
-     and use profiles.knives for the green medal.
+     and we list ingredients + steps in order.
+     NOTE: RLS should block private recipes from strangers,
+     so this will return null if you don't own it and it's private.
   */
   async getRecipeById(id) {
     const { data: r, error } = await supabase
@@ -291,7 +304,6 @@ export const dataAPI: DataAPI = {
     if (error) throw error;
     if (!r) return null;
 
-    // pull ingredients/steps in order
     const ings = (r.recipe_ingredients || [])
       .sort((a: any, b: any) => (a.pos ?? 0) - (b.pos ?? 0))
       .map((x: any) => x.text ?? "")
@@ -307,7 +319,7 @@ export const dataAPI: DataAPI = {
       image: r.image_url ?? null,
       creator: r.profiles?.username ?? "someone",
       creatorAvatar: r.profiles?.avatar_url ?? null,
-      knives: Number(r.profiles?.knives ?? 0),      // ✅ FIXED: author’s knives
+      knives: Number(r.profiles?.knives ?? 0),
       cooks: Number(r.cooks_count ?? 0),
       createdAt: r.created_at,
       ingredients: ings,
@@ -320,7 +332,9 @@ export const dataAPI: DataAPI = {
     };
   },
 
-  /* SAVE / LIKE / COOK */
+  /* SAVE / LIKE / COOK
+     Simple toggles with friendly checks.
+  */
   async toggleSave(recipeId: string) {
     const userId = await getViewerIdStrict();
 
@@ -375,7 +389,6 @@ export const dataAPI: DataAPI = {
       if (error && error.code !== "23505") throw error;
     }
 
-    // fresh count + my state
     const [{ count }, { data: mine }] = await Promise.all([
       supabase
         .from("recipe_likes")
@@ -406,11 +419,10 @@ export const dataAPI: DataAPI = {
   },
 
   /* CREATOR STATS
-     Like you're 5: medals = profiles.knives (truth now),
-     cooks_total = sum of your recipes’ cooks_count (simple + fast).
+     medals_total = profiles.knives (author medals)
+     cooks_total = sum of your recipes’ cooks_count (fast + simple)
   */
   async getUserStats(userId: string) {
-    // medals from profile
     const [{ data: prof }, { data: cookRows, error: cookErr }] = await Promise.all([
       supabase.from("profiles").select("knives").eq("id", userId).maybeSingle(),
       supabase.from("recipes").select("cooks_count").eq("user_id", userId).limit(5000),
@@ -451,7 +463,7 @@ export const dataAPI: DataAPI = {
     try {
       await deleteRecipeAssets(recipeId);
     } catch {
-      // ignore
+      // ignore clean-up errors
     }
   },
 
@@ -530,7 +542,9 @@ export const dataAPI: DataAPI = {
     return url;
   },
 
-  /* ADVANCED SEARCH */
+  /* ADVANCED SEARCH
+     Like you're 5: we only search PUBLIC recipes.
+  */
   async searchRecipesAdvanced({
     text,
     maxMinutes,
@@ -552,6 +566,7 @@ export const dataAPI: DataAPI = {
         profiles!recipes_user_id_fkey (username)
       `
       )
+      .eq("is_private", false) // 🔒 only public
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -574,12 +589,15 @@ export const dataAPI: DataAPI = {
     }));
   },
 
-  /* SIMPLE SEARCH */
+  /* SIMPLE SEARCH
+     Like you're 5: also only public.
+     We add the is_private filter in BOTH phases (title search + ingredient search).
+  */
   async searchRecipes(query: string) {
     const q = (query || "").trim();
     if (!q) return [];
 
-    // (A) title match first
+    // (A) title match — PUBLIC ONLY
     const { data: titleRows, error: titleErr } = await supabase
       .from("recipes")
       .select(
@@ -591,6 +609,7 @@ export const dataAPI: DataAPI = {
         profiles!recipes_user_id_fkey (username)
       `
       )
+      .eq("is_private", false) // 🔒 only public
       .ilike("title", `%${q}%`)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -623,6 +642,7 @@ export const dataAPI: DataAPI = {
           `
           )
           .in("id", ids)
+          .eq("is_private", false) // 🔒 only public
           .order("created_at", { ascending: false })
           .limit(50);
         rows = byIng ?? [];
@@ -637,11 +657,7 @@ export const dataAPI: DataAPI = {
     }));
   },
 
-  /* 💬 COMMENTS (NEW) */
-  // Like you're 5: these flip the "hidden" switch or delete the comment
-  // on the BASE TABLE (public.recipe_comments), so your DB triggers
-  // can add/subtract from recipes.comment_count automatically.
-
+  /* 💬 COMMENTS */
   async hideComment(commentId: string) {
     const { error } = await supabase
       .from("recipe_comments")
@@ -666,7 +682,6 @@ export const dataAPI: DataAPI = {
     if (error) throw error;
   },
 
-  // Quick way to refresh badges after any comment action
   async getRecipeCounts(recipeId: string) {
     const { data, error } = await supabase
       .from("recipes")

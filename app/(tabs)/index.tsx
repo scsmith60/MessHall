@@ -1,8 +1,16 @@
 // app/(tabs)/index.tsx
 // HOME / SCUTTLEBUTT FEED
+//
 // like I'm 5:
-// - this shows the feed list
-// - we pass the real commentCount number into RecipeCard
+// - This screen shows the big list of recipes (the feed).
+// - We added a *safety* filter so PRIVATE recipes (is_private = true) never show here.
+// - Even if the backend makes a boo-boo, our filter hides private stuff.
+// - Sponsored cards still show normally.
+//
+// 🔒 What changed?
+//   1) Added `is_private?: boolean` to the recipe item type.
+//   2) After we load a page, we filter out any recipe where is_private is true (or 1, or "true").
+//   3) Everything else works the same.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -24,7 +32,7 @@ import { recipeStore } from '../../lib/store';
 import { logAdEvent } from '../../lib/ads';
 import SearchFab from '../../components/SearchFab';
 
-// small helper type for sponsored items
+// 🧩 small helper type for sponsored items
 type SponsoredSlot = {
   id: string;
   brand?: string;
@@ -33,7 +41,8 @@ type SponsoredSlot = {
   cta?: string;
 };
 
-// the feed can show recipes or sponsored cards
+// 🧩 the feed can show recipes or sponsored cards
+// 👇 We added `is_private?: boolean` so we can hide private recipes on the client too.
 type FeedItem =
   | {
       type: 'recipe';
@@ -45,9 +54,10 @@ type FeedItem =
       knives: number;
       cooks: number;
       likes: number;
-      commentCount: number;   // <- the number we need to show 💬 on the card
+      commentCount: number;   // <- bubble count for 💬 on the card
       createdAt: string;
       ownerId: string;
+      is_private?: boolean;   // 🔒 NEW: used only to hide private recipes in the feed
     }
   | {
       type: 'sponsored';
@@ -59,26 +69,43 @@ type FeedItem =
       slot?: SponsoredSlot;
     };
 
+// 🔎 Tiny helper: figure out if a recipe item is private no matter how it's encoded
+// (boolean true, number 1, or string "true")
+function isRecipePrivate(item: Extract<FeedItem, { type: 'recipe' }>): boolean {
+  const v = (item as any)?.is_private;
+  return v === true || v === 1 || v === 'true';
+}
+
 export default function HomeScreen() {
+  // 📦 list data + paging/loading flags
   const [data, setData] = useState<FeedItem[]>([]);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const PAGE_SIZE = 12;
 
-  // remember which ads were already seen
+  // 📝 remember which ads were already seen so we only log once
   const seenAdsRef = useRef<Set<string>>(new Set());
 
-  // load a page of feed data
+  // 🚚 load a page of feed data from our API
   const loadPage = useCallback(
     async (nextPage: number) => {
       if (loading) return;
       setLoading(true);
       try {
+        // 1) Ask our API for a page of items
         const items = await dataAPI.getFeedPage(nextPage, PAGE_SIZE);
 
-        // put basic recipe info into your in-memory store (used elsewhere)
-        const recipesOnly = items.filter((it) => it.type === 'recipe') as Array<
+        // 2) SAFETY FILTER (important part):
+        //    - keep sponsored items as-is
+        //    - keep only recipe items that are NOT private
+        const visibleItems: FeedItem[] = (items ?? []).filter((it: FeedItem) => {
+          if (it.type !== 'recipe') return true;                // ads are fine
+          return !isRecipePrivate(it);                          // hide private recipes
+        });
+
+        // 3) Put basic recipe info into in-memory store (used elsewhere in app)
+        const recipesOnly = visibleItems.filter((it) => it.type === 'recipe') as Array<
           Extract<FeedItem, { type: 'recipe' }>
         >;
         recipeStore.upsertMany(
@@ -93,7 +120,8 @@ export default function HomeScreen() {
           }))
         );
 
-        setData((prev) => (nextPage === 0 ? items : [...prev, ...items]));
+        // 4) Put the (filtered) stuff into our list
+        setData((prev) => (nextPage === 0 ? visibleItems : [...prev, ...visibleItems]));
         setPage(nextPage);
       } catch (err: any) {
         Alert.alert('Feed Problem', err?.message ?? 'Could not load feed.');
@@ -104,24 +132,24 @@ export default function HomeScreen() {
     [loading]
   );
 
-  // first load
+  // 🚀 first load when the screen shows up
   useEffect(() => {
     loadPage(0);
   }, []);
 
-  // pull-to-refresh
+  // 🔄 pull-to-refresh handler
   const onRefresh = async () => {
     setRefreshing(true);
     seenAdsRef.current.clear();
     await loadPage(0);
-    await success();
+    await success(); // haptic tickle
     setRefreshing(false);
   };
 
-  // infinite scroll
+  // ⬇️ infinite scroll handler
   const onEndReached = () => loadPage(page + 1);
 
-  // track ad impressions once
+  // 👀 track ad impressions once per ad
   const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
     for (const v of viewableItems) {
       const item: FeedItem | undefined = v?.item;
@@ -134,7 +162,7 @@ export default function HomeScreen() {
     }
   }).current;
 
-  // how to draw each row
+  // 🧱 how to draw each row
   const renderItem = ({ item }: ListRenderItemInfo<FeedItem>) => {
     if (item.type === 'sponsored') {
       const slot: SponsoredSlot =
@@ -143,7 +171,7 @@ export default function HomeScreen() {
       return <SponsoredCard slot={slot as any} />;
     }
 
-    // IMPORTANT: we pass commentCount to the card here
+    // 📇 recipe cards (note: by now, private ones were filtered out)
     return (
       <RecipeCard
         id={item.id}
@@ -168,7 +196,7 @@ export default function HomeScreen() {
     );
   };
 
-  // list + floating search button
+  // 🧱 the list + floating search button
   return (
     <View style={{ flex: 1 }}>
       <FlatList
