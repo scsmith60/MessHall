@@ -1,17 +1,16 @@
 // app/recipe/[id].tsx
 // LIKE I'M 5:
-// - We show your recipe.
-// - If YOU made it, a tiny ✏️ lives on the picture.
-// - We use "safe area insets" so the ✏️ never hides under the battery/clock.
-// - Tap ✏️ → go to /recipe/edit/[id].
-// - Everything else (like, cooked, comments, list) is unchanged.
+// - This keeps your original layout.
+// - Adds a tiny "Remix" chip beside your Private/Imported chips (click → go to parent).
+// - Keeps the small "Remix" button below the chips (non-owners, non-private).
+// - Uses recipe_ingredients/recipe_steps fallbacks if the recipe object lacks arrays.
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Alert, ScrollView, Share, Text, View, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context'; // 👈 NEW: to avoid the notch/battery
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { recipeStore } from '../../lib/store';
 import { COLORS, RADIUS, SPACING } from '../../lib/theme';
@@ -82,7 +81,7 @@ async function readActiveItemNames(listId: string): Promise<Set<string>> {
 
 export default function RecipeDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const insets = useSafeAreaInsets(); // 👈 NEW: gives us top/right padding for notches/status bar
+  const insets = useSafeAreaInsets();
 
   // 📦 State
   const [loading, setLoading] = useState(true);
@@ -114,6 +113,9 @@ export default function RecipeDetail() {
 
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<{ text: string; seconds?: number | null }[]>([]);
+
+  // 🆕 Is this recipe a remix? (we’ll show a little pill if yes)
+  const [parentId, setParentId] = useState<string | null>(null);
 
   // 🧒 Who am I?
   useEffect(() => {
@@ -177,6 +179,23 @@ export default function RecipeDetail() {
       if (!gone) setOwnerId(owner);
     })();
     return () => { gone = true; };
+  }, [id]);
+
+  // 🆕 Ask DB if this post has a parent (so we can render the Remix chip)
+  useEffect(() => {
+    let off = false;
+    (async () => {
+      if (!id) return;
+      try {
+        const { data } = await supabase
+          .from('recipes')
+          .select('parent_recipe_id')
+          .eq('id', id)
+          .maybeSingle();
+        if (!off) setParentId(data?.parent_recipe_id ?? null);
+      } catch {}
+    })();
+    return () => { off = true; };
   }, [id]);
 
   // 🌾 Fallbacks if recipe_ingredients / recipe_steps are normalized in DB
@@ -407,20 +426,15 @@ export default function RecipeDetail() {
           contentFit="cover"
         />
 
-        {/* ✏️ The tiny edit button for owners ONLY.
-            IMPORTANT: we use insets.top/right so it never hides behind the battery/clock. */}
+        {/* ✏️ owner-only edit button (unchanged) */}
         {isOwner && (
           <TouchableOpacity
             onPress={() =>
-              // If your route is /app/recipe/edit/[id].tsx this works:
               router.push({ pathname: '/recipe/edit/[id]', params: { id: String(id) } })
-              // If you instead have /app/recipe/edit/index.tsx and expect ?id=...:
-              // router.push({ pathname: '/recipe/edit', params: { id: String(id) } })
             }
             activeOpacity={0.85}
             style={{
               position: 'absolute',
-              // 👇 Nudge away from notch/status bar safely
               top: Math.max(8, insets.top) + 4,
               right: Math.max(8, insets.right) + 12,
               width: 36,
@@ -431,10 +445,10 @@ export default function RecipeDetail() {
               borderColor: '#233041',
               alignItems: 'center',
               justifyContent: 'center',
-              zIndex: 2,        // ensure on top (iOS)
-              elevation: 4,     // ensure on top (Android)
+              zIndex: 2,
+              elevation: 4,
             }}
-            hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }} // easier to tap
+            hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
             accessibilityLabel="Edit recipe"
           >
             <MaterialCommunityIcons name="pencil" size={18} color="#e5e7eb" />
@@ -470,17 +484,69 @@ export default function RecipeDetail() {
           <Text style={{ color: COLORS.sub }}>{timeAgo(model.createdAt)}</Text>
         </View>
 
-        {(isPrivate || (sourceUrl && sourceUrl.trim() !== '')) && (
+        {/* Chips row: Private / Imported / 🆕 Remix (kept same style) */}
+        {(isPrivate || (sourceUrl && sourceUrl.trim() !== '') || parentId) && (
           <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
             {isPrivate && (
-              <Text style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#334155', color: '#e2e8f0', fontWeight: '700' }}>🔒 Private</Text>
+              <Text style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#334155', color: '#e2e8f0', fontWeight: '700' }}>
+                🔒 Private
+              </Text>
             )}
             {sourceUrl && sourceUrl.trim() !== '' && (
-              <Text style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#334155', color: '#e2e8f0', fontWeight: '700' }}>🌐 Imported</Text>
+              <Text style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: '#334155', color: '#e2e8f0', fontWeight: '700' }}>
+                🌐 Imported
+              </Text>
             )}
+
+            {/* 🆕 Remix chip — only if this recipe has a parent. Click goes to parent recipe. */}
+            {parentId ? (
+              <TouchableOpacity onPress={() => router.push(`/recipe/${parentId}`)} activeOpacity={0.8}>
+                <View style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                  borderRadius: 999,
+                  backgroundColor: '#052638', // dark teal to stand out a bit
+                  borderWidth: 1,
+                  borderColor: '#0ea5e9',
+                }}>
+                  <Ionicons name="git-branch-outline" size={12} color="#7dd3fc" />
+                  <Text style={{ color: '#7dd3fc', fontWeight: '800', fontSize: 12 }}>Remix</Text>
+                </View>
+              </TouchableOpacity>
+            ) : null}
           </View>
         )}
 
+        {/* Small Remix button (unchanged) */}
+        {!isOwner && !isPrivate && (
+          <View style={{ marginBottom: 10 }}>
+            <HapticButton
+              onPress={() => router.push(`/remix/${id}`)}
+              style={{
+                backgroundColor: '#183B2B',
+                borderWidth: 1,
+                borderColor: '#2BAA6B',
+                paddingVertical: 8,
+                paddingHorizontal: 12,
+                borderRadius: RADIUS.lg,
+                alignItems: 'center',
+                alignSelf: 'flex-start',
+                flexDirection: 'row',
+                gap: 6,
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Remix this recipe"
+            >
+              <Ionicons name="git-branch-outline" size={14} color="#CFF8D6" />
+              <Text style={{ color: '#CFF8D6', fontWeight: '900', fontSize: 13 }}>Remix</Text>
+            </HapticButton>
+          </View>
+        )}
+
+        {/* tiny stat chips (medals + likes) */}
         <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.card, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }}>
             <MaterialCommunityIcons name="medal" size={16} color={COLORS.accent} />
