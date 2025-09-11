@@ -85,8 +85,6 @@ export default function TabsLayout() {
       {/* 🫥 HIDE any public-profile routes that accidentally live in (tabs) */}
       {/* If these routes exist, they'll be usable via router.push(), but NOT shown as a tab. */}
       <Tabs.Screen name="public-profile" options={{ href: null }} />
-      <Tabs.Screen name="public-profiles" options={{ href: null }} />
-      <Tabs.Screen name="public-profile/[id]" options={{ href: null }} />
       {/* Add more here if your filenames differ (tell me the exact name and I’ll add it) */}
     </Tabs>
   );

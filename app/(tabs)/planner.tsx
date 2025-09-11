@@ -1,10 +1,8 @@
 // app/(tabs)/planner.tsx
-// Like I'm 5: We make the page safe (top/bottom padding) and scrollable.
-// 1) Wrap everything in SafeAreaView so it doesn't hide under the camera/battery.
-// 2) Give the ScrollView extra bottom padding so the green button never covers content.
-// 3) Tell the PanGestureHandler to ONLY react to horizontal swipes (so vertical scroll works).
+// Like I'm 5: Week up top, pick a day, see tiny time chips, then see that day's meals.
+// Fixed: meals now always show under the chips for the picked day.
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -30,13 +28,14 @@ import { useLocalSearchParams } from "expo-router";
 import dayjs from "dayjs";
 import isoWeek from "dayjs/plugin/isoWeek";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context"; // ✅ safe area
+import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context";
+
 import { supabase } from "@/lib/supabase";
 import PlannerSlots from "@/components/PlannerSlots";
 
 dayjs.extend(isoWeek);
 
-// 🎨 Colors
+// 🎨 theme
 const COLORS = {
   bg: "#0f172a",
   card: "#111827",
@@ -64,7 +63,7 @@ type PlannerMeal = {
   recipe?: Recipe;
 };
 
-// tiny round image for day strip
+// tiny round image in day strip
 function MiniRecipeBubble({ url }: { url?: string | null }) {
   return (
     <View style={styles.miniBubble}>
@@ -80,16 +79,16 @@ function MiniRecipeBubble({ url }: { url?: string | null }) {
 }
 
 export default function PlannerScreen() {
-  const insets = useSafeAreaInsets(); // ✅ how much top/bottom space the phone needs
+  const insets = useSafeAreaInsets();
 
-  // deep-link from feed: ?recipeId=&date=
+  // deep link support
   const { recipeId, date } = useLocalSearchParams<{ recipeId?: string; date?: string }>();
 
-  // which week + selected day
+  // current week anchor + selected day
   const [anchor, setAnchor] = useState(dayjs());
   const [selectedDate, setSelectedDate] = useState(dayjs().format("YYYY-MM-DD"));
 
-  // meals state
+  // week meals
   const [weekMeals, setWeekMeals] = useState<Record<string, PlannerMeal[]>>({});
   const [loadingMeals, setLoadingMeals] = useState(false);
 
@@ -104,13 +103,16 @@ export default function PlannerScreen() {
   } | null>(null);
   const [loadingSponsor, setLoadingSponsor] = useState(false);
 
-  // picker state
+  // recipe picker modal
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
   const [pickerResults, setPickerResults] = useState<Recipe[] | null>(null);
   const [pickerLoading, setPickerLoading] = useState(false);
 
-  // ----- Week helpers -----
+  // to scroll list to top when day changes
+  const dayListRef = useRef<ScrollView>(null);
+
+  // week helpers
   const weekDays = useMemo(() => {
     const start = anchor.startOf("week"); // use .startOf("isoWeek") for Mon–Sun
     return new Array(7).fill(null).map((_, i) => start.add(i, "day"));
@@ -123,7 +125,10 @@ export default function PlannerScreen() {
     return `${first.format("MMM D")} – ${sameMonth ? last.format("D") : last.format("MMM D")}`;
   }, [weekDays]);
 
-  // ----- Load meals for week -----
+  // ✅ ALWAYS read the meals for the picked day straight from state
+  const dayMeals = weekMeals[selectedDate] ?? [];
+
+  // load meals
   const loadMeals = useCallback(async () => {
     setLoadingMeals(true);
     try {
@@ -132,9 +137,7 @@ export default function PlannerScreen() {
 
       const { data, error } = await supabase
         .from("planner_meals")
-        .select(
-          "id, recipe_id, meal_date, recipes:recipe_id(id,title,image_url,minutes,servings)"
-        )
+        .select("id, recipe_id, meal_date, recipes:recipe_id(id,title,image_url,minutes,servings)")
         .gte("meal_date", startStr)
         .lte("meal_date", endStr)
         .order("meal_date", { ascending: true });
@@ -163,7 +166,7 @@ export default function PlannerScreen() {
     }
   }, [weekDays]);
 
-  // ----- Weighted sponsor rotation (active windows on BOTH tables) -----
+  // sponsor loader (weighted pick)
   function weightedPick<T extends { _weight: number }>(items: T[]): T {
     const total = items.reduce((s, it) => s + Math.max(0, it._weight), 0);
     if (total <= 0) return items[0];
@@ -174,47 +177,33 @@ export default function PlannerScreen() {
     }
     return items[items.length - 1];
   }
-
   async function getOrSetDailyChoice(key: string, choices: any[]): Promise<any | null> {
     if (!choices.length) return null;
     const today = dayjs().format("YYYY-MM-DD");
     const dateKey = `${key}:date`;
     const idKey = `${key}:creative_id`;
-
-    const [savedDate, savedId] = await Promise.all([
-      AsyncStorage.getItem(dateKey),
-      AsyncStorage.getItem(idKey),
-    ]);
-
+    const [savedDate, savedId] = await Promise.all([AsyncStorage.getItem(dateKey), AsyncStorage.getItem(idKey)]);
     if (savedDate === today && savedId) {
       const found = choices.find((c: any) => String(c.id) === String(savedId));
       if (found) return found;
     }
-
     const pick = weightedPick(choices);
-    await AsyncStorage.multiSet([
-      [dateKey, today],
-      [idKey, String(pick.id)],
-    ]);
+    await AsyncStorage.multiSet([[dateKey, today], [idKey, String(pick.id)]]);
     return pick;
   }
-
   const loadSponsor = useCallback(async () => {
     setLoadingSponsor(true);
     try {
       const today = dayjs().format("YYYY-MM-DD");
 
-      // 1) active slots (use creative_id + active_from/active_to)
-      const { data: slots, error: slotsErr } = await supabase
+      const { data: slots } = await supabase
         .from("sponsored_slots")
         .select("id, creative_id, active_from, active_to, weight")
         .lte("active_from", today)
         .gte("active_to", today);
 
-      if (slotsErr) throw slotsErr;
-
       type Candidate = {
-        id: string; // creative id
+        id: string;
         brand?: string | null;
         headline?: string | null;
         image_url?: string | null;
@@ -223,21 +212,16 @@ export default function PlannerScreen() {
         _weight: number;
       };
 
-      let candidatesFromSlots: Candidate[] = [];
+      let candidates: Candidate[] = [];
+      const creativeIds = (slots ?? []).map((s: any) => s.creative_id).filter(Boolean);
 
-      const creativeIds = (slots ?? [])
-        .map((s: any) => s.creative_id)
-        .filter((v: any) => v);
-
-      if (creativeIds.length > 0) {
-        const { data: creatives, error: crErr } = await supabase
+      if (creativeIds.length) {
+        const { data: creatives } = await supabase
           .from("sponsored_creatives")
           .select("id, brand, headline, image_url, cta_text, cta_url, active_from, active_to, weight")
           .in("id", creativeIds)
           .lte("active_from", today)
           .gte("active_to", today);
-
-        if (crErr) throw crErr;
 
         const byId = new Map<string, any>();
         for (const cr of creatives ?? []) byId.set(String(cr.id), cr);
@@ -248,8 +232,7 @@ export default function PlannerScreen() {
           const wS = Number.isFinite((s as any).weight) ? Number((s as any).weight) : 1;
           const wC = Number.isFinite(cr.weight) ? Number(cr.weight) : 1;
           const combined = Math.max(0, wS) * Math.max(0, wC);
-
-          candidatesFromSlots.push({
+          candidates.push({
             id: String(cr.id),
             brand: cr.brand ?? null,
             headline: cr.headline ?? null,
@@ -260,33 +243,28 @@ export default function PlannerScreen() {
           });
         }
 
-        // de-dupe creatives, keep highest weight
-        const map = new Map<string, Candidate>();
-        for (const c of candidatesFromSlots) {
-          const prev = map.get(c.id);
-          if (!prev || c._weight > prev._weight) map.set(c.id, c);
+        // de-dupe
+        const m = new Map<string, Candidate>();
+        for (const c of candidates) {
+          const prev = m.get(c.id);
+          if (!prev || c._weight > prev._weight) m.set(c.id, c);
         }
-        candidatesFromSlots = Array.from(map.values());
+        candidates = Array.from(m.values());
       }
 
-      if (candidatesFromSlots.length > 0) {
-        const chosen = await getOrSetDailyChoice("planner_top_weighted", candidatesFromSlots);
-        if (chosen) {
-          setSponsor(chosen);
-          return;
-        }
+      if (candidates.length) {
+        const chosen = await getOrSetDailyChoice("planner_top_weighted", candidates);
+        if (chosen) return setSponsor(chosen);
       }
 
-      // 2) fallback: creatives active today (weighted)
-      const { data: creativesFallback, error: fallbackErr } = await supabase
+      // fallback: any active creative today
+      const { data: creativesFallback } = await supabase
         .from("sponsored_creatives")
         .select("id, brand, headline, image_url, cta_text, cta_url, active_from, active_to, weight")
         .lte("active_from", today)
         .gte("active_to", today);
 
-      if (fallbackErr) throw fallbackErr;
-
-      const fallbackCandidates: Candidate[] = (creativesFallback ?? []).map((cr: any) => ({
+      const fallback = (creativesFallback ?? []).map((cr: any) => ({
         id: String(cr.id),
         brand: cr.brand ?? null,
         headline: cr.headline ?? null,
@@ -296,33 +274,24 @@ export default function PlannerScreen() {
         _weight: Number.isFinite(cr.weight) ? Math.max(0, Number(cr.weight)) || 1 : 1,
       }));
 
-      if (fallbackCandidates.length > 0) {
-        const chosen = await getOrSetDailyChoice("planner_top_weighted_fallback", fallbackCandidates);
-        if (chosen) {
-          setSponsor(chosen);
-          return;
-        }
+      if (fallback.length) {
+        const chosen = await getOrSetDailyChoice("planner_top_weighted_fallback", fallback);
+        if (chosen) return setSponsor(chosen);
       }
 
       setSponsor(null);
-    } catch (e) {
-      console.error(e);
+    } catch {
       setSponsor(null);
     } finally {
       setLoadingSponsor(false);
     }
   }, []);
 
-  // ----- effects -----
-  useEffect(() => {
-    loadMeals();
-  }, [loadMeals]);
+  // effects
+  useEffect(() => { loadMeals(); }, [loadMeals]);
+  useEffect(() => { loadSponsor(); }, [loadSponsor]);
 
-  useEffect(() => {
-    loadSponsor();
-  }, [loadSponsor]);
-
-  // deep-link auto-add
+  // deep link add-once
   useEffect(() => {
     const addFromParam = async () => {
       if (!recipeId) return;
@@ -333,7 +302,7 @@ export default function PlannerScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipeId]);
 
-  // ----- gestures -----
+  // swipe left/right weeks but let vertical scroll work
   const onPanEnd = (e: PanGestureHandlerStateChangeEvent) => {
     const dx = e.nativeEvent.translationX;
     if (dx > 80) {
@@ -344,58 +313,38 @@ export default function PlannerScreen() {
       setAnchor((prev) => prev.add(7, "day"));
     }
   };
+  const panProps = { onEnded: onPanEnd, activeOffsetX: [-30, 30], failOffsetY: [-18, 18] } as const;
 
-  // ✅ IMPORTANT: make pan only react to horizontal moves so vertical scrolling works
-  const panProps = {
-    onEnded: onPanEnd,
-    activeOffsetX: [-30, 30], // must move left/right ≥ 30px to activate
-    failOffsetY: [-18, 18],   // if it moves vertically more than 18px, fail pan (let ScrollView handle it)
-  } as const;
-
-  // ----- picker -----
+  // picker helpers
   const openPicker = () => {
     Haptics.selectionAsync();
     setPickerOpen(true);
     setPickerResults(null);
     setPickerQuery("");
   };
-
   const searchRecipes = async () => {
     try {
       setPickerLoading(true);
       const q = pickerQuery.trim();
-      const query = supabase
-        .from("recipes")
-        .select("id,title,image_url,minutes,servings")
-        .limit(50);
+      const query = supabase.from("recipes").select("id,title,image_url,minutes,servings").limit(50);
       if (q) query.ilike("title", `%${q}%`);
       const { data, error } = await query;
       if (error) throw error;
       setPickerResults(data ?? []);
     } catch (e: any) {
-      console.error(e);
       Alert.alert("Search error", e.message ?? "Could not search recipes.");
     } finally {
       setPickerLoading(false);
     }
   };
-
-  const handleAddRecipeToDate = async (
-    rid: string,
-    ymd: string,
-    opts?: { silent?: boolean }
-  ) => {
+  const handleAddRecipeToDate = async (rid: string, ymd: string, opts?: { silent?: boolean }) => {
     try {
-      if (!opts?.silent)
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      const { error } = await supabase
-        .from("planner_meals")
-        .insert({ recipe_id: rid, meal_date: ymd });
+      if (!opts?.silent) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const { error } = await supabase.from("planner_meals").insert({ recipe_id: rid, meal_date: ymd });
       if (error) throw error;
       await loadMeals();
       if (!opts?.silent) Alert.alert("Added", "Recipe added to your day!");
     } catch (e: any) {
-      console.error(e);
       Alert.alert("Oops", e.message ?? "Could not add recipe.");
     }
   };
@@ -409,10 +358,7 @@ export default function PlannerScreen() {
         style: "destructive",
         onPress: async () => {
           try {
-            const { error } = await supabase
-              .from("planner_meals")
-              .delete()
-              .eq("meal_date", ymd);
+            const { error } = await supabase.from("planner_meals").delete().eq("meal_date", ymd);
             if (error) throw error;
             await loadMeals();
           } catch (e: any) {
@@ -424,92 +370,81 @@ export default function PlannerScreen() {
     ]);
   };
 
-  // 🆕 Step 3 helper: pick the “Dinner” recipe = last recipe on the selected day (if any)
+  // dinner recipe (use last recipe of the picked day)
   const dinnerRecipeForSelectedDay = useMemo(() => {
-    const list = weekMeals[selectedDate] ?? [];
-    const last = list[list.length - 1];
+    const last = dayMeals[dayMeals.length - 1];
     if (!last?.recipe) return undefined;
-    // PlannerSlots understands totalMinutes, so we pass recipes.minutes into that field.
-    return {
-      id: last.recipe.id,
-      title: last.recipe.title,
-      totalMinutes: last.recipe.minutes ?? undefined,
-    };
-  }, [weekMeals, selectedDate]);
+    return { id: last.recipe.id, title: last.recipe.title, totalMinutes: last.recipe.minutes ?? undefined };
+  }, [dayMeals]);
 
-  // ---------- UI ----------
+  // when you tap a day → change and scroll list to top
+  const handlePickDay = (ymd: string) => {
+    setSelectedDate(ymd);
+    requestAnimationFrame(() => dayListRef.current?.scrollTo({ y: 0, animated: true }));
+  };
+
+  // ────────────────────── UI ──────────────────────
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
-      {/* ✅ Safe area so nothing hides under status bar / home bar */}
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "bottom"]}>
-        {/* Only handle left/right swipes; vertical scroll goes to the ScrollView below */}
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "bottom"]} pointerEvents="box-none">
         <PanGestureHandler {...panProps}>
           <View style={[styles.container, { paddingTop: 4 }]}>
-            {/* Sponsor banner */}
-            <View style={styles.sponsorWrap}>
-              {loadingSponsor ? (
-                <View style={[styles.sponsorCard, { alignItems: "center", justifyContent: "center" }]}>
-                  <ActivityIndicator />
-                </View>
-              ) : sponsor ? (
-                <TouchableOpacity
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    if (sponsor.cta_url) Linking.openURL(sponsor.cta_url);
-                  }}
-                  activeOpacity={0.9}
-                  style={styles.sponsorCard}
-                >
-                  <View style={{ flexDirection: "row", alignItems: "center" }}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.sponsorEyebrow}>Sponsored by {sponsor.brand}</Text>
-                      <Text style={styles.sponsorTitle} numberOfLines={1}>
-                        {sponsor.headline || "This week’s dinners"}
-                      </Text>
-                      {!!sponsor.cta_text && (
-                        <View style={styles.ctaPill}>
-                          <Text style={styles.ctaText}>{sponsor.cta_text}</Text>
-                          <Ionicons name="chevron-forward" size={14} color={COLORS.text} />
+
+            {/* Sponsor: only render when loading OR we have one (prevents ghost “/”) */}
+            {!!(loadingSponsor || sponsor) && (
+              <View style={styles.sponsorWrap}>
+                {loadingSponsor ? (
+                  <View style={[styles.sponsorCard, { alignItems: "center", justifyContent: "center" }]}>
+                    <ActivityIndicator color="#9ca3af" />
+                  </View>
+                ) : sponsor ? (
+                  <TouchableOpacity
+                    onPress={() => { Haptics.selectionAsync(); if (sponsor.cta_url) Linking.openURL(sponsor.cta_url); }}
+                    activeOpacity={0.9}
+                    style={styles.sponsorCard}
+                  >
+                    <View style={{ flexDirection: "row", alignItems: "center" }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.sponsorEyebrow}>Sponsored by {sponsor.brand}</Text>
+                        <Text style={styles.sponsorTitle} numberOfLines={1}>
+                          {sponsor.headline || "This week’s dinners"}
+                        </Text>
+                        {!!sponsor.cta_text && (
+                          <View style={styles.ctaPill}>
+                            <Text style={styles.ctaText}>{sponsor.cta_text}</Text>
+                            <Ionicons name="chevron-forward" size={14} color={COLORS.text} />
+                          </View>
+                        )}
+                      </View>
+                      {sponsor.image_url ? (
+                        <Image source={{ uri: sponsor.image_url }} style={styles.sponsorImg} />
+                      ) : (
+                        <View style={[styles.sponsorImg, { alignItems: "center", justifyContent: "center" }]}>
+                          <Ionicons name="leaf" size={28} color={COLORS.messhall} />
                         </View>
                       )}
                     </View>
-                    {sponsor.image_url ? (
-                      <Image source={{ uri: sponsor.image_url }} style={styles.sponsorImg} />
-                    ) : (
-                      <View style={[styles.sponsorImg, { alignItems: "center", justifyContent: "center" }]}>
-                        <Ionicons name="leaf" size={28} color={COLORS.messhall} />
-                      </View>
-                    )}
-                  </View>
-                </TouchableOpacity>
-              ) : null}
-            </View>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            )}
 
             {/* Week header */}
             <View style={styles.headerRow}>
-              <TouchableOpacity
-                onPress={() => { Haptics.selectionAsync(); setAnchor((p) => p.subtract(7, "day")); }}
-                style={styles.iconBtn}
-              >
+              <TouchableOpacity onPress={() => { Haptics.selectionAsync(); setAnchor((p) => p.subtract(7, "day")); }} style={styles.iconBtn}>
                 <Ionicons name="chevron-back" size={18} color={COLORS.text} />
               </TouchableOpacity>
-
               <Text style={styles.headerText}>Week of {dateRangeLabel}</Text>
-
-              <TouchableOpacity
-                onPress={() => { Haptics.selectionAsync(); setAnchor((p) => p.add(7, "day")); }}
-                style={styles.iconBtn}
-              >
+              <TouchableOpacity onPress={() => { Haptics.selectionAsync(); setAnchor((p) => p.add(7, "day")); }} style={styles.iconBtn}>
                 <Ionicons name="chevron-forward" size={18} color={COLORS.text} />
               </TouchableOpacity>
             </View>
 
-            {/* Day strip (horizontal) */}
+            {/* Day strip */}
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={{ paddingHorizontal: 16 }}
-              // ✅ let iOS/Android adjust for safe area automatically
               contentInsetAdjustmentBehavior="automatic"
             >
               {weekDays.map((d) => {
@@ -519,7 +454,7 @@ export default function PlannerScreen() {
                 return (
                   <TouchableOpacity
                     key={ymd}
-                    onPress={() => { Haptics.selectionAsync(); setSelectedDate(ymd); }}
+                    onPress={() => handlePickDay(ymd)}
                     onLongPress={() => onDayLongPress(ymd)}
                     style={[
                       styles.dayPill,
@@ -530,8 +465,6 @@ export default function PlannerScreen() {
                     <Text style={[styles.dayLabel, isSelected && { color: COLORS.messhall }]}>
                       {d.format("ddd").toUpperCase()}
                     </Text>
-
-                    {/* ⭐️ stack tiny bubbles VERTICALLY down the tall bar */}
                     <View style={styles.dayBubbleColumn}>
                       {(meals.slice(0, 8)).map((m) => (
                         <MiniRecipeBubble key={m.id} url={m.recipe?.image_url} />
@@ -543,38 +476,38 @@ export default function PlannerScreen() {
               })}
             </ScrollView>
 
-            {/* Selected day — vertical meal list */}
+            {/* Selected day + meals list */}
             <ScrollView
+              ref={dayListRef}
               style={{ flex: 1 }}
-              // ✅ room at the bottom so the floating green button never covers content
               contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 200 }}
               contentInsetAdjustmentBehavior="automatic"
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
+              {/* date + Add */}
               <View style={styles.selectedHeaderRow}>
                 <Text style={styles.gridTitle}>{dayjs(selectedDate).format("dddd, MMM D")}</Text>
-
-                {/* Small “Add Meal” pill in the header so it’s always visible */}
                 <TouchableOpacity onPress={openPicker} style={styles.addSmall}>
                   <Ionicons name="add" size={16} color={COLORS.accent} />
                   <Text style={styles.addSmallText}>Add Meal</Text>
                 </TouchableOpacity>
               </View>
 
-              {/* COMPACT time-slot box (short) */}
+              {/* time chips */}
               <View style={{ marginBottom: 10 }}>
                 <PlannerSlots
-                  variant="compact"
+                  variant="chips"
                   date={dayjs(selectedDate).toDate()}
                   meals={[
+                    { id: "breakfast", label: "Breakfast", targetTime: "08:00" },
+                    { id: "lunch", label: "Lunch", targetTime: "12:30" },
                     {
                       id: "dinner",
                       label: "Dinner",
-                      targetTime: "18:30", // default “ready by” time
+                      targetTime: "18:30",
                       recipe: (() => {
-                        const list = weekMeals[selectedDate] ?? [];
-                        const last = list[list.length - 1];
+                        const last = dayMeals[dayMeals.length - 1];
                         return last?.recipe
                           ? { id: last.recipe.id, title: last.recipe.title, totalMinutes: last.recipe.minutes ?? undefined }
                           : undefined;
@@ -584,11 +517,12 @@ export default function PlannerScreen() {
                 />
               </View>
 
+              {/* meals for this picked day */}
               {loadingMeals ? (
-                <ActivityIndicator />
+                <ActivityIndicator color="#9ca3af" />
               ) : (
                 <>
-                  {(weekMeals[selectedDate] ?? []).map((m) => (
+                  {dayMeals.map((m) => (
                     <View key={m.id} style={styles.mealRow}>
                       <Image source={{ uri: m.recipe?.image_url ?? "" }} style={styles.mealImg} />
                       <View style={{ flex: 1 }}>
@@ -618,7 +552,7 @@ export default function PlannerScreen() {
                     </View>
                   ))}
 
-                  {/* Optional: dashed add at bottom (small & left) */}
+                  {/* tiny add at bottom */}
                   <TouchableOpacity onPress={openPicker} style={styles.addSlot}>
                     <Ionicons name="add" size={18} color={COLORS.accent} />
                     <Text style={styles.addSlotText}>Add Meal</Text>
@@ -627,19 +561,21 @@ export default function PlannerScreen() {
               )}
             </ScrollView>
 
-            {/* Floating shopping list — lifted above home bar using safe area */}
-            <TouchableOpacity
-              onPress={() => {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                Alert.alert("Shopping list", "We’ll generate this from your planned recipes next 🛒");
-              }}
-              style={[styles.fab, { bottom: insets.bottom + 18 }]} // ✅ not covering content
-            >
-              <Ionicons name="cart" size={18} color={COLORS.text} />
-              <Text style={{ color: COLORS.text, fontWeight: "700", marginLeft: 8 }}>
-                Generate Shopping List
-              </Text>
-            </TouchableOpacity>
+            {/* Floating cart button */}
+            <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Alert.alert("Shopping list", "We’ll generate this from your planned recipes next 🛒");
+                }}
+                style={[styles.fab, { bottom: insets.bottom + 18 }]}
+              >
+                <Ionicons name="cart" size={18} color={COLORS.text} />
+                <Text style={{ color: COLORS.text, fontWeight: "700", marginLeft: 8 }}>
+                  Generate Shopping List
+                </Text>
+              </TouchableOpacity>
+            </View>
 
             {/* Recipe picker */}
             <Modal visible={pickerOpen} animationType="slide" onRequestClose={() => setPickerOpen(false)}>
@@ -670,7 +606,7 @@ export default function PlannerScreen() {
                 </View>
 
                 <ScrollView style={{ flex: 1 }}>
-                  {pickerLoading && <ActivityIndicator style={{ marginTop: 16 }} />}
+                  {pickerLoading && <ActivityIndicator style={{ marginTop: 16 }} color="#9ca3af" />}
                   {!pickerLoading && pickerResults?.length === 0 && (
                     <Text style={{ color: COLORS.subtext, textAlign: "center", marginTop: 24 }}>
                       No recipes found. Try a different word.
@@ -755,7 +691,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
   },
 
-  // day strip pill
+  // day strip
   dayPill: {
     width: 84,
     padding: 10,
@@ -766,13 +702,11 @@ const styles = StyleSheet.create({
     borderColor: COLORS.card2,
   },
   dayLabel: { color: COLORS.subtext, fontWeight: "800", fontSize: 12 },
-
-  // ⭐️ vertical stack for the bubbles in the tall day card
   dayBubbleColumn: {
     marginTop: 6,
-    flexDirection: "column",   // stack top-to-bottom
+    flexDirection: "column",
     gap: 6,
-    alignItems: "flex-start",  // keep them against the left edge
+    alignItems: "flex-start",
   },
 
   miniBubble: {
@@ -786,7 +720,7 @@ const styles = StyleSheet.create({
   },
   miniBubbleImg: { width: "100%", height: "100%" },
 
-  // selected day list
+  // selected day header
   selectedHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -794,6 +728,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   gridTitle: { color: COLORS.subtext, marginBottom: 0, fontWeight: "700", fontSize: 16 },
+
+  // meal rows
   mealRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -817,7 +753,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#00000020",
   },
 
-  // small "Add Meal" pill in header
+  // add buttons
   addSmall: {
     flexDirection: "row",
     alignItems: "center",
@@ -831,8 +767,6 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   addSmallText: { color: COLORS.accent, fontWeight: "700" },
-
-  // optional dashed add at bottom (make it small + left so it never gets covered)
   addSlot: {
     alignSelf: "flex-start",
     borderStyle: "dashed",
@@ -850,7 +784,7 @@ const styles = StyleSheet.create({
   },
   addSlotText: { color: COLORS.accent, fontWeight: "700" },
 
-  // floating button
+  // floating cart
   fab: {
     position: "absolute",
     alignSelf: "center",
@@ -867,7 +801,7 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
 
-  // picker modal
+  // modal (picker)
   modalWrap: { flex: 1, backgroundColor: COLORS.bg },
   modalHeader: {
     flexDirection: "row",
