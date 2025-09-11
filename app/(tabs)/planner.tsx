@@ -1,6 +1,8 @@
 // app/(tabs)/planner.tsx
-// Like I'm 5: Week up top, pick a day, see tiny time chips, then see that day's meals.
-// Fixed: meals now always show under the chips for the picked day.
+// 🧒 like I'm 5:
+// We show your week. Pick a day. See tiny time chips. See recipes grouped by Breakfast/Lunch/Dinner.
+// You can add recipes into a slot, move them between slots, and reorder inside a slot.
+// NEW: no more white system popups — success/info messages show as dark toasts that match our theme.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -16,6 +18,7 @@ import {
   Alert,
   Platform,
   Linking,
+  Animated, // 👈 for the little toast fade/slide
 } from "react-native";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
@@ -35,7 +38,7 @@ import PlannerSlots from "@/components/PlannerSlots";
 
 dayjs.extend(isoWeek);
 
-// 🎨 theme
+// 🎨 Dark theme colors we use everywhere
 const COLORS = {
   bg: "#0f172a",
   card: "#111827",
@@ -45,6 +48,17 @@ const COLORS = {
   subtext: "#94a3b8",
   accent: "#38bdf8",
   messhall: "#22c55e",
+  danger: "#ef4444",
+  overlay: "rgba(0,0,0,0.6)",
+};
+
+// 👇 Order of meal slots so we can sort and group
+const SLOT_ORDER: Record<string, number> = {
+  breakfast: 0,
+  lunch: 1,
+  dinner: 2,
+  snack: 3,
+  other: 4,
 };
 
 // ---------- Types ----------
@@ -59,11 +73,76 @@ type Recipe = {
 type PlannerMeal = {
   id: string;
   recipe_id: string;
-  meal_date: string; // 'YYYY-MM-DD'
+  meal_date: string;           // 'YYYY-MM-DD'
+  meal_slot?: string | null;   // 'breakfast' | 'lunch' | 'dinner' | ...
+  sort_index?: number | null;  // 0,1,2... inside the slot
   recipe?: Recipe;
 };
 
-// tiny round image in day strip
+// 🛎️ SAFE haptics helper so Android never crashes
+async function safeSuccessHaptic() {
+  try {
+    const t = (Haptics as any)?.NotificationFeedbackType?.Success;
+    if (t) await Haptics.notificationAsync(t);
+    else await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  } catch {}
+}
+
+// 🍞 tiny toast system (dark, theme-y)
+function useToast() {
+  // what to show
+  const [toast, setToast] = useState<null | { text: string; type?: "success" | "error" | "info" }>(null);
+  // fade + slide up a tiny bit
+  const opacity = useRef(new Animated.Value(0)).current;
+  const translateY = opacity.interpolate({ inputRange: [0, 1], outputRange: [10, 0] });
+  // timer so we can clear and chain shows
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // show the toast, then auto hide
+  const show = (text: string, type: "success" | "error" | "info" = "info", duration = 1800) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setToast({ text, type });
+    Animated.timing(opacity, { toValue: 1, duration: 180, useNativeDriver: true }).start(() => {
+      timerRef.current = setTimeout(() => {
+        Animated.timing(opacity, { toValue: 0, duration: 180, useNativeDriver: true }).start(() => {
+          setToast(null);
+        });
+      }, Math.max(800, duration));
+    });
+  };
+
+  // the piece we render
+  const ToastHost = ({ bottom }: { bottom: number }) =>
+    toast ? (
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.toastWrap,
+          { bottom, opacity, transform: [{ translateY }] },
+        ]}
+      >
+        <View
+          style={[
+            styles.toast,
+            toast.type === "success" && { borderColor: "rgba(34,197,94,0.5)" },
+            toast.type === "error" && { borderColor: "rgba(239,68,68,0.5)" },
+          ]}
+        >
+          <Ionicons
+            name={toast.type === "error" ? "alert-circle" : toast.type === "success" ? "checkmark-circle" : "information-circle"}
+            size={18}
+            color={toast.type === "error" ? COLORS.danger : toast.type === "success" ? COLORS.messhall : COLORS.accent}
+            style={{ marginRight: 8 }}
+          />
+          <Text style={styles.toastText}>{toast.text}</Text>
+        </View>
+      </Animated.View>
+    ) : null;
+
+  return { show, ToastHost };
+}
+
+// Tiny round picture used inside the day strip
 function MiniRecipeBubble({ url }: { url?: string | null }) {
   return (
     <View style={styles.miniBubble}>
@@ -80,19 +159,20 @@ function MiniRecipeBubble({ url }: { url?: string | null }) {
 
 export default function PlannerScreen() {
   const insets = useSafeAreaInsets();
+  const toast = useToast(); // 👈 use our dark toast
 
-  // deep link support
+  // deep link (optional)
   const { recipeId, date } = useLocalSearchParams<{ recipeId?: string; date?: string }>();
 
-  // current week anchor + selected day
+  // Which week & day we are looking at
   const [anchor, setAnchor] = useState(dayjs());
   const [selectedDate, setSelectedDate] = useState(dayjs().format("YYYY-MM-DD"));
 
-  // week meals
+  // Meals for the whole visible week
   const [weekMeals, setWeekMeals] = useState<Record<string, PlannerMeal[]>>({});
   const [loadingMeals, setLoadingMeals] = useState(false);
 
-  // sponsor banner
+  // Sponsor banner (hidden when none)
   const [sponsor, setSponsor] = useState<{
     id?: string;
     brand?: string | null;
@@ -103,16 +183,23 @@ export default function PlannerScreen() {
   } | null>(null);
   const [loadingSponsor, setLoadingSponsor] = useState(false);
 
-  // recipe picker modal
+  // Search picker modal
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
+  0
   const [pickerResults, setPickerResults] = useState<Recipe[] | null>(null);
   const [pickerLoading, setPickerLoading] = useState(false);
 
-  // to scroll list to top when day changes
+  // DARK slot-picker modal (instead of white Alert)
+  const [slotModal, setSlotModal] = useState<{ open: boolean; recipe: Recipe | null }>({
+    open: false,
+    recipe: null,
+  });
+
+  // To scroll the list back to top when day changes
   const dayListRef = useRef<ScrollView>(null);
 
-  // week helpers
+  // ── Week helpers ──
   const weekDays = useMemo(() => {
     const start = anchor.startOf("week"); // use .startOf("isoWeek") for Mon–Sun
     return new Array(7).fill(null).map((_, i) => start.add(i, "day"));
@@ -125,10 +212,28 @@ export default function PlannerScreen() {
     return `${first.format("MMM D")} – ${sameMonth ? last.format("D") : last.format("MMM D")}`;
   }, [weekDays]);
 
-  // ✅ ALWAYS read the meals for the picked day straight from state
-  const dayMeals = weekMeals[selectedDate] ?? [];
+  // Meals for the selected day (simple lookup)
+  const dayMealsRaw: PlannerMeal[] = weekMeals[selectedDate] ?? [];
 
-  // load meals
+  // Group + sort day meals by slot, then by sort_index
+  const groupedDayMeals = useMemo(() => {
+    const copy = [...dayMealsRaw];
+    copy.sort((a, b) => {
+      const sa = SLOT_ORDER[a.meal_slot || "dinner"] ?? 99;
+      const sb = SLOT_ORDER[b.meal_slot || "dinner"] ?? 99;
+      if (sa !== sb) return sa - sb;
+      return (a.sort_index ?? 0) - (b.sort_index ?? 0);
+    });
+    const groups: Record<string, PlannerMeal[]> = {};
+    for (const m of copy) {
+      const key = (m.meal_slot || "dinner") as string;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(m);
+    }
+    return groups;
+  }, [dayMealsRaw]);
+
+  // ── Load meals for visible week ──
   const loadMeals = useCallback(async () => {
     setLoadingMeals(true);
     try {
@@ -137,10 +242,14 @@ export default function PlannerScreen() {
 
       const { data, error } = await supabase
         .from("planner_meals")
-        .select("id, recipe_id, meal_date, recipes:recipe_id(id,title,image_url,minutes,servings)")
+        .select(
+          "id, recipe_id, meal_date, meal_slot, sort_index, recipes:recipe_id(id,title,image_url,minutes,servings)"
+        )
         .gte("meal_date", startStr)
         .lte("meal_date", endStr)
-        .order("meal_date", { ascending: true });
+        .order("meal_date", { ascending: true })
+        .order("meal_slot", { ascending: true })
+        .order("sort_index", { ascending: true, nullsFirst: true });
 
       if (error) throw error;
 
@@ -152,6 +261,8 @@ export default function PlannerScreen() {
           id: row.id as string,
           recipe_id: row.recipe_id as string,
           meal_date: row.meal_date as string,
+          meal_slot: (row as any).meal_slot ?? "dinner",
+          sort_index: (row as any).sort_index ?? 0,
           recipe: row.recipes as any,
         };
         if (!byDate[key]) byDate[key] = [];
@@ -159,14 +270,17 @@ export default function PlannerScreen() {
       }
       setWeekMeals(byDate);
     } catch (e: any) {
-      console.error(e);
-      Alert.alert("Oops", e.message ?? "Could not load planner meals.");
+      // This one still uses Alert because it needs user action (DB migration)
+      Alert.alert(
+        "Planner needs a tiny upgrade",
+        "I couldn’t read 'meal_slot/sort_index'. Please run the SQL to add those columns."
+      );
     } finally {
       setLoadingMeals(false);
     }
   }, [weekDays]);
 
-  // sponsor loader (weighted pick)
+  // ── Sponsor rotation (weighted) ──
   function weightedPick<T extends { _weight: number }>(items: T[]): T {
     const total = items.reduce((s, it) => s + Math.max(0, it._weight), 0);
     if (total <= 0) return items[0];
@@ -229,9 +343,8 @@ export default function PlannerScreen() {
         for (const s of slots ?? []) {
           const cr = byId.get(String((s as any).creative_id));
           if (!cr) continue;
-          const wS = Number.isFinite((s as any).weight) ? Number((s as any).weight) : 1;
-          const wC = Number.isFinite(cr.weight) ? Number(cr.weight) : 1;
-          const combined = Math.max(0, wS) * Math.max(0, wC);
+          const wS = Number((s as any).weight) || 1;
+          const wC = Number(cr.weight) || 1;
           candidates.push({
             id: String(cr.id),
             brand: cr.brand ?? null,
@@ -239,17 +352,9 @@ export default function PlannerScreen() {
             image_url: cr.image_url ?? null,
             cta_text: cr.cta_text ?? null,
             cta_url: cr.cta_url ?? null,
-            _weight: combined > 0 ? combined : 1,
+            _weight: Math.max(1, wS * wC),
           });
         }
-
-        // de-dupe
-        const m = new Map<string, Candidate>();
-        for (const c of candidates) {
-          const prev = m.get(c.id);
-          if (!prev || c._weight > prev._weight) m.set(c.id, c);
-        }
-        candidates = Array.from(m.values());
       }
 
       if (candidates.length) {
@@ -271,14 +376,13 @@ export default function PlannerScreen() {
         image_url: cr.image_url ?? null,
         cta_text: cr.cta_text ?? null,
         cta_url: cr.cta_url ?? null,
-        _weight: Number.isFinite(cr.weight) ? Math.max(0, Number(cr.weight)) || 1 : 1,
+        _weight: Math.max(1, Number(cr.weight) || 1),
       }));
 
       if (fallback.length) {
         const chosen = await getOrSetDailyChoice("planner_top_weighted_fallback", fallback);
         if (chosen) return setSponsor(chosen);
       }
-
       setSponsor(null);
     } catch {
       setSponsor(null);
@@ -287,22 +391,22 @@ export default function PlannerScreen() {
     }
   }, []);
 
-  // effects
+  // ── Effects ──
   useEffect(() => { loadMeals(); }, [loadMeals]);
   useEffect(() => { loadSponsor(); }, [loadSponsor]);
 
-  // deep link add-once
+  // Deep-link: add recipe once, default to dinner
   useEffect(() => {
     const addFromParam = async () => {
       if (!recipeId) return;
       const target = (date as string) || selectedDate;
-      await handleAddRecipeToDate(recipeId as string, target, { silent: true });
+      await addRecipeWithSlot(recipeId as string, target, "dinner", { silent: true });
     };
     addFromParam();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipeId]);
 
-  // swipe left/right weeks but let vertical scroll work
+  // ── Swipe left/right to jump weeks (vertical scroll still works) ──
   const onPanEnd = (e: PanGestureHandlerStateChangeEvent) => {
     const dx = e.nativeEvent.translationX;
     if (dx > 80) {
@@ -313,9 +417,108 @@ export default function PlannerScreen() {
       setAnchor((prev) => prev.add(7, "day"));
     }
   };
-  const panProps = { onEnded: onPanEnd, activeOffsetX: [-30, 30], failOffsetY: [-18, 18] } as const;
 
-  // picker helpers
+  // ── Add/Move helpers (with slots) ──
+
+  // Ask server for the next sort_index for a given day+slot
+  const getNextSortIndex = async (ymd: string, slot: string) => {
+    const { data } = await supabase
+      .from("planner_meals")
+      .select("sort_index")
+      .eq("meal_date", ymd)
+      .eq("meal_slot", slot)
+      .order("sort_index", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    const max = data?.sort_index ?? -1;
+    return (Number.isFinite(max) ? max : -1) + 1;
+  };
+
+  // Insert with slot + proper sort_index
+  const addRecipeWithSlot = async (
+    rid: string,
+    ymd: string,
+    slot: string,
+    opts?: { silent?: boolean }
+  ) => {
+    try {
+      const nextIdx = await getNextSortIndex(ymd, slot);
+      const { error } = await supabase.from("planner_meals").insert({
+        recipe_id: rid,
+        meal_date: ymd,
+        meal_slot: slot,
+        sort_index: nextIdx,
+      });
+      if (error) throw error;
+
+      if (!opts?.silent) await safeSuccessHaptic();
+      await loadMeals();
+      // 🔔 themed toast (no white box)
+      if (!opts?.silent) toast.show(`Recipe added to ${slot}.`, "success");
+    } catch (e: any) {
+      toast.show(e?.message ? `Add failed: ${e.message}` : "Add failed", "error", 2400);
+    }
+  };
+
+  // Change slot for a meal (and give it the next sort_index in that slot)
+  const updateMealSlot = async (meal: PlannerMeal, newSlot: string) => {
+    try {
+      const nextIdx = await getNextSortIndex(meal.meal_date, newSlot);
+      const { error } = await supabase
+        .from("planner_meals")
+        .update({ meal_slot: newSlot, sort_index: nextIdx })
+        .eq("id", meal.id);
+      if (error) throw error;
+      await loadMeals();
+      toast.show(`Moved to ${newSlot}.`, "success");
+    } catch (e: any) {
+      toast.show(e?.message ? `Move failed: ${e.message}` : "Move failed", "error", 2400);
+    }
+  };
+
+  // Move a meal up/down inside its slot (swap sort_index with neighbor)
+  const moveMeal = async (meal: PlannerMeal, direction: "up" | "down") => {
+    const list = (groupedDayMeals[meal.meal_slot || "dinner"] ?? []).slice();
+    const idx = list.findIndex((m) => m.id === meal.id);
+    const neighbor = direction === "up" ? list[idx - 1] : list[idx + 1];
+    if (!neighbor) return;
+
+    try {
+      const a = meal.sort_index ?? 0;
+      const b = neighbor.sort_index ?? 0;
+
+      // swap indices safely (avoid unique conflicts by staging)
+      await supabase.from("planner_meals").update({ sort_index: 999999 }).eq("id", neighbor.id);
+      await supabase.from("planner_meals").update({ sort_index: b }).eq("id", meal.id);
+      await supabase.from("planner_meals").update({ sort_index: a }).eq("id", neighbor.id);
+
+      await loadMeals();
+    } catch (e: any) {
+      toast.show(e?.message ? `Reorder failed: ${e.message}` : "Reorder failed", "error", 2400);
+    }
+  };
+
+  // Open the dark slot picker (close search first so it sits on the main screen)
+  const openSlotPicker = (recipe: Recipe) => {
+    setPickerOpen(false);
+    setTimeout(() => setSlotModal({ open: true, recipe }), 120);
+  };
+
+  // For time chips: use the last DINNER recipe (or last of the day) to compute start time
+  const dinnerRecipeForSelectedDay = useMemo(() => {
+    const dinners = groupedDayMeals["dinner"] ?? [];
+    const last = dinners[dinners.length - 1] || dayMealsRaw[dayMealsRaw.length - 1];
+    if (!last?.recipe) return undefined;
+    return { id: last.recipe.id, title: last.recipe.title, totalMinutes: last.recipe.minutes ?? undefined };
+  }, [groupedDayMeals, dayMealsRaw]);
+
+  // When you pick a day, change + scroll list to top
+  const handlePickDay = (ymd: string) => {
+    setSelectedDate(ymd);
+    requestAnimationFrame(() => dayListRef.current?.scrollTo({ y: 0, animated: true }));
+  };
+
+  // ── Search flow ──
   const openPicker = () => {
     Haptics.selectionAsync();
     setPickerOpen(true);
@@ -332,65 +535,20 @@ export default function PlannerScreen() {
       if (error) throw error;
       setPickerResults(data ?? []);
     } catch (e: any) {
-      Alert.alert("Search error", e.message ?? "Could not search recipes.");
+      toast.show(e?.message ? `Search error: ${e.message}` : "Search error", "error", 2400);
     } finally {
       setPickerLoading(false);
     }
   };
-  const handleAddRecipeToDate = async (rid: string, ymd: string, opts?: { silent?: boolean }) => {
-    try {
-      if (!opts?.silent) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      const { error } = await supabase.from("planner_meals").insert({ recipe_id: rid, meal_date: ymd });
-      if (error) throw error;
-      await loadMeals();
-      if (!opts?.silent) Alert.alert("Added", "Recipe added to your day!");
-    } catch (e: any) {
-      Alert.alert("Oops", e.message ?? "Could not add recipe.");
-    }
-  };
 
-  const onDayLongPress = (ymd: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert("Day options", dayjs(ymd).format("dddd, MMM D"), [
-      { text: "Add a recipe", onPress: () => { setSelectedDate(ymd); openPicker(); } },
-      {
-        text: "Clear all on this day",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            const { error } = await supabase.from("planner_meals").delete().eq("meal_date", ymd);
-            if (error) throw error;
-            await loadMeals();
-          } catch (e: any) {
-            Alert.alert("Oops", e.message ?? "Could not clear day.");
-          }
-        },
-      },
-      { text: "Cancel", style: "cancel" },
-    ]);
-  };
-
-  // dinner recipe (use last recipe of the picked day)
-  const dinnerRecipeForSelectedDay = useMemo(() => {
-    const last = dayMeals[dayMeals.length - 1];
-    if (!last?.recipe) return undefined;
-    return { id: last.recipe.id, title: last.recipe.title, totalMinutes: last.recipe.minutes ?? undefined };
-  }, [dayMeals]);
-
-  // when you tap a day → change and scroll list to top
-  const handlePickDay = (ymd: string) => {
-    setSelectedDate(ymd);
-    requestAnimationFrame(() => dayListRef.current?.scrollTo({ y: 0, animated: true }));
-  };
-
-  // ────────────────────── UI ──────────────────────
+  // ─────────────────────────── UI ───────────────────────────
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "bottom"]} pointerEvents="box-none">
-        <PanGestureHandler {...panProps}>
+        <PanGestureHandler onEnded={onPanEnd} activeOffsetX={[-30, 30]} failOffsetY={[-18, 18]}>
           <View style={[styles.container, { paddingTop: 4 }]}>
 
-            {/* Sponsor: only render when loading OR we have one (prevents ghost “/”) */}
+            {/* Sponsor (only if loading or present) */}
             {!!(loadingSponsor || sponsor) && (
               <View style={styles.sponsorWrap}>
                 {loadingSponsor ? (
@@ -440,7 +598,7 @@ export default function PlannerScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Day strip */}
+            {/* Day strip (horizontal) */}
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -455,7 +613,27 @@ export default function PlannerScreen() {
                   <TouchableOpacity
                     key={ymd}
                     onPress={() => handlePickDay(ymd)}
-                    onLongPress={() => onDayLongPress(ymd)}
+                    onLongPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                      Alert.alert("Day options", dayjs(ymd).format("dddd, MMM D"), [
+                        { text: "Add a recipe", onPress: () => { setSelectedDate(ymd); openPicker(); } },
+                        {
+                          text: "Clear all on this day",
+                          style: "destructive",
+                          onPress: async () => {
+                            try {
+                              const { error } = await supabase.from("planner_meals").delete().eq("meal_date", ymd);
+                              if (error) throw error;
+                              await loadMeals();
+                              toast.show("Cleared day.", "success");
+                            } catch (e: any) {
+                              toast.show(e?.message ? `Clear failed: ${e.message}` : "Clear failed", "error", 2400);
+                            }
+                          },
+                        },
+                        { text: "Cancel", style: "cancel" },
+                      ]);
+                    }}
                     style={[
                       styles.dayPill,
                       isSelected && { borderColor: COLORS.messhall, backgroundColor: "#0b1220" },
@@ -476,7 +654,7 @@ export default function PlannerScreen() {
               })}
             </ScrollView>
 
-            {/* Selected day + meals list */}
+            {/* Selected day content */}
             <ScrollView
               ref={dayListRef}
               style={{ flex: 1 }}
@@ -485,7 +663,7 @@ export default function PlannerScreen() {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              {/* date + Add */}
+              {/* Date + tiny Add button */}
               <View style={styles.selectedHeaderRow}>
                 <Text style={styles.gridTitle}>{dayjs(selectedDate).format("dddd, MMM D")}</Text>
                 <TouchableOpacity onPress={openPicker} style={styles.addSmall}>
@@ -494,7 +672,7 @@ export default function PlannerScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* time chips */}
+              {/* Tiny time chips */}
               <View style={{ marginBottom: 10 }}>
                 <PlannerSlots
                   variant="chips"
@@ -507,7 +685,8 @@ export default function PlannerScreen() {
                       label: "Dinner",
                       targetTime: "18:30",
                       recipe: (() => {
-                        const last = dayMeals[dayMeals.length - 1];
+                        const dinners = groupedDayMeals["dinner"] ?? [];
+                        const last = dinners[dinners.length - 1] || dayMealsRaw[dayMealsRaw.length - 1];
                         return last?.recipe
                           ? { id: last.recipe.id, title: last.recipe.title, totalMinutes: last.recipe.minutes ?? undefined }
                           : undefined;
@@ -517,42 +696,80 @@ export default function PlannerScreen() {
                 />
               </View>
 
-              {/* meals for this picked day */}
+              {/* Meals grouped by slot */}
               {loadingMeals ? (
                 <ActivityIndicator color="#9ca3af" />
               ) : (
                 <>
-                  {dayMeals.map((m) => (
-                    <View key={m.id} style={styles.mealRow}>
-                      <Image source={{ uri: m.recipe?.image_url ?? "" }} style={styles.mealImg} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.mealTitle} numberOfLines={1}>
-                          {m.recipe?.title || "Untitled"}
-                        </Text>
-                        <Text style={styles.mealMeta}>
-                          {m.recipe?.servings ? `${m.recipe?.servings} servings` : ""}{" "}
-                          {m.recipe?.minutes ? `• ${m.recipe?.minutes}m` : ""}
-                        </Text>
-                      </View>
-                      <TouchableOpacity
-                        onPress={async () => {
-                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                          try {
-                            const { error } = await supabase.from("planner_meals").delete().eq("id", m.id);
-                            if (error) throw error;
-                            await loadMeals();
-                          } catch (e: any) {
-                            Alert.alert("Oops", e.message ?? "Could not remove recipe.");
-                          }
-                        }}
-                        style={styles.deleteBtn}
-                      >
-                        <Ionicons name="trash" size={16} color="#ef4444" />
-                      </TouchableOpacity>
-                    </View>
-                  ))}
+                  {(["breakfast", "lunch", "dinner", "snack", "other"] as const).map((slotKey) => {
+                    const list = groupedDayMeals[slotKey] ?? [];
+                    if (list.length === 0) return null;
+                    return (
+                      <View key={slotKey} style={{ marginBottom: 12 }}>
+                        <Text style={styles.sectionTitle}>{slotKey[0].toUpperCase() + slotKey.slice(1)}</Text>
 
-                  {/* tiny add at bottom */}
+                        {list.map((m) => (
+                          <View key={m.id} style={styles.mealRow}>
+                            <Image source={{ uri: m.recipe?.image_url ?? "" }} style={styles.mealImg} />
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.mealTitle} numberOfLines={1}>
+                                {m.recipe?.title || "Untitled"}
+                              </Text>
+                              <Text style={styles.mealMeta}>
+                                {m.recipe?.servings ? `${m.recipe?.servings} servings` : ""}{" "}
+                                {m.recipe?.minutes ? `• ${m.recipe?.minutes}m` : ""}
+                              </Text>
+
+                              {/* Slot pills to switch where this recipe belongs */}
+                              <View style={styles.slotPillRow}>
+                                {(["breakfast", "lunch", "dinner"] as const).map((choice) => {
+                                  const active = (m.meal_slot || "dinner") === choice;
+                                  return (
+                                    <TouchableOpacity
+                                      key={choice}
+                                      onPress={() => updateMealSlot(m, choice)}
+                                      style={[styles.slotPill, active && styles.slotPillActive]}
+                                    >
+                                      <Text style={[styles.slotPillText, active && styles.slotPillTextActive]}>
+                                        {choice[0].toUpperCase() + choice.slice(1)}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            </View>
+
+                            {/* Move Up/Down + Delete */}
+                            <View style={{ alignItems: "center", gap: 8 }}>
+                              <TouchableOpacity onPress={() => moveMeal(m, "up")} style={styles.iconSquare}>
+                                <Ionicons name="chevron-up" size={16} color={COLORS.text} />
+                              </TouchableOpacity>
+                              <TouchableOpacity onPress={() => moveMeal(m, "down")} style={styles.iconSquare}>
+                                <Ionicons name="chevron-down" size={16} color={COLORS.text} />
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                onPress={async () => {
+                                  try {
+                                    const { error } = await supabase.from("planner_meals").delete().eq("id", m.id);
+                                    if (error) throw error;
+                                    await loadMeals();
+                                    toast.show("Removed.", "success");
+                                  } catch (e: any) {
+                                    toast.show(e?.message ? `Remove failed: ${e.message}` : "Remove failed", "error", 2400);
+                                  }
+                                }}
+                                style={[styles.iconSquare, { backgroundColor: "#00000020" }]}
+                              >
+                                <Ionicons name="trash" size={16} color={COLORS.danger} />
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    );
+                  })}
+
+                  {/* Tiny add at bottom */}
                   <TouchableOpacity onPress={openPicker} style={styles.addSlot}>
                     <Ionicons name="add" size={18} color={COLORS.accent} />
                     <Text style={styles.addSlotText}>Add Meal</Text>
@@ -564,9 +781,9 @@ export default function PlannerScreen() {
             {/* Floating cart button */}
             <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0 }}>
               <TouchableOpacity
-                onPress={() => {
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  Alert.alert("Shopping list", "We’ll generate this from your planned recipes next 🛒");
+                onPress={async () => {
+                  await safeSuccessHaptic();
+                  toast.show("Shopping list coming from planned meals 🛒", "info");
                 }}
                 style={[styles.fab, { bottom: insets.bottom + 18 }]}
               >
@@ -577,13 +794,11 @@ export default function PlannerScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Recipe picker */}
+            {/* Search modal (tap a recipe → open dark slot modal) */}
             <Modal visible={pickerOpen} animationType="slide" onRequestClose={() => setPickerOpen(false)}>
               <View style={[styles.modalWrap, { paddingTop: Platform.select({ ios: 54, android: 24 }) }]}>
                 <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>
-                    Add recipe to {dayjs(selectedDate).format("ddd, MMM D")}
-                  </Text>
+                  <Text style={styles.modalTitle}>Add to {dayjs(selectedDate).format("ddd, MMM D")}</Text>
                   <TouchableOpacity onPress={() => setPickerOpen(false)} style={styles.iconBtn}>
                     <Ionicons name="close" size={22} color={COLORS.text} />
                   </TouchableOpacity>
@@ -614,16 +829,10 @@ export default function PlannerScreen() {
                   )}
                   <View style={{ padding: 16, gap: 12 }}>
                     {(pickerResults ?? []).map((r) => (
-                      <TouchableOpacity
-                        key={r.id}
-                        onPress={() => handleAddRecipeToDate(r.id, selectedDate).then(() => setPickerOpen(false))}
-                        style={styles.pickRow}
-                      >
+                      <TouchableOpacity key={r.id} onPress={() => openSlotPicker(r)} style={styles.pickRow}>
                         <Image source={{ uri: r.image_url ?? "" }} style={styles.pickImg} />
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.pickTitle} numberOfLines={1}>
-                            {r.title}
-                          </Text>
+                          <Text style={styles.pickTitle} numberOfLines={1}>{r.title}</Text>
                           <Text style={styles.pickMeta}>
                             {r.servings ? `${r.servings} servings` : ""}
                             {r.minutes ? ` • ${r.minutes}m` : ""}
@@ -636,6 +845,49 @@ export default function PlannerScreen() {
                 </ScrollView>
               </View>
             </Modal>
+
+            {/* 🌙 DARK "Which meal?" modal */}
+            <Modal
+              visible={slotModal.open}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setSlotModal({ open: false, recipe: null })}
+            >
+              <View style={styles.sheetOverlay}>
+                <View style={styles.sheet}>
+                  <Text style={styles.sheetTitle}>Add to which meal?</Text>
+                  <Text style={styles.sheetSubtitle} numberOfLines={2}>
+                    {slotModal.recipe?.title}
+                  </Text>
+
+                  <View style={styles.sheetButtonsRow}>
+                    {(["breakfast", "lunch", "dinner"] as const).map((choice) => (
+                      <TouchableOpacity
+                        key={choice}
+                        onPress={() => {
+                          if (!slotModal.recipe) return;
+                          addRecipeWithSlot(slotModal.recipe.id, selectedDate, choice);
+                          setSlotModal({ open: false, recipe: null });
+                        }}
+                        style={styles.sheetBtn}
+                      >
+                        <Text style={styles.sheetBtnText}>{choice.toUpperCase()}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={() => setSlotModal({ open: false, recipe: null })}
+                    style={styles.sheetCancel}
+                  >
+                    <Text style={styles.sheetCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
+
+            {/* 🍞 Toast host (sits above the FAB, centered) */}
+            <toast.ToastHost bottom={insets.bottom + 80} />
           </View>
         </PanGestureHandler>
       </SafeAreaView>
@@ -647,7 +899,7 @@ export default function PlannerScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
 
-  // sponsor
+  // sponsor card
   sponsorWrap: { padding: 16, paddingBottom: 8 },
   sponsorCard: {
     backgroundColor: COLORS.card2,
@@ -702,12 +954,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.card2,
   },
   dayLabel: { color: COLORS.subtext, fontWeight: "800", fontSize: 12 },
-  dayBubbleColumn: {
-    marginTop: 6,
-    flexDirection: "column",
-    gap: 6,
-    alignItems: "flex-start",
-  },
+  dayBubbleColumn: { marginTop: 6, flexDirection: "column", gap: 6, alignItems: "flex-start" },
 
   miniBubble: {
     width: 28,
@@ -729,6 +976,9 @@ const styles = StyleSheet.create({
   },
   gridTitle: { color: COLORS.subtext, marginBottom: 0, fontWeight: "700", fontSize: 16 },
 
+  // section title
+  sectionTitle: { color: COLORS.subtext, fontWeight: "800", marginBottom: 8, marginLeft: 2 },
+
   // meal rows
   mealRow: {
     flexDirection: "row",
@@ -744,14 +994,32 @@ const styles = StyleSheet.create({
   mealImg: { width: 36, height: 36, borderRadius: 6, backgroundColor: COLORS.card },
   mealTitle: { color: COLORS.text, fontWeight: "700" },
   mealMeta: { color: COLORS.subtext, fontSize: 12 },
-  deleteBtn: {
+
+  iconSquare: {
     width: 30,
     height: 30,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 8,
     backgroundColor: "#00000020",
   },
+
+  // slot pill chooser
+  slotPillRow: { flexDirection: "row", gap: 6, marginTop: 8, flexWrap: "wrap" },
+  slotPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#ffffff22",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  slotPillActive: {
+    backgroundColor: "rgba(34,197,94,0.14)",
+    borderColor: "rgba(34,197,94,0.5)",
+  },
+  slotPillText: { color: "rgba(255,255,255,0.8)", fontWeight: "700", fontSize: 12 },
+  slotPillTextActive: { color: "white" },
 
   // add buttons
   addSmall: {
@@ -801,7 +1069,7 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
 
-  // modal (picker)
+  // Search modal layout
   modalWrap: { flex: 1, backgroundColor: COLORS.bg },
   modalHeader: {
     flexDirection: "row",
@@ -824,12 +1092,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   searchInput: { color: COLORS.text, flex: 1, paddingVertical: 0 },
-  searchBtn: {
-    backgroundColor: COLORS.messhall,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
+  searchBtn: { backgroundColor: COLORS.messhall, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
   pickRow: {
     flexDirection: "row",
     gap: 12,
@@ -843,4 +1106,69 @@ const styles = StyleSheet.create({
   pickImg: { width: 52, height: 52, borderRadius: 10, backgroundColor: COLORS.card },
   pickTitle: { color: COLORS.text, fontWeight: "800" },
   pickMeta: { color: COLORS.subtext, fontSize: 12 },
+
+  // 🌙 Dark slot picker modal
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: COLORS.overlay,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+  },
+  sheet: {
+    width: "100%",
+    maxWidth: 480,
+    backgroundColor: COLORS.card2,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 16,
+  },
+  sheetTitle: { color: COLORS.text, fontSize: 16, fontWeight: "800", marginBottom: 6 },
+  sheetSubtitle: { color: COLORS.subtext, marginBottom: 14 },
+  sheetButtonsRow: { flexDirection: "row", gap: 8, marginBottom: 10, flexWrap: "wrap" },
+  sheetBtn: {
+    flexGrow: 1,
+    minWidth: 96,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.messhall,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sheetBtnText: { color: COLORS.text, fontWeight: "800" },
+  sheetCancel: {
+    alignSelf: "flex-end",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  sheetCancelText: { color: COLORS.subtext, fontWeight: "700" },
+
+  // 🍞 toast styles
+  toastWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    alignItems: "center",
+  },
+  toast: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.card2,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#2b3342",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 3,
+    maxWidth: "92%",
+  },
+  toastText: { color: COLORS.text, fontWeight: "700" },
 });
