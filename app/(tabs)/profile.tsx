@@ -1,11 +1,10 @@
 // app/(tabs)/profile.tsx
 //
 // LIKE I'M 5:
-// • SAFE AREA: We added a special wrapper (SafeAreaView) so the screen sits
-//   below the clock/battery area. No more hiding under the notch!
-// • We also read the safe edges (insets) and add bottom padding so nothing
-//   gets stuck under the iPhone home bar.
-// • Everything else (gear button, edit modal, tabs, grids) stays the same.
+// • The "Remixes" tab should show MY remixes.
+// • A remix is just a recipe I made that has parent_recipe_id filled in.
+// • So we load from recipes where user_id = me AND parent_recipe_id IS NOT NULL.
+// • Everything else stays the same: layout, other tabs, modals, etc.
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
@@ -22,7 +21,7 @@ import {
   Pressable,
 } from "react-native";
 
-// 🧢 NEW: Safe Area helpers so we don't sit under the status bar (clock/battery)
+// 🧢 SAFE AREA helpers (so we don’t sit under the notch/home bar)
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import * as ImagePicker from "expo-image-picker";
@@ -93,7 +92,7 @@ export default function Profile() {
   const { session } = useAuth();
   const userId = session?.user?.id ?? null;
 
-  // 🧭 NEW: Ask the phone how big the "notch" and "home bar" areas are
+  // safe area insets
   const insets = useSafeAreaInsets();
 
   // profile info
@@ -140,7 +139,7 @@ export default function Profile() {
   // ⚙️ settings bottom-sheet
   const [showSettings, setShowSettings] = useState(false);
 
-  // 🆕 how many stores connected? (for banner + settings label)
+  // 🛒 how many stores connected? (for banner + settings label)
   const [connectedStores, setConnectedStores] = useState(0);
 
   // 1) load profile row
@@ -298,39 +297,25 @@ export default function Profile() {
     setCookedLoading(false);
   }, [userId]);
 
-  // 8) load remixes of my recipes
+  // 8) 🆕 load MY remixes
   const loadRemixesOfMine = useCallback(async () => {
+    // LIKE I'M 5: "my remixes" = recipes I made that have a parent
     if (!userId) return;
     setRemixesLoading(true);
-    const { data: mine, error: mineErr } = await supabase
-      .from("recipes")
-      .select("id")
-      .eq("user_id", userId)
-      .limit(1000);
-    if (mineErr) {
-      console.log("loadRemixes mineErr:", mineErr.message);
-      setRemixRecipes([]);
-      setRemixesLoading(false);
-      return;
-    }
-    const mineIds = (mine || []).map((r: any) => r.id);
-    if (mineIds.length === 0) {
-      setRemixRecipes([]);
-      setRemixesLoading(false);
-      return;
-    }
+
     const { data, error } = await supabase
-      .from("recipe_remixes")
-      .select("created_at, remixes:remix_recipe_id(id, user_id, title, image_url, cooks_count, likes_count)")
-      .in("parent_recipe_id", mineIds)
-      .order("created_at", { ascending: false })
-      .limit(30);
+      .from("recipes")
+      .select("id, user_id, title, image_url, cooks_count, likes_count, parent_recipe_id")
+      .eq("user_id", userId)                  // me
+      .not("parent_recipe_id", "is", null)    // and it's a remix
+      .order("id", { ascending: false })      // newest-ish first (id desc is simple + fast)
+      .limit(60);
+
     if (error) {
       console.log("loadRemixes error:", error.message);
       setRemixRecipes([]);
     } else {
-      const list = (data || []).map((row: any) => row.remixes as RecipeRow).filter(Boolean);
-      setRemixRecipes(list);
+      setRemixRecipes((data || []) as RecipeRow[]);
     }
     setRemixesLoading(false);
   }, [userId]);
@@ -360,7 +345,7 @@ export default function Profile() {
   // pick right list for each tab
   useEffect(() => {
     if (tab === "cooked") loadCookedByMe();
-    if (tab === "remixes") loadRemixesOfMine();
+    if (tab === "remixes") loadRemixesOfMine(); // 👈 now shows MY remixes
     if (tab === "saved") loadSavedByMe();
   }, [tab, loadCookedByMe, loadRemixesOfMine, loadSavedByMe]);
 
@@ -539,22 +524,18 @@ export default function Profile() {
       .catch(() => setConnectedStores(0));
   }, [userId]);
 
-  // ✅ RETURN: Wrap everything in SafeAreaView so we don't sit under the status bar.
-  //    - edges={['top']} = only pad the top safe area (we handle bottom manually)
-  //    - ScrollView gets contentInsetAdjustmentBehavior on iOS to play nice with system bars
-  //    - We add extra bottom padding using insets.bottom so buttons aren't hidden by the home bar
+  // ✅ RETURN
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top"]}>
       <ScrollView
         style={{ flex: 1, backgroundColor: COLORS.bg }}
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={{
-          // Make sure bottom content isn't hidden by the home indicator
           paddingBottom: Math.max(40, insets.bottom + 16),
         }}
       >
-        {/* HEADER — keep original layout: avatar | name/bio | gear + edit */}
-        <View style={{ padding: SCREEN_PADDING, paddingBottom: 0 /* Safe top handled by SafeAreaView */ }}>
+        {/* HEADER — avatar | name/bio | gear + edit */}
+        <View style={{ padding: SCREEN_PADDING, paddingBottom: 0 }}>
           <View style={{ flexDirection: "row", alignItems: "center" }}>
             <Avatar />
             <View style={{ marginLeft: 12, flex: 1 }}>
@@ -586,18 +567,14 @@ export default function Profile() {
 
           {/* Stats row */}
           <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
-            <View style={{ flex: 1 }}>
-              <Stat label="Recipes" value={recipeCount} />
-            </View>
+            <View style={{ flex: 1 }}><Stat label="Recipes" value={recipeCount} /></View>
             <TouchableOpacity style={{ flex: 1 }} activeOpacity={0.8} onPress={() => username && router.push(`/u/${username}/followers`)}>
               <Stat label="Followers" value={followers} />
             </TouchableOpacity>
             <TouchableOpacity style={{ flex: 1 }} activeOpacity={0.8} onPress={() => username && router.push(`/u/${username}/following`)}>
               <Stat label="Following" value={following} />
             </TouchableOpacity>
-            <View style={{ flex: 1 }}>
-              <Stat label="Medals" value={totalMedals} />
-            </View>
+            <View style={{ flex: 1 }}><Stat label="Medals" value={totalMedals} /></View>
           </View>
 
           {/* Onboarding banner: show only when no stores connected */}
@@ -630,9 +607,7 @@ export default function Profile() {
 
           {/* Tabs */}
           <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
-            {(
-              ["recipes", "remixes", "cooked", "saved"] as const
-            ).map((t) => {
+            {(["recipes", "remixes", "cooked", "saved"] as const).map((t) => {
               const active = tab === t;
               return (
                 <TouchableOpacity
@@ -708,7 +683,7 @@ export default function Profile() {
           )}
         </View>
 
-        {/* Edit Profile modal (same as before, just tidy) */}
+        {/* Edit Profile modal */}
         <Modal visible={showEdit} transparent animationType="fade" onRequestClose={() => setShowEdit(false)}>
           <Pressable onPress={() => setShowEdit(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, alignItems: "center", justifyContent: "center" }}>
             <Pressable onPress={() => {}} style={{ width: "92%", backgroundColor: COLORS.card, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
@@ -751,7 +726,7 @@ export default function Profile() {
           </Pressable>
         </Modal>
 
-        {/* ⚙️ Settings bottom-sheet (sleek) */}
+        {/* ⚙️ Settings bottom-sheet */}
         <Modal visible={showSettings} transparent animationType="fade" onRequestClose={() => setShowSettings(false)}>
           {/* tap outside to close */}
           <Pressable onPress={() => setShowSettings(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, justifyContent: "flex-end" }}>
@@ -764,7 +739,7 @@ export default function Profile() {
                 borderTopRightRadius: 20,
                 paddingHorizontal: 16,
                 paddingTop: 12,
-                paddingBottom: Math.max(20, insets.bottom + 12), // 👈 NEW: respect bottom safe area
+                paddingBottom: Math.max(20, insets.bottom + 12),
                 borderTopWidth: 1,
                 borderColor: COLORS.border,
               }}

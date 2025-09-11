@@ -1,17 +1,11 @@
 // components/RecipeCard.tsx
 // LIKE I'M 5 🍪:
 // - This draws the recipe card in the feed.
-// - If the recipe is PRIVATE, we show an orange "🔒 Private" pill on the photo.
-// - If the photo is missing, we draw a safe placeholder so nothing breaks.
-// - We make stuff "quiet" (memoized) so big lists don't flicker.
+// - Add a clear SAVE button (and keep swipe-to-save).
+// - When saved, the button says "Saved" and turns green.
+// - Also shows a "Private" pill, edit pencil for owners, and all your usual bits.
 
-import React, {
-  useEffect,
-  useMemo,
-  useState,
-  useCallback,
-  memo,
-} from "react";
+import React, { useEffect, useMemo, useState, useCallback, memo } from "react";
 import {
   Alert,
   Image,
@@ -48,14 +42,18 @@ type Props = {
   commentCount?: number;
   createdAt: number | string;
   ownerId: string;
-  isPrivate?: boolean;            // 🔒 TRUE when recipe is private
+  isPrivate?: boolean;
+  // actions
   onOpen?: (id: string) => void;
-  onSave?: (id: string) => void;
   onOpenCreator?: (username: string) => void;
   onOpenComments?: (id: string) => void;
   onLikedChange?: (id: string, liked: boolean) => void;
   onCooked?: (id: string, cooked: boolean) => void;
   onEdit?: (id: string) => void;
+  // SAVE hooks
+  isSaved?: boolean;              // 👈 parent tells us current saved state
+  onToggleSave?: () => void;      // 👈 parent toggles save
+  onSave?: (id: string) => void;  // 👈 swipe-to-save fallback (kept for compatibility)
 };
 
 function RecipeCard(props: Props) {
@@ -68,7 +66,6 @@ function RecipeCard(props: Props) {
     createdAt,
     isPrivate,
     onOpen,
-    onSave,
     onLikedChange,
     onCooked,
     onOpenCreator,
@@ -78,10 +75,7 @@ function RecipeCard(props: Props) {
 
   // 👤 who am I?
   const { userId } = useUserId();
-  const isOwner = useMemo(
-    () => !!userId && userId === props.ownerId,
-    [userId, props.ownerId]
-  );
+  const isOwner = useMemo(() => !!userId && userId === props.ownerId, [userId, props.ownerId]);
 
   // ✅ counters for snappy UI
   const [cooks, setCooks] = useState<number>(props.cooks ?? 0);
@@ -92,7 +86,7 @@ function RecipeCard(props: Props) {
   const [cooked, setCooked] = useState<boolean>(false);
   const [savingCook, setSavingCook] = useState<boolean>(false);
 
-  // 🖼️ safe image URL or null for fallback
+  // 🖼️ safe image URL or null
   const imgUri = useMemo(() => {
     const s = typeof image === "string" ? image.trim() : "";
     return s.length > 0 ? s : null;
@@ -114,16 +108,15 @@ function RecipeCard(props: Props) {
         .maybeSingle();
       if (!gone) setCooked(!!data);
     })().catch(() => {});
-    return () => {
-      gone = true;
-    };
+    return () => { gone = true; };
   }, [id, userId]);
 
-  // 💾 swipe-right save
+  // 💾 swipe-right save → prefer onToggleSave if present, else legacy onSave(id)
   const save = useCallback(() => {
     success();
-    onSave?.(id);
-  }, [id, onSave]);
+    if (props.onToggleSave) props.onToggleSave();
+    else props.onSave?.(id);
+  }, [id, props]);
 
   // 📤 share
   const share = useCallback(async () => {
@@ -141,16 +134,11 @@ function RecipeCard(props: Props) {
   const openCreator = useCallback(async () => {
     if (!creator) return;
     await tap();
-
     if (typeof onOpenCreator === "function") {
       onOpenCreator(creator);
       return;
     }
-
-    router.push({
-      pathname: "/u/[username]",
-      params: { username: creator, uid: props.ownerId },
-    });
+    router.push({ pathname: "/u/[username]", params: { username: creator, uid: props.ownerId } });
   }, [creator, onOpenCreator, props.ownerId]);
 
   // ❤️ like
@@ -158,11 +146,7 @@ function RecipeCard(props: Props) {
     try {
       const { liked: nowLiked, likesCount } = await dataAPI.toggleLike(id);
       setLiked(nowLiked);
-      setLikes((prev) =>
-        typeof likesCount === "number"
-          ? likesCount
-          : Math.max(0, prev + (nowLiked ? 1 : -1))
-      );
+      setLikes((prev) => (typeof likesCount === "number" ? likesCount : Math.max(0, prev + (nowLiked ? 1 : -1))));
       onLikedChange?.(id, nowLiked);
       await tap();
     } catch {
@@ -190,13 +174,7 @@ function RecipeCard(props: Props) {
       if (cooked) {
         setCooked(false);
         setCooks((n) => Math.max(0, n - 1));
-
-        const { error } = await supabase
-          .from("recipe_cooks")
-          .delete()
-          .eq("user_id", userId)
-          .eq("recipe_id", id);
-
+        const { error } = await supabase.from("recipe_cooks").delete().eq("user_id", userId).eq("recipe_id", id);
         if (error) {
           setCooked(true);
           setCooks((n) => n + 1);
@@ -207,11 +185,7 @@ function RecipeCard(props: Props) {
       } else {
         setCooked(true);
         setCooks((n) => n + 1);
-
-        const { error } = await supabase
-          .from("recipe_cooks")
-          .insert({ user_id: userId, recipe_id: id as any });
-
+        const { error } = await supabase.from("recipe_cooks").insert({ user_id: userId, recipe_id: id as any });
         // ignore unique
         // @ts-ignore
         if (error && error.code !== "23505") {
@@ -253,10 +227,9 @@ function RecipeCard(props: Props) {
               </View>
             )}
 
-            {/* 🔒 Private pill (icon + text) */}
+            {/* 🔒 Private pill */}
             {isPrivate && (
               <View pointerEvents="none" style={styles.privateChip} accessibilityLabel="Private">
-                {/* use MaterialCommunityIcons 'lock' so it ALWAYS shows */}
                 <MaterialCommunityIcons name="lock" size={12} color="#FFF7D6" />
                 <Text style={styles.privateChipText}>Private</Text>
               </View>
@@ -269,9 +242,7 @@ function RecipeCard(props: Props) {
                 onPressIn={(e) => e.stopPropagation()}
                 onPress={(e) => {
                   e.stopPropagation();
-                  onEdit
-                    ? onEdit(id)
-                    : router.push({ pathname: "/recipe/edit/[id]", params: { id } });
+                  onEdit ? onEdit(id) : router.push({ pathname: "/recipe/edit/[id]", params: { id } });
                 }}
                 hitSlop={12}
                 style={styles.editFab}
@@ -322,24 +293,40 @@ function RecipeCard(props: Props) {
 
             <View style={{ flex: 1 }} />
 
+            {/* ❤️ like btn */}
             {!isOwner && (
-              <HapticButton
-                onPress={toggleLike}
-                style={[styles.likeBtn, liked && styles.likeBtnActive]}
-              >
+              <HapticButton onPress={toggleLike} style={[styles.likeBtn, liked && styles.likeBtnActive]}>
                 <Ionicons
                   name={liked ? "heart" : "heart-outline"}
                   size={16}
                   color={liked ? COLORS.accent : COLORS.text}
                   style={{ marginRight: 6 }}
                 />
+                <Text style={[styles.likeText, liked && { color: COLORS.accent, fontWeight: "800" }]}>
+                  Like
+                </Text>
+              </HapticButton>
+            )}
+
+            {/* 💾 save btn (active+green when saved) */}
+            {!isOwner && (
+              <HapticButton
+                onPress={props.onToggleSave}
+                style={[styles.saveBtn, props.isSaved && styles.saveBtnActive]}
+              >
+                <Ionicons
+                  name={props.isSaved ? "bookmark" : "bookmark-outline"}
+                  size={16}
+                  color={props.isSaved ? "#CFF8D6" : COLORS.text}
+                  style={{ marginRight: 6 }}
+                />
                 <Text
                   style={[
-                    styles.likeText,
-                    liked && { color: COLORS.accent, fontWeight: "800" },
+                    styles.saveText,
+                    props.isSaved && { color: "#CFF8D6", fontWeight: "800" },
                   ]}
                 >
-                  Like
+                  {props.isSaved ? "Saved" : "Save"}
                 </Text>
               </HapticButton>
             )}
@@ -427,12 +414,7 @@ const AvatarTiny = memo(function AvatarTiny({
     return (
       <Image
         source={{ uri: creatorAvatar }}
-        style={{
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          backgroundColor: "#0b1220",
-        }}
+        style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: "#0b1220" }}
       />
     );
   }
@@ -449,15 +431,7 @@ const AvatarTiny = memo(function AvatarTiny({
         borderColor: "#243042",
       }}
     >
-      <Text
-        style={{
-          color: COLORS.text,
-          fontSize: size * 0.6,
-          fontWeight: "800",
-        }}
-      >
-        {letter}
-      </Text>
+      <Text style={{ color: COLORS.text, fontSize: size * 0.6, fontWeight: "800" }}>{letter}</Text>
     </View>
   );
 });
@@ -520,13 +494,12 @@ const styles = StyleSheet.create({
     left: 10,
     flexDirection: "row",
     alignItems: "center",
-    // NOTE: avoid `gap` on older RN — we space with marginRight on icon
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: "rgba(245, 158, 11, 0.92)", // amber-500 w/ opacity
+    backgroundColor: "rgba(245, 158, 11, 0.92)", // amber-ish
     borderWidth: 1,
-    borderColor: "rgba(252, 211, 77, 0.95)",      // amber-300 border
+    borderColor: "rgba(252, 211, 77, 0.95)",
     zIndex: 10,
     elevation: 10,
   },
@@ -568,12 +541,7 @@ const styles = StyleSheet.create({
   creator: { color: COLORS.text, fontWeight: "600", fontSize: 14 },
   dim: { color: COLORS.subtext, fontSize: 12 },
   stat: { color: COLORS.subtext, fontSize: 13 },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: "#2c3a4d",
-    opacity: 0.8,
-    marginTop: 2,
-  },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: "#2c3a4d", opacity: 0.8, marginTop: 2 },
 
   medalStat: { flexDirection: "row", alignItems: "center" },
   likeStat: { flexDirection: "row", alignItems: "center" },
@@ -601,9 +569,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#2c3a4d",
     backgroundColor: "transparent",
+    marginRight: 8,
   },
   likeBtnActive: { borderColor: COLORS.accent, backgroundColor: "#0b1220" },
   likeText: { color: COLORS.text, fontWeight: "700", fontSize: 13 },
+
+  // 💾 SAVE button styles
+  saveBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#2c3a4d",
+    backgroundColor: "transparent",
+  },
+  saveBtnActive: { borderColor: "#2BAA6B", backgroundColor: "#183B2B" },
+  saveText: { color: COLORS.text, fontWeight: "700", fontSize: 13 },
 
   actionRow: { marginTop: 6 },
   cookedButton: {
@@ -669,5 +652,5 @@ const styles = StyleSheet.create({
   commentsBadgeText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
 });
 
-// ✅ memoized export so FlatList/VirtualizedList don’t re-render every card all the time
+// ✅ memoized export so FlatList doesn’t re-render every card all the time
 export default memo(RecipeCard);
