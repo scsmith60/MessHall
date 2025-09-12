@@ -1,9 +1,15 @@
 // app/recipe/[id].tsx
-// LIKE I'M 5:
-// - This keeps your original layout.
-// - Adds a tiny "Remix" chip beside your Private/Imported chips (click → go to parent).
-// - Keeps the small "Remix" button below the chips (non-owners, non-private).
-// - Uses recipe_ingredients/recipe_steps fallbacks if the recipe object lacks arrays.
+// LIKE I'M 5 👶:
+// We keep your layout and chips, but FIX how the macro chips (Protein/Carbs/Fat)
+// READ from the recipes table. Some databases send numeric columns as *strings*,
+// so we now convert anything (string or number) into a real Number before showing.
+// Result: no more "always 0" — chips reflect `public.recipes.protein_total_g`, etc.
+//
+// What changed:
+// • Added tiny helpers: toNum() to safely convert "12.3" or 12.3 -> 12.3 (or 0 if null/NaN).
+// • Initial load: we SELECT macros from `public.recipes` and call toNum().
+// • Realtime updates: we also toNum() the payload fields.
+// • Removed the ingredient fallback adding — per your note, we read ONLY from recipes row.
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Alert, ScrollView, Share, Text, View, TouchableOpacity } from 'react-native';
@@ -22,9 +28,25 @@ import { supabase } from '@/lib/supabase';
 import RecipeComments from '../../components/RecipeComments';
 import { IngredientPicker } from '@/components/IngredientPicker';
 
-// 🧺 Find or make the user's default shopping list (used by IngredientPicker)
+// ✅ Calories pill + hook you already have
+import { useRecipeCalories } from '@/lib/nutrition';
+import CaloriePill from '@/components/CaloriePill';
+
+/* -----------------------------------------------------------
+   Small helper — turn "12.5" or 12.5 into a number; null/undefined -> 0
+   (Some Postgres numeric fields arrive as strings; we fix it here.)
+----------------------------------------------------------- */
+function toNum(v: unknown, fallback = 0): number {
+  if (v === null || v === undefined) return fallback;
+  const n = Number(v as any);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/* -----------------------------------------------------------
+   Shopping list helpers (unchanged)
+----------------------------------------------------------- */
 async function ensureDefaultList(userId: string) {
-  const { data: existing, error: e1 } = await supabase
+  const { data: existing } = await supabase
     .from('shopping_lists')
     .select('id')
     .eq('user_id', userId)
@@ -32,19 +54,18 @@ async function ensureDefaultList(userId: string) {
     .limit(1)
     .maybeSingle();
 
-  if (!e1 && existing?.id) return existing.id as string;
+  if (existing?.id) return existing.id as string;
 
-  const { data: created, error: e2 } = await supabase
+  const { data: created, error } = await supabase
     .from('shopping_lists')
     .insert({ user_id: userId, title: 'My Shopping List', is_default: true })
     .select('id')
     .single();
 
-  if (e2) throw e2;
+  if (error) throw error;
   return created!.id as string;
 }
 
-// 🗂️ Guess an item's category (ok if your DB table doesn’t have this column)
 function categorizeIngredient(name: string): string {
   const n = name.toLowerCase();
   const hasAny = (arr: string[]) => arr.some((k) => n.includes(k));
@@ -61,29 +82,68 @@ function categorizeIngredient(name: string): string {
   return 'Other';
 }
 
-// 🧾 Read all unchecked item names (so we can prefill "Added" pills)
 async function readActiveItemNames(listId: string): Promise<Set<string>> {
   const names = new Set<string>();
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('shopping_list_items')
     .select('ingredient, checked')
     .eq('list_id', listId);
 
-  if (!error && data) {
-    for (const row of data) {
-      if (row && typeof row.ingredient === 'string' && (row.checked === false || row.checked === null)) {
-        names.add(row.ingredient);
-      }
+  for (const row of data || []) {
+    if (row && typeof row.ingredient === 'string' && (row.checked === false || row.checked === null)) {
+      names.add(row.ingredient);
     }
   }
   return names;
 }
 
+/* -----------------------------------------------------------
+   MacroChip — compact, dark “chip” that matches your theme.
+   Always shows 0 g if missing.
+----------------------------------------------------------- */
+function MacroChip({
+  label,
+  value,
+  tint = '#0EA5E9', // Protein=emerald, Carbs=sky, Fat=amber
+  unit = 'g',
+}: {
+  label: string;
+  value: number | null | undefined;
+  tint?: string;
+  unit?: string;
+}) {
+  const display = Number.isFinite(value as number) ? Math.round(Number(value)) : 0;
+
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 8,  // a bit tighter so more fit per row
+        paddingVertical: 5,
+        borderRadius: 999,
+        backgroundColor: COLORS.card,
+        borderWidth: 1,
+        borderColor: '#233041',
+        gap: 6,
+      }}
+    >
+      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: tint }} />
+      <Text style={{ color: '#E5E7EB', fontWeight: '900', fontSize: 11 }}>{label}</Text>
+      <Text style={{ color: '#9CA3AF', fontWeight: '800', fontSize: 11 }}>
+        {display} {unit}
+      </Text>
+    </View>
+  );
+}
+
+/* -----------------------------------------------------------
+   Screen
+----------------------------------------------------------- */
 export default function RecipeDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
 
-  // 📦 State
   const [loading, setLoading] = useState(true);
   const [model, setModel] = useState<{
     id: string;
@@ -99,14 +159,22 @@ export default function RecipeDetail() {
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const isOwner = !!userId && !!ownerId && userId === ownerId;
 
+  // ✅ Calories (overlay pill on the image)
+  const { total: calTotal, perServing: calPer } = useRecipeCalories(id ? String(id) : undefined);
+
+  // ✅ Macros (these READ from public.recipes)
+  const [proteinTotalG, setProteinTotalG] = useState<number>(0);
+  const [fatTotalG, setFatTotalG] = useState<number>(0);
+  const [carbsTotalG, setCarbsTotalG] = useState<number>(0);
+
   const [isPrivate, setIsPrivate] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [parentId, setParentId] = useState<string | null>(null);
 
   const [saved, setSaved] = useState(false);
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState<number>(0);
   const [likeSaving, setLikeSaving] = useState(false);
-
   const [cooksCount, setCooksCount] = useState<number>(0);
   const [isCooked, setIsCooked] = useState(false);
   const [savingCook, setSavingCook] = useState(false);
@@ -114,15 +182,11 @@ export default function RecipeDetail() {
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<{ text: string; seconds?: number | null }[]>([]);
 
-  // 🆕 Is this recipe a remix? (we’ll show a little pill if yes)
-  const [parentId, setParentId] = useState<string | null>(null);
-
-  // 🧒 Who am I?
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null));
   }, []);
 
-  // 📥 Load recipe (JSON-first, then local store fallback)
+  /* ------------------ Load main recipe ------------------ */
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -170,7 +234,7 @@ export default function RecipeDetail() {
     return () => { alive = false; };
   }, [id]);
 
-  // 👑 Owner id (server tells us who owns it)
+  /* ------------------ Owner info ------------------ */
   useEffect(() => {
     let gone = false;
     (async () => {
@@ -181,7 +245,7 @@ export default function RecipeDetail() {
     return () => { gone = true; };
   }, [id]);
 
-  // 🆕 Ask DB if this post has a parent (so we can render the Remix chip)
+  /* ------------------ Parent / remix ------------------ */
   useEffect(() => {
     let off = false;
     (async () => {
@@ -198,7 +262,7 @@ export default function RecipeDetail() {
     return () => { off = true; };
   }, [id]);
 
-  // 🌾 Fallbacks if recipe_ingredients / recipe_steps are normalized in DB
+  /* ------------------ Ingredients & steps fallbacks ------------------ */
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -236,7 +300,7 @@ export default function RecipeDetail() {
     return () => { cancelled = true; };
   }, [id, steps.length]);
 
-  // 🖼️ Sign image (Supabase storage → temporary URL)
+  /* ------------------ Signed image ------------------ */
   const [signedImageUrl, setSignedImageUrl] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -251,7 +315,7 @@ export default function RecipeDetail() {
     return () => { cancelled = true; };
   }, [model?.image]);
 
-  // ⭐ Likes / Cooks counters (and my like/cook state)
+  /* ------------------ Likes / cooks ------------------ */
   const fetchEngagement = useCallback(async () => {
     if (!id) return;
 
@@ -289,20 +353,16 @@ export default function RecipeDetail() {
   }, [id, userId]);
   useEffect(() => { fetchEngagement(); }, [fetchEngagement]);
 
-  // 🧯 Fallbacks so page isn't empty
+  /* ------------------ Ingredient picker prep ------------------ */
   const ings = ingredients.length ? ingredients : ['2 tbsp olive oil', '2 cloves garlic'];
   const stepList = steps.length ? steps : [{ text: 'Cook stuff', seconds: null }];
-
-  // 🧱 Turn strings → rows for the IngredientPicker
   const ingredientRows = useMemo(
     () => (ingredients.length ? ingredients : ings).map((t, i) => ({ id: String(i + 1), name: t })),
     [ingredients]
   );
 
-  // ✅ Which rows show "Added" pill
+  /* ------------------ Added/checked state ------------------ */
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
-
-  // ⛳ Prefill pills from my default list
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -316,7 +376,6 @@ export default function RecipeDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, ingredientRows.length]);
 
-  // 💾 Persist add/remove to DB for the shopping list
   async function persistToggle(idStr: string, next: boolean, name: string) {
     if (!userId) { Alert.alert('Sign in required', 'Please sign in to manage your list.'); return; }
     const listId = await ensureDefaultList(userId);
@@ -334,7 +393,7 @@ export default function RecipeDetail() {
       } else {
         const base: any = { list_id: listId, ingredient: name, quantity: null, checked: false, category: categorizeIngredient(name) };
         const ins = await supabase.from('shopping_list_items').insert(base);
-        // @ts-ignore — ignore "category" column missing (42703) if your table doesn't have it
+        // @ts-ignore
         if (ins.error && ins.error.code !== '42703') console.warn('insert error', ins.error.message);
       }
     } else {
@@ -347,14 +406,51 @@ export default function RecipeDetail() {
       return copy;
     });
   }
-
   function onToggleCheck(idStr: string, next: boolean) {
     const row = ingredientRows.find((r) => r.id === idStr);
     if (!row) return;
     persistToggle(idStr, next, row.name);
   }
 
-  // 🔗 share/save/like/cook
+  /* ------------------ MACROS: load + subscribe FROM RECIPES TABLE ------------------ */
+  useEffect(() => {
+    if (!id) return;
+    let stop = false;
+
+    (async () => {
+      const { data } = await supabase
+        .from('recipes')
+        .select('protein_total_g, fat_total_g, carbs_total_g')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (stop) return;
+      setProteinTotalG(toNum(data?.protein_total_g, 0));
+      setFatTotalG(toNum(data?.fat_total_g, 0));
+      setCarbsTotalG(toNum(data?.carbs_total_g, 0));
+    })();
+
+    const ch = supabase
+      .channel(`recipe-nutrition-${id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'recipes', filter: `id=eq.${id}` },
+        (payload: any) => {
+          const row = payload?.new || {};
+          setProteinTotalG((prev) => (row.protein_total_g != null ? toNum(row.protein_total_g, prev) : prev));
+          setFatTotalG((prev) => (row.fat_total_g != null ? toNum(row.fat_total_g, prev) : prev));
+          setCarbsTotalG((prev) => (row.carbs_total_g != null ? toNum(row.carbs_total_g, prev) : prev));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      stop = true;
+      try { supabase.removeChannel(ch); } catch {}
+    };
+  }, [id]);
+
+  /* ------------------ Share / Save / Like / Cook ------------------ */
   const shareIt = async () => { await success(); await Share.share({ message: `${model?.title} on MessHall — messhall://recipe/${id}` }); };
   const toggleSave = async () => {
     try { const s = await dataAPI.toggleSave(String(id)); setSaved(s); await tap(); }
@@ -402,7 +498,7 @@ export default function RecipeDetail() {
     finally { setSavingCook(false); }
   }, [id, userId, isCooked, isOwner]);
 
-  // 🧱 Loading / Not found
+  /* ------------------ Render ------------------ */
   if (loading)
     return (
       <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center' }}>
@@ -418,7 +514,7 @@ export default function RecipeDetail() {
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ paddingBottom: 32 }}>
-      {/* HERO IMAGE + ✏️ edit button */}
+      {/* HERO IMAGE + ✏️ edit + ✅ calories pill (bottom-right) */}
       <View style={{ position: 'relative' }}>
         <Image
           source={{ uri: signedImageUrl || undefined }}
@@ -426,7 +522,6 @@ export default function RecipeDetail() {
           contentFit="cover"
         />
 
-        {/* ✏️ owner-only edit button (unchanged) */}
         {isOwner && (
           <TouchableOpacity
             onPress={() =>
@@ -454,12 +549,18 @@ export default function RecipeDetail() {
             <MaterialCommunityIcons name="pencil" size={18} color="#e5e7eb" />
           </TouchableOpacity>
         )}
+
+        {/* 🍏 Calories pill on the image */}
+        <View style={{ position: 'absolute', right: 12, bottom: 12 }}>
+          <CaloriePill total={calTotal ?? undefined} perServing={calPer ?? undefined} compact />
+        </View>
       </View>
 
       {/* HEADER INFO */}
       <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.lg }}>
         <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 8 }}>{model.title}</Text>
 
+        {/* Creator row */}
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
           <TouchableOpacity onPress={() => router.push(`/u/${model.creator}`)} activeOpacity={0.7}>
             {model.creatorAvatar ? (
@@ -484,7 +585,7 @@ export default function RecipeDetail() {
           <Text style={{ color: COLORS.sub }}>{timeAgo(model.createdAt)}</Text>
         </View>
 
-        {/* Chips row: Private / Imported / 🆕 Remix (kept same style) */}
+        {/* Context chips (imported/private/remix) */}
         {(isPrivate || (sourceUrl && sourceUrl.trim() !== '') || parentId) && (
           <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
             {isPrivate && (
@@ -497,8 +598,6 @@ export default function RecipeDetail() {
                 🌐 Imported
               </Text>
             )}
-
-            {/* 🆕 Remix chip — only if this recipe has a parent. Click goes to parent recipe. */}
             {parentId ? (
               <TouchableOpacity onPress={() => router.push(`/recipe/${parentId}`)} activeOpacity={0.8}>
                 <View style={{
@@ -508,7 +607,7 @@ export default function RecipeDetail() {
                   paddingHorizontal: 10,
                   paddingVertical: 6,
                   borderRadius: 999,
-                  backgroundColor: '#052638', // dark teal to stand out a bit
+                  backgroundColor: '#052638',
                   borderWidth: 1,
                   borderColor: '#0ea5e9',
                 }}>
@@ -520,7 +619,7 @@ export default function RecipeDetail() {
           </View>
         )}
 
-        {/* Small Remix button (unchanged) */}
+        {/* Remix button (if allowed) */}
         {!isOwner && !isPrivate && (
           <View style={{ marginBottom: 10 }}>
             <HapticButton
@@ -546,15 +645,30 @@ export default function RecipeDetail() {
           </View>
         )}
 
-        {/* tiny stat chips (medals + likes) */}
-        <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.card, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }}>
-            <MaterialCommunityIcons name="medal" size={16} color={COLORS.accent} />
-            <Text style={{ color: COLORS.text, fontWeight: '700' }}>{compactNumber(cooksCount)}</Text>
+        {/* 🧮 Stats (left) + Macros chips (right) — wraps nicely */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+          {/* Left cluster: medal + likes */}
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.card, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }}>
+              <MaterialCommunityIcons name="medal" size={16} color={COLORS.accent} />
+              <Text style={{ color: COLORS.text, fontWeight: '700' }}>{compactNumber(cooksCount)}</Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.card, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }}>
+              <Ionicons name="heart" size={16} color="#F87171" />
+              <Text style={{ color: COLORS.text, fontWeight: '700' }}>{compactNumber(likesCount)}</Text>
+            </View>
           </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.card, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }}>
-            <Ionicons name="heart" size={16} color="#F87171" />
-            <Text style={{ color: COLORS.text, fontWeight: '700' }}>{compactNumber(likesCount)}</Text>
+
+          {/* Push macro chips to the right */}
+          <View style={{ flex: 1 }} />
+
+          {/* Right cluster: Protein / Carbs / Fat chips */}
+          <View style={{ flexShrink: 1, maxWidth: '68%' }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+              <MacroChip label="Protein" value={proteinTotalG} tint="#34D399" />
+              <MacroChip label="Carbs"   value={carbsTotalG}   tint="#38BDF8" />
+              <MacroChip label="Fat"     value={fatTotalG}     tint="#F59E0B" />
+            </View>
           </View>
         </View>
       </View>
@@ -583,7 +697,7 @@ export default function RecipeDetail() {
         ))}
       </View>
 
-      {/* BOTTOM ACTIONS (owner sees Cook Mode; edit is the tiny ✏️ above) */}
+      {/* BOTTOM ACTIONS */}
       <View style={{ paddingHorizontal: SPACING.lg, marginTop: 8 }}>
         {isOwner ? (
           <HapticButton onPress={() => router.push(`/cook/${id}`)} style={{ backgroundColor: COLORS.accent, paddingVertical: 16, borderRadius: RADIUS.xl, alignItems: 'center' }}>

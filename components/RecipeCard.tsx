@@ -1,9 +1,9 @@
 // components/RecipeCard.tsx
 // LIKE I'M 5 🍪:
-// - This draws the recipe card in the feed.
-// - Add a clear SAVE button (and keep swipe-to-save).
-// - When saved, the button says "Saved" and turns green.
-// - Also shows a "Private" pill, edit pencil for owners, and all your usual bits.
+// - Calorie pill sits at the BOTTOM-RIGHT of the image (away from the edit pencil).
+// - We now READ calories at mount AND LISTEN in real-time for changes to this recipe row,
+//   so when the detail page/server computes calories, the feed pill updates automatically.
+// - All your other UI (likes, cooks, save, comments) stays the same.
 
 import React, { useEffect, useMemo, useState, useCallback, memo } from "react";
 import {
@@ -29,11 +29,14 @@ import { dataAPI } from "@/lib/data";
 import { useUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 
+// 👉 tiny badge
+import CaloriePill from "@/components/CaloriePill";
+
 // 🧰 Props the card needs
 type Props = {
   id: string;
   title: string;
-  image?: string | null;          // may be empty/null; we guard it
+  image?: string | null; // may be empty/null; we guard it
   creator: string;
   creatorAvatar?: string | null;
   knives: number;
@@ -51,9 +54,9 @@ type Props = {
   onCooked?: (id: string, cooked: boolean) => void;
   onEdit?: (id: string) => void;
   // SAVE hooks
-  isSaved?: boolean;              // 👈 parent tells us current saved state
-  onToggleSave?: () => void;      // 👈 parent toggles save
-  onSave?: (id: string) => void;  // 👈 swipe-to-save fallback (kept for compatibility)
+  isSaved?: boolean;
+  onToggleSave?: () => void;
+  onSave?: (id: string) => void;
 };
 
 function RecipeCard(props: Props) {
@@ -108,10 +111,12 @@ function RecipeCard(props: Props) {
         .maybeSingle();
       if (!gone) setCooked(!!data);
     })().catch(() => {});
-    return () => { gone = true; };
+    return () => {
+      gone = true;
+    };
   }, [id, userId]);
 
-  // 💾 swipe-right save → prefer onToggleSave if present, else legacy onSave(id)
+  // 💾 swipe-right save
   const save = useCallback(() => {
     success();
     if (props.onToggleSave) props.onToggleSave();
@@ -146,7 +151,9 @@ function RecipeCard(props: Props) {
     try {
       const { liked: nowLiked, likesCount } = await dataAPI.toggleLike(id);
       setLiked(nowLiked);
-      setLikes((prev) => (typeof likesCount === "number" ? likesCount : Math.max(0, prev + (nowLiked ? 1 : -1))));
+      setLikes((prev) =>
+        typeof likesCount === "number" ? likesCount : Math.max(0, prev + (nowLiked ? 1 : -1))
+      );
       onLikedChange?.(id, nowLiked);
       await tap();
     } catch {
@@ -174,7 +181,11 @@ function RecipeCard(props: Props) {
       if (cooked) {
         setCooked(false);
         setCooks((n) => Math.max(0, n - 1));
-        const { error } = await supabase.from("recipe_cooks").delete().eq("user_id", userId).eq("recipe_id", id);
+        const { error } = await supabase
+          .from("recipe_cooks")
+          .delete()
+          .eq("user_id", userId)
+          .eq("recipe_id", id);
         if (error) {
           setCooked(true);
           setCooks((n) => n + 1);
@@ -185,7 +196,9 @@ function RecipeCard(props: Props) {
       } else {
         setCooked(true);
         setCooks((n) => n + 1);
-        const { error } = await supabase.from("recipe_cooks").insert({ user_id: userId, recipe_id: id as any });
+        const { error } = await supabase
+          .from("recipe_cooks")
+          .insert({ user_id: userId, recipe_id: id as any });
         // ignore unique
         // @ts-ignore
         if (error && error.code !== "23505") {
@@ -209,6 +222,56 @@ function RecipeCard(props: Props) {
     await tap();
     (onOpenComments ?? onOpen)?.(id);
   }, [id, onOpen, onOpenComments]);
+
+  // 🔥 FEED CALORIES (read + realtime subscribe)
+  const [calTotal, setCalTotal] = useState<number | null>(null);
+  const [calPerServ, setCalPerServ] = useState<number | null>(null);
+
+  // 1) initial fetch (fast read)
+  useEffect(() => {
+    let gone = false;
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from("recipes")
+          .select("calories_total, calories_per_serving")
+          .eq("id", id)
+          .maybeSingle();
+        if (gone) return;
+        const t = data?.calories_total ?? null;
+        const p = data?.calories_per_serving ?? null;
+        setCalTotal(typeof t === "number" && t > 0 ? t : null);
+        setCalPerServ(typeof p === "number" && p > 0 ? p : null);
+      } catch {}
+    })();
+    return () => {
+      gone = true;
+    };
+  }, [id]);
+
+  // 2) realtime subscription to keep pill in sync when detail page/server updates
+  useEffect(() => {
+    // IMPORTANT: enable Realtime on public.recipes (UPDATE) in your Supabase project settings.
+    const channel = supabase
+      .channel(`recipes-cal-${id}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "recipes", filter: `id=eq.${id}` },
+        (payload: any) => {
+          const t = (payload?.new as any)?.calories_total;
+          const p = (payload?.new as any)?.calories_per_serving;
+          setCalTotal(typeof t === "number" && t > 0 ? t : null);
+          setCalPerServ(typeof p === "number" && p > 0 ? p : null);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(channel);
+      } catch {}
+    };
+  }, [id]);
 
   // 🎨 UI
   return (
@@ -251,6 +314,15 @@ function RecipeCard(props: Props) {
                 <MaterialCommunityIcons name="pencil" size={16} color="#e5e7eb" />
               </Pressable>
             )}
+
+            {/* 👉 Calorie pill BOTTOM-RIGHT on the image */}
+            <View style={styles.caloriePillPos}>
+              <CaloriePill
+                total={calTotal ?? undefined}
+                perServing={calPerServ ?? undefined}
+                compact
+              />
+            </View>
 
             {/* Title sticker on the photo */}
             <View style={styles.titleSticker}>
@@ -497,7 +569,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: "rgba(245, 158, 11, 0.92)", // amber-ish
+    backgroundColor: "rgba(245, 158, 11, 0.92)",
     borderWidth: 1,
     borderColor: "rgba(252, 211, 77, 0.95)",
     zIndex: 10,
@@ -519,6 +591,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     zIndex: 10,
     elevation: 10,
+  },
+
+  // 👉 BOTTOM-RIGHT calorie pill
+  caloriePillPos: {
+    position: "absolute",
+    bottom: 10,
+    right: 10,
+    zIndex: 9,
+    elevation: 9,
   },
 
   titleSticker: {
