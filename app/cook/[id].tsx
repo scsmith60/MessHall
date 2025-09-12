@@ -1,6 +1,9 @@
 // /app/cook/[id].tsx
-// COOK MODE (v5) — simple, airy layout (no big clumps)
-// like I'm 5: big round clock you tap; two tiny time chips; bottom bar for back/next; small Exit up top.
+// COOK MODE (v7)
+// like I'm 5:
+// - We made our own pretty "Exit?" popup that matches our dark theme.
+// - We also push the bottom buttons up a little more so they never get cut off.
+// - Timer still auto-reads time from the step text ("10–12 minutes" -> 12:00).
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -11,6 +14,8 @@ import {
   StyleSheet,
   Pressable,
   TouchableOpacity,
+  Modal,              // 👈 we use this to build our themed popup
+  Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -21,18 +26,18 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { COLORS, RADIUS, SPACING } from '../../lib/theme';
 import BigButton from '../../components/ui/BigButton';
-import { fmtMMSS, clamp } from '../../lib/timer';
+import { fmtMMSS, clamp, parseDurationFromText } from '../../lib/timer';
 import { speak, stopSpeak } from '../../lib/speak';
 import { success, warn } from '../../lib/haptics';
 import { dataAPI } from '../../lib/data';
 
-// ==== tiny look/feel knobs you can tweak ===========================
+// ==== knobs you can tweak ==============================================
 const BG_SCALE = 1.12;        // how much we zoom the wallpaper image
 const BLUR_RADIUS = 3;        // tiny blur keeps it classy, not mushy
 const SCRIM_OPACITY = 0.40;   // dark sheet on photo so words pop
 const GRADIENT_TOP = 0.55;    // bottom gets darker near buttons
 const TIMER_SIZE = 220;       // big round clock size
-// ==================================================================
+// =======================================================================
 
 const DEFAULT_STEP_SECONDS = 60;
 
@@ -42,9 +47,18 @@ export default function CookMode() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
 
+  // 👇 give Android a bigger lift because gesture bars often report 0 inset
+  const SAFE_BOTTOM = Platform.select({
+    ios: Math.max(insets.bottom, 14),
+    android: Math.max(insets.bottom, 28), // <- extra cushion on Android
+    default: Math.max(insets.bottom, 20),
+  }) as number;
+
   // recipe bits
   const [title, setTitle] = useState('Recipe');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+  // steps as { text, seconds }
   const [steps, setSteps] = useState<Array<{ text: string; seconds: number | null }>>([]);
   const [loading, setLoading] = useState(true);
 
@@ -53,6 +67,9 @@ export default function CookMode() {
   const [seconds, setSeconds] = useState(DEFAULT_STEP_SECONDS);
   const [running, setRunning] = useState(false);
   const intervalRef = useRef<NodeJS.Timer | null>(null);
+
+  // THEMED EXIT MODAL state
+  const [showExit, setShowExit] = useState(false);
 
   // 1) load recipe
   useEffect(() => {
@@ -70,19 +87,21 @@ export default function CookMode() {
           r?.image?.url ?? r?.image ?? r?.photo ?? r?.originalImage ?? r?.cover ?? r?.hero ?? r?.thumbnail ?? null;
         setImageUrl(thumb);
 
-        const s = (r?.steps ?? []).map((x: any) => ({
-          text: x.text,
-          seconds: typeof x.seconds === 'number' ? x.seconds : null,
-        }));
+        // Build steps. If API doesn't give "seconds", we auto-parse from the text.
+        const rawSteps = (r?.steps ?? []).map((x: any) => {
+          const givenSeconds = typeof x.seconds === 'number' ? x.seconds : null;
+          const parsedSeconds = givenSeconds ?? parseDurationFromText(String(x.text)) ?? null;
+          return { text: String(x.text), seconds: parsedSeconds };
+        });
 
         setSteps(
-          s.length
-            ? s
+          rawSteps.length
+            ? rawSteps
             : [
                 { text: `Get everything ready for ${r?.title ?? 'your recipe'}.`, seconds: 60 },
-                { text: 'Heat the pan. Add oil and garlic.', seconds: 120 },
-                { text: 'Add the main ingredients. Cook until done.', seconds: 180 },
-                { text: 'Season, plate, and enjoy!', seconds: 30 },
+                { text: 'Heat the pan. Add oil and garlic. Cook 2 minutes.', seconds: 120 },
+                { text: 'Add main ingredients. Cook 3 minutes.', seconds: 180 },
+                { text: 'Season, plate, and enjoy! 30 seconds.', seconds: 30 },
               ]
         );
         setIdx(0);
@@ -99,11 +118,17 @@ export default function CookMode() {
     };
   }, [id]);
 
-  // 2) when step changes, reset timer + speak
+  // 2) when step changes, preset timer + speak the step
   useEffect(() => {
     if (!steps.length) return;
     const s = steps[idx];
-    const start = typeof s.seconds === 'number' && s.seconds > 0 ? s.seconds : DEFAULT_STEP_SECONDS;
+
+    const parsedFromText = parseDurationFromText(s.text);
+    const start =
+      typeof s.seconds === 'number' && s.seconds > 0
+        ? s.seconds
+        : (parsedFromText ?? DEFAULT_STEP_SECONDS);
+
     setSeconds(start);
     setRunning(false);
     stopSpeak();
@@ -156,11 +181,11 @@ export default function CookMode() {
     setIdx((i) => i + 1);
   };
 
-  const exitCookMode = () => {
-    Alert.alert('Exit Cook Mode', 'Leave now? Your timer progress will be lost.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Exit', style: 'destructive', onPress: () => router.back() },
-    ]);
+  // open our themed modal (instead of default white Alert)
+  const exitCookMode = () => setShowExit(true);
+  const confirmExit = () => {
+    setShowExit(false);
+    router.back();
   };
 
   if (loading) {
@@ -181,8 +206,10 @@ export default function CookMode() {
     overflow: 'hidden' as const,
   };
 
-  // height of floating bottom bar so we pad scroll content
-  const bottomBarHeight = 68 + insets.bottom + 12;
+  // ==== reserve room so ScrollView content isn't covered by the bar ====
+  const bottomBarHeight = 68;                 // visual height of the bar area
+  const extraGap = SAFE_BOTTOM + 20;          // more space so buttons breathe
+  const scrollBottomPadding = bottomBarHeight + extraGap;
 
   return (
     <View style={styles.flex}>
@@ -210,8 +237,8 @@ export default function CookMode() {
       </View>
 
       {/* ===== FOREGROUND ===== */}
-      <SafeAreaView style={styles.flex}>
-        {/* Top row with tiny Exit button so the big red bar isn't needed */}
+      <SafeAreaView style={styles.flex} edges={['top', 'bottom']}>
+        {/* Top row with tiny Exit button */}
         <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: 6, flexDirection: 'row', justifyContent: 'flex-end' }}>
           <TouchableOpacity onPress={exitCookMode} style={styles.exitPill} accessibilityLabel="Exit Cook Mode">
             <Ionicons name="close" size={16} color={COLORS.text} />
@@ -221,7 +248,7 @@ export default function CookMode() {
 
         <ScrollView
           style={{ flex: 1, backgroundColor: 'transparent' }}
-          contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: bottomBarHeight }}
+          contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: scrollBottomPadding }}
         >
           {/* Header: label + title */}
           <Text style={styles.miniLabel}>Cooking:</Text>
@@ -246,14 +273,25 @@ export default function CookMode() {
             Step {idx + 1} of {steps.length}
           </Text>
 
-          {/* Step card (slim) */}
+          {/* Step card */}
           <View style={styles.card}>
             <Text style={styles.cardText}>{steps[idx]?.text}</Text>
           </View>
 
           {/* ==== BIG ROUND TIMER (tap to start/pause) ==== */}
           <View style={{ alignItems: 'center', marginTop: 8, marginBottom: 14 }}>
-            <Pressable onPress={startPause} style={[styles.timerCircle, { width: TIMER_SIZE, height: TIMER_SIZE, borderRadius: TIMER_SIZE / 2, borderColor: running ? COLORS.accent : 'rgba(255,255,255,0.15)' }]}>
+            <Pressable
+              onPress={startPause}
+              style={[
+                styles.timerCircle,
+                {
+                  width: TIMER_SIZE,
+                  height: TIMER_SIZE,
+                  borderRadius: TIMER_SIZE / 2,
+                  borderColor: running ? COLORS.accent : 'rgba(255,255,255,0.15)',
+                },
+              ]}
+            >
               <Text style={styles.timerText}>{fmtMMSS(seconds)}</Text>
               <Text style={styles.timerHint}>{running ? 'Tap to pause' : 'Tap to start'}</Text>
             </Pressable>
@@ -267,11 +305,47 @@ export default function CookMode() {
         </ScrollView>
 
         {/* Floating bottom bar: Back / Next only */}
-        <View style={[styles.bottomBar, { paddingBottom: 12 + insets.bottom }]}>
+        <View
+          style={[
+            styles.bottomBar,
+            {
+              bottom: SAFE_BOTTOM + 6, // 👈 lift above gesture area more
+              paddingBottom: 12,       // comfy inner padding
+            },
+          ]}
+        >
           <BigButton title="Back" onPress={goBack} style={[styles.barBtn]} />
           <BigButton title="Next Step" onPress={() => goNext('tap')} style={[styles.barBtn, { backgroundColor: COLORS.accent }]} />
         </View>
       </SafeAreaView>
+
+      {/* ===================== THEMED EXIT MODAL ====================== */}
+      <Modal visible={showExit} transparent animationType="fade" onRequestClose={() => setShowExit(false)}>
+        {/* dark blurry-ish backdrop you can tap to cancel */}
+        <Pressable style={modalStyles.backdrop} onPress={() => setShowExit(false)}>
+          {/* stop touches from falling through to the backdrop when tapping card */}
+          <Pressable style={modalStyles.card} onPress={() => {}}>
+            <Text style={modalStyles.title}>Exit Cook Mode</Text>
+            <Text style={modalStyles.body}>
+              Leave now? Your timer progress will be lost.
+            </Text>
+
+            <View style={modalStyles.row}>
+              <TinyButton
+                title="Cancel"
+                onPress={() => setShowExit(false)}
+                type="ghost"
+              />
+              <TinyButton
+                title="Exit"
+                onPress={confirmExit}
+                type="primary"
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+      {/* ============================================================== */}
     </View>
   );
 }
@@ -285,6 +359,56 @@ function Pill({ title, icon, onPress }: { title: string; icon: keyof typeof Ioni
     </TouchableOpacity>
   );
 }
+
+// --- small modal buttons (themed) -----------------------------------
+function TinyButton({
+  title,
+  onPress,
+  type,
+}: {
+  title: string;
+  onPress: () => void;
+  type: 'primary' | 'ghost';
+}) {
+  const primary = type === 'primary';
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[
+        tinyBtnStyles.wrap,
+        {
+          backgroundColor: primary ? COLORS.accent : 'transparent',
+          borderColor: primary ? 'transparent' : 'rgba(255,255,255,0.18)',
+        },
+      ]}
+      android_ripple={{ color: 'rgba(255,255,255,0.08)', borderless: false }}
+    >
+      <Text
+        style={[
+          tinyBtnStyles.txt,
+          { color: primary ? '#0a0f1a' : '#e2e8f0', fontWeight: '800' },
+        ]}
+      >
+        {title}
+      </Text>
+    </Pressable>
+  );
+}
+
+const tinyBtnStyles = StyleSheet.create({
+  wrap: {
+    flex: 1,
+    height: 44,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  txt: {
+    fontSize: 16,
+    letterSpacing: 0.3,
+  },
+});
 
 const pillStyles = StyleSheet.create({
   wrap: {
@@ -352,7 +476,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: SPACING.lg,
     right: SPACING.lg,
-    bottom: 0,
+    // bottom: set dynamically above
     paddingTop: 10,
     flexDirection: 'row',
     gap: 10,
@@ -361,7 +485,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.08)',
-    // shadow for iOS + subtle elevation for Android
+    // subtle shadow
     shadowColor: '#000',
     shadowOpacity: 0.2,
     shadowRadius: 12,
@@ -371,5 +495,41 @@ const styles = StyleSheet.create({
   barBtn: {
     flex: 1,
     height: 48,
+  },
+});
+
+// --- themed modal styles --------------------------------------------
+const modalStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(2,6,23,0.6)', // dark see-through sheet
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  card: {
+    width: '100%',
+    maxWidth: 500,
+    backgroundColor: 'rgba(15,23,42,0.92)',    // deep slate
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  title: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '900',
+    marginBottom: 8,
+  },
+  body: {
+    color: COLORS.subtext,
+    fontSize: 15,
+    marginBottom: 14,
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
   },
 });

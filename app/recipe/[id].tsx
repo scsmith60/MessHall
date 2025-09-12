@@ -1,15 +1,16 @@
 // app/recipe/[id].tsx
-// LIKE I'M 5 👶:
-// We keep your layout and chips, but FIX how the macro chips (Protein/Carbs/Fat)
-// READ from the recipes table. Some databases send numeric columns as *strings*,
-// so we now convert anything (string or number) into a real Number before showing.
-// Result: no more "always 0" — chips reflect `public.recipes.protein_total_g`, etc.
+// LIKE I'M 5 👶
+// Problem: When we first open the recipe, Protein/Carbs/Fat chips show 0,
+// then if we go back and come in again, they show real numbers.
+// Why? The database totals are being updated a few moments AFTER the screen loads,
+// and we weren't checking again to grab the fresh numbers.
 //
-// What changed:
-// • Added tiny helpers: toNum() to safely convert "12.3" or 12.3 -> 12.3 (or 0 if null/NaN).
-// • Initial load: we SELECT macros from `public.recipes` and call toNum().
-// • Realtime updates: we also toNum() the payload fields.
-// • Removed the ingredient fallback adding — per your note, we read ONLY from recipes row.
+// Fix: We keep everything as-is AND add a tiny "peek again a few times" refresher.
+// - We still read from public.recipes (one read).
+// - We still listen for realtime UPDATEs (if enabled in Supabase Realtime).
+// - PLUS: we POLL a few times (like "are we there yet?") for ~6 seconds max.
+//   As soon as real numbers appear, we stop the polling.
+// This way, the chips update on the first visit without leaving the screen.
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Alert, ScrollView, Share, Text, View, TouchableOpacity } from 'react-native';
@@ -33,8 +34,8 @@ import { useRecipeCalories } from '@/lib/nutrition';
 import CaloriePill from '@/components/CaloriePill';
 
 /* -----------------------------------------------------------
-   Small helper — turn "12.5" or 12.5 into a number; null/undefined -> 0
-   (Some Postgres numeric fields arrive as strings; we fix it here.)
+   Tiny helper: turn "12.5" (string) or 12.5 (number) into a number.
+   If it's null/undefined/not-a-number, we use 0.
 ----------------------------------------------------------- */
 function toNum(v: unknown, fallback = 0): number {
   if (v === null || v === undefined) return fallback;
@@ -43,7 +44,7 @@ function toNum(v: unknown, fallback = 0): number {
 }
 
 /* -----------------------------------------------------------
-   Shopping list helpers (unchanged)
+   Shopping list helpers (kept same)
 ----------------------------------------------------------- */
 async function ensureDefaultList(userId: string) {
   const { data: existing } = await supabase
@@ -98,8 +99,8 @@ async function readActiveItemNames(listId: string): Promise<Set<string>> {
 }
 
 /* -----------------------------------------------------------
-   MacroChip — compact, dark “chip” that matches your theme.
-   Always shows 0 g if missing.
+   MacroChip — compact, dark chip like your theme.
+   Always shows number (rounded) or 0.
 ----------------------------------------------------------- */
 function MacroChip({
   label,
@@ -119,7 +120,7 @@ function MacroChip({
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: 8,  // a bit tighter so more fit per row
+        paddingHorizontal: 8,
         paddingVertical: 5,
         borderRadius: 999,
         backgroundColor: COLORS.card,
@@ -162,10 +163,13 @@ export default function RecipeDetail() {
   // ✅ Calories (overlay pill on the image)
   const { total: calTotal, perServing: calPer } = useRecipeCalories(id ? String(id) : undefined);
 
-  // ✅ Macros (these READ from public.recipes)
+  // ✅ Macros (we read from public.recipes)
   const [proteinTotalG, setProteinTotalG] = useState<number>(0);
   const [fatTotalG, setFatTotalG] = useState<number>(0);
   const [carbsTotalG, setCarbsTotalG] = useState<number>(0);
+
+  // We remember the last snapshot so our poll can stop when values change
+  const snapshot = useMemo(() => ({ p: proteinTotalG, f: fatTotalG, c: carbsTotalG }), [proteinTotalG, fatTotalG, carbsTotalG]);
 
   const [isPrivate, setIsPrivate] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
@@ -412,12 +416,13 @@ export default function RecipeDetail() {
     persistToggle(idStr, next, row.name);
   }
 
-  /* ------------------ MACROS: load + subscribe FROM RECIPES TABLE ------------------ */
+  /* ------------------ MACROS: load + subscribe + POLL REFRESH ------------------ */
   useEffect(() => {
     if (!id) return;
     let stop = false;
 
-    (async () => {
+    // helper: read once from public.recipes and update the chips
+    const pullOnce = async () => {
       const { data } = await supabase
         .from('recipes')
         .select('protein_total_g, fat_total_g, carbs_total_g')
@@ -425,11 +430,16 @@ export default function RecipeDetail() {
         .maybeSingle();
 
       if (stop) return;
+
       setProteinTotalG(toNum(data?.protein_total_g, 0));
       setFatTotalG(toNum(data?.fat_total_g, 0));
       setCarbsTotalG(toNum(data?.carbs_total_g, 0));
-    })();
+    };
 
+    // 1) first read
+    pullOnce();
+
+    // 2) listen for DB UPDATEs (works if Realtime is enabled on "recipes")
     const ch = supabase
       .channel(`recipe-nutrition-${id}`)
       .on(
@@ -444,10 +454,35 @@ export default function RecipeDetail() {
       )
       .subscribe();
 
+    // 3) POLLING SAFETY NET:
+    // Try a few times (every ~1s) to catch the fresh totals
+    // that might land right after we opened the screen.
+    let attempts = 0;
+    const maxAttempts = 6;   // ~6 seconds total
+    const timer = setInterval(async () => {
+      attempts += 1;
+      // If numbers already look non-zero (or we tried enough), stop polling.
+      const hasRealValues =
+        (proteinTotalG ?? 0) > 0 ||
+        (fatTotalG ?? 0) > 0 ||
+        (carbsTotalG ?? 0) > 0;
+
+      if (hasRealValues || attempts >= maxAttempts) {
+        clearInterval(timer);
+        return;
+      }
+      // Peek again
+      await pullOnce();
+    }, 1000);
+
     return () => {
       stop = true;
       try { supabase.removeChannel(ch); } catch {}
+      clearInterval(timer);
     };
+    // We intentionally don't add proteinTotalG/fatTotalG/carbsTotalG to deps,
+    // to keep the poll's simple stop condition working without re-creating it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   /* ------------------ Share / Save / Like / Cook ------------------ */
