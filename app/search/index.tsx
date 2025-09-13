@@ -9,6 +9,7 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,7 +21,7 @@ import RecipeCard from '../../components/RecipeCard';
 
 type SearchRow = { id: string; title: string; image: string | null; creator: string };
 
-// ⬇️ New pills list
+// ⬇️ Pills list
 const ALL_CHIPS = [
   '30 Min',
   'Vegan',
@@ -36,15 +37,15 @@ type Chip = typeof ALL_CHIPS[number];
 
 // conflict map (vegan vs any meat/seafood)
 const CONFLICTS: Record<Chip, Chip[]> = {
-  'Vegan': ['Chicken', 'Beef', 'Pork', 'Seafood'],
-  'Chicken': ['Vegan'],
-  'Beef': ['Vegan'],
-  'Pork': ['Vegan'],
-  'Seafood': ['Vegan'],
+  Vegan: ['Chicken', 'Beef', 'Pork', 'Seafood'],
+  Chicken: ['Vegan'],
+  Beef: ['Vegan'],
+  Pork: ['Vegan'],
+  Seafood: ['Vegan'],
   '30 Min': [],
   'Gluten-Free': [],
   'Dairy-Free': [],
-  'Pasta': [],
+  Pasta: [],
 };
 
 function filtersFromState(q: string, sel: Record<string, boolean>) {
@@ -167,22 +168,25 @@ export default function SearchScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Pills */}
-      <FlatList
+      {/* Pills (horizontally scrollable) */}
+      <ScrollView
         horizontal
-        contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingVertical: 8, gap: 8 }}
-        data={ALL_CHIPS as unknown as string[]}
-        keyExtractor={(x) => x}
         showsHorizontalScrollIndicator={false}
-        renderItem={({ item }) => {
+        contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingVertical: 8 }}
+      >
+        {ALL_CHIPS.map((item, idx) => {
           const active = !!sel[item];
           return (
-            <TouchableOpacity onPress={() => toggleChip(item as Chip)} style={[styles.chip, active && styles.chipActive]}>
+            <TouchableOpacity
+              key={item}
+              onPress={() => toggleChip(item)}
+              style={[styles.chip, active && styles.chipActive, { marginRight: idx === ALL_CHIPS.length - 1 ? 0 : 8 }]}
+            >
               <Text style={[styles.chipText, active && styles.chipTextActive]}>{item}</Text>
             </TouchableOpacity>
           );
-        }}
-      />
+        })}
+      </ScrollView>
 
       {/* Big Feed-style Cards */}
       <FlatList
