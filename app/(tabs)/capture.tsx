@@ -65,7 +65,7 @@ const SOFT_MIN_W = 360, SOFT_MIN_H = 360;
 const MIN_LOCAL_BYTES = 30_000;
 const IMPROVEMENT_FACTOR = 1.12;
 
-const FOCUS_Y_DEFAULT = 0.4;
+const FOCUS_Y_DEFAULT = 0.45;
 
 /* ---------------------------- small helpers ---------------------------- */
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
