@@ -1,28 +1,23 @@
 // app/(tabs)/capture.tsx
-// 🧒 "Like I'm 5" Guide:
-// - Tap Import ➜ HUD shows radar that spins smoothly by itself.
-// - If the picture fails, the Import button works again right away (we reset everything safely).
-// - HUD now has little glowing targets so it looks alive.
-// - TikTok still uses the super-reliable WebView snapper, and we gently fix tiny images.
+// 🧒 "Like I'm 5" guide:
+//
+// WHAT THIS SCREEN DOES
+// - Paste a link ➜ press Import.
+// - A smooth radar HUD spins on top while we work.
+// - For TikTok, we snap a reliable image with WebView.
+// - For the title, TikTok now uses: H1 ➜ JSON caption ➜ oEmbed ➜ embed meta (and we *ban* “TikTok — Make Your Day”).
+// - If anything fails, Import never gets stuck.
+//
+// 🔔 This version adds:
+//   1) H1-first title for TikTok pages
+//   2) Hard rejection of “TikTok — Make Your Day” (any punctuation/spacing)
+//   3) Keeps all prior capture/HUD fixes
 
 import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  TouchableWithoutFeedback,
-  Alert,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Image as RNImage,
-  Animated,
-  Easing,
-  Dimensions,
-  Modal,
-  StyleSheet,
+  View, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, Alert,
+  ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator,
+  Image as RNImage, Animated, Easing, Dimensions, Modal, StyleSheet,
 } from "react-native";
 
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -46,84 +41,61 @@ import TitleSnap from "@/lib/TitleSnap";
 
 import * as FileSystem from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
-
 import Svg, { Line, Circle } from "react-native-svg";
 
 /* ---------------------------- colors ---------------------------- */
 const COLORS = {
-  bg: "#0B1120",
-  card: "#111827",
-  sunken: "#1F2937",
-  text: "#E5E7EB",
-  sub: "#9CA3AF",
-  accent: "#60A5FA",
-  green: "#22c55e",
-  red: "#EF4444",
-  border: "#243042",
+  bg: "#0B1120", card: "#111827", sunken: "#1F2937",
+  text: "#E5E7EB", sub: "#9CA3AF", accent: "#60A5FA",
+  green: "#22c55e", red: "#EF4444", border: "#243042",
 };
 const MESSHALL_GREEN = "#2FAE66";
 
-/* ---------------------------- tuning knobs ---------------------------- */
+/* ---------------------------- timing & sizes ---------------------------- */
 const CAPTURE_DELAY_MS = 700;
 const BETWEEN_SHOTS_MS = 120;
 const SNAP_ATTEMPTS = 3;
-
-const MIN_IMG_W = 600;
-const MIN_IMG_H = 600;
-const SOFT_MIN_W = 360;
-const SOFT_MIN_H = 360;
-
-const MIN_LOCAL_BYTES = 30_000;
-const IMPROVEMENT_FACTOR = 1.12;
 
 const IMPORT_HARD_TIMEOUT_MS = 20000;
 const ATTEMPT_TIMEOUT_FIRST_MS = 8000;
 const ATTEMPT_TIMEOUT_SOFT_MS = 2200;
 
+const MIN_IMG_W = 600, MIN_IMG_H = 600;
+const SOFT_MIN_W = 360, SOFT_MIN_H = 360;
+const MIN_LOCAL_BYTES = 30_000;
+const IMPROVEMENT_FACTOR = 1.12;
+
 const FOCUS_Y_DEFAULT = 0.4;
 
-/* ---------------------------- helpers ---------------------------- */
+/* ---------------------------- small helpers ---------------------------- */
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return await Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
+}
 function extractFirstUrl(s: string): string | null {
   const m = (s || "").match(/https?:\/\/[^\s"'<>]+/i);
   return m ? m[0] : null;
 }
-async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return await Promise.race([
-    p,
-    new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms)),
-  ]);
+function ensureHttps(u: string) { return /^[a-z]+:\/\//i.test(u) ? u : `https://${u}`; }
+async function resolveFinalUrl(u: string) { try { const r = await fetch(u); if ((r as any)?.url) return (r as any).url as string; } catch {} return u; }
+function canonicalizeUrl(u: string): string {
+  try {
+    const raw = ensureHttps(u.trim());
+    const url = new URL(raw);
+    url.protocol = "https:"; url.hash = ""; url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+    const kill = ["fbclid", "gclid", "ref"];
+    for (const [k] of url.searchParams.entries()) if (k.toLowerCase().startsWith("utm_") || kill.includes(k)) url.searchParams.delete(k);
+    url.search = url.searchParams.toString() ? `?${url.searchParams.toString()}` : "";
+    if (url.pathname !== "/" && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
+    return url.toString();
+  } catch { return u.trim(); }
 }
 function isTikTokLike(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host === "www.tiktok.com" || host.endsWith(".tiktok.com") || host === "tiktok.com" || host === "vm.tiktok.com";
-  } catch {
-    return /tiktok\.com/i.test(url);
-  }
-}
-function isWeakTitle(t?: string | null) {
-  const s = (t || "").trim();
-  return !s || /^tiktok$/i.test(s) || (/\btiktok\b/i.test(s) && /make your day/i.test(s)) || /^\d{6,}$/.test(s) || s.length < 4;
-}
-type ImageSourceState =
-  | { kind: "none" }
-  | { kind: "url-og"; url: string; resolvedImageUrl: string }
-  | { kind: "picker"; localUri: string }
-  | { kind: "camera"; localUri: string };
-
-function ensureHttps(u: string) {
-  return /^[a-z]+:\/\//i.test(u) ? u : `https://${u}`;
+  try { const h = new URL(url).hostname.toLowerCase(); return h === "www.tiktok.com" || h.endsWith(".tiktok.com") || h === "tiktok.com" || h === "vm.tiktok.com"; }
+  catch { return /tiktok\.com/i.test(url); }
 }
 function extractTikTokIdFromUrl(u: string): string | null {
   const m = u.match(/\/(?:video|photo)\/(\d{6,})/);
   return m ? m[1] : null;
-}
-async function resolveFinalUrl(u: string) {
-  try {
-    const r = await fetch(u, { method: "GET" });
-    if ((r as any)?.url) return (r as any).url as string;
-  } catch {}
-  return u;
 }
 async function resolveTikTokEmbedUrl(rawUrl: string) {
   const start = ensureHttps(rawUrl.trim());
@@ -131,35 +103,210 @@ async function resolveTikTokEmbedUrl(rawUrl: string) {
   let id = extractTikTokIdFromUrl(final);
   if (!id) {
     try {
-      const res = await fetch(final);
-      const html = await res.text();
-      let m =
+      const html = await (await fetch(final)).text();
+      const m =
         html.match(/"videoId"\s*:\s*"(\d{6,})"/) ||
         html.match(/"itemId"\s*:\s*"(\d{6,})"/) ||
         html.match(/<link\s+rel="canonical"\s+href="https?:\/\/www\.tiktok\.com\/@[^\/]+\/(?:video|photo)\/(\d{6,})"/i);
       if (m) id = m[1];
     } catch {}
   }
-  return { embedUrl: id ? `https://www.tiktok.com/embed/v2/${id}` : null, finalUrl: final };
+  return { embedUrl: id ? `https://www.tiktok.com/embed/v2/${id}` : null, finalUrl: final, id };
 }
-function canonicalizeUrl(u: string): string {
-  try {
-    const raw = ensureHttps(u.trim());
-    const url = new URL(raw);
-    url.protocol = "https:";
-    url.hash = "";
-    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
-    const kill = ["fbclid", "gclid", "ref"];
-    for (const [k] of url.searchParams.entries()) {
-      if (k.toLowerCase().startsWith("utm_") || kill.includes(k)) url.searchParams.delete(k);
+
+/* ---------------------------- STRONG TITLE HELPERS ---------------------------- */
+// 🎯 GOAL: prefer TikTok H1 ➜ caption JSON ➜ oEmbed ➜ embed meta (never accept “TikTok — Make Your Day”).
+
+type JsonLike = Record<string, any>;
+
+function decodeEntities(s: string) {
+  return (s || "")
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+}
+function extractMetaContent(html: string, nameOrProp: string): string | null {
+  const re = new RegExp(`<meta[^>]+(?:property|name)=["']${nameOrProp}["'][^>]*content=["']([^"']+)["'][^>]*>`, "i");
+  const m = html.match(re);
+  return m?.[1]?.trim() || null;
+}
+function extractTagText(html: string, tag: "h1" | "title"): string | null {
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i");
+  const m = html.match(re);
+  if (!m) return null;
+  const txt = m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return txt || null;
+}
+function hostToBrand(host: string) {
+  const h = host.toLowerCase().replace(/^www\./, "");
+  if (h.includes("tiktok")) return "tiktok";
+  if (h.includes("foodnetwork")) return "food network";
+  if (h.includes("allrecipes")) return "allrecipes";
+  if (h.includes("youtube")) return "youtube";
+  if (h.includes("pinterest")) return "pinterest";
+  return h.split(".")[0];
+}
+function cleanTitle(raw: string, url: string) {
+  let s = decodeEntities((raw || "").trim());
+  const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  const brand = host ? hostToBrand(host) : "";
+  const splitters = [" | ", " - ", " • ", " — "];
+  for (const sp of splitters) {
+    const parts = s.split(sp);
+    if (parts.length > 1) {
+      const last = parts[parts.length - 1].trim().toLowerCase();
+      if (brand && (last === brand || last.includes(brand))) { s = parts.slice(0, -1).join(sp).trim(); break; }
     }
-    url.search = url.searchParams.toString() ? `?${url.searchParams.toString()}` : "";
-    if (url.pathname !== "/" && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
-    return url.toString();
-  } catch {
-    return u.trim();
   }
+  s = s.replace(/\s+[\-\|•—]\s*(tiktok|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
+  s = s.replace(/\b\(?video\)?\b\s*$/i, "").trim();
+  return s;
 }
+
+// 🚫 hard junk detector for “TikTok — Make Your Day”
+function isTikTokJunkTitle(s?: string | null) {
+  const t = (s || "").toLowerCase().replace(/[—–]/g, "-").replace(/\s+/g, " ").trim();
+  if (!t) return true;
+  if (t === "tiktok") return true;
+  if (t === "make your day") return true;
+  if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
+  if (t.includes("tiktok") && t.includes("make your day")) return true; // any combo = junk
+  return false;
+}
+
+// 🙅 general weak title check
+function isWeakTitle(t?: string | null) {
+  const s = (t || "").trim();
+  if (!s) return true;
+  if (isTikTokJunkTitle(s)) return true;
+  const lower = s.toLowerCase();
+  if (lower === "food network" || lower === "allrecipes" || lower === "youtube") return true;
+  if (s.length < 4) return true;
+  if (/^\d{6,}$/.test(s)) return true;
+  return false;
+}
+
+// 📱 use Safari-like UA so TikTok behaves
+async function fetchWithUA(url: string, ms = 7000, as: "json" | "text" = "text"): Promise<any> {
+  const headers: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+    "Accept": as === "json" ? "application/json,*/*" : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+  };
+  const res = (await withTimeout(fetch(url, { headers }), ms)) as unknown as Response;
+  if (!res.ok) throw new Error(`http ${res.status}`);
+  return as === "json" ? res.json() : res.text();
+}
+
+// A) TikTok oEmbed (can be great, but we still filter junk)
+async function getTikTokOEmbedTitle(url: string): Promise<string | null> {
+  try {
+    const j: JsonLike = await fetchWithUA(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, 7000, "json");
+    const t = j?.title && String(j.title).trim();
+    return t && !isTikTokJunkTitle(t) ? t : null;
+  } catch { return null; }
+}
+
+// B) TikTok embed page meta (og/twitter), still filtered
+async function getTikTokEmbedTitle(id: string, canonicalUrlForClean: string) {
+  try {
+    const html = (await fetchWithUA(`https://www.tiktok.com/embed/v2/${id}`, 7000, "text")) as string;
+    const cand = extractMetaContent(html, "og:title") || extractMetaContent(html, "twitter:title");
+    if (!cand) return null;
+    const clean = cleanTitle(cand, canonicalUrlForClean);
+    return !isTikTokJunkTitle(clean) && !isWeakTitle(clean) ? clean : null;
+  } catch { return null; }
+}
+
+// C) TikTok main page: H1 FIRST ➜ JSON desc ➜ (no <title> fallback here)
+function unescapeJsonString(s: string) {
+  return s.replace(/\\u([\dA-Fa-f]{4})/g, (_, g1) => String.fromCharCode(parseInt(g1, 16))).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+}
+async function getTikTokFromMainPage(canonicalUrl: string): Promise<string | null> {
+  try {
+    const html = (await fetchWithUA(canonicalUrl, 8000, "text")) as string;
+
+    // 🟢 1) H1 wins (user specifically asked for H1)
+    const h1 = extractTagText(html, "h1");
+    if (h1) {
+      const clean = cleanTitle(h1, canonicalUrl);
+      if (!isTikTokJunkTitle(clean) && !isWeakTitle(clean)) return clean;
+    }
+
+    // 🟢 2) JSON caption (SIGI_STATE → ItemModule → desc)
+    const match = html.match(/"ItemModule"\s*:\s*\{[\s\S]*?"(\d{6,})"\s*:\s*\{[\s\S]*?"desc"\s*:\s*"([^"]*?)"/);
+    const raw = match?.[2];
+    if (raw) {
+      const desc = unescapeJsonString(raw).trim();
+      if (desc) {
+        const clean = cleanTitle(desc, canonicalUrl);
+        if (!isTikTokJunkTitle(clean) && !isWeakTitle(clean)) return clean;
+      }
+    }
+
+    // 🟡 3) og:description/twitter:description (sometimes holds caption)
+    const ogd = extractMetaContent(html, "og:description") || extractMetaContent(html, "twitter:description");
+    if (ogd) {
+      const clean = cleanTitle(ogd, canonicalUrl);
+      if (!isTikTokJunkTitle(clean) && !isWeakTitle(clean)) return clean;
+    }
+
+    // ❌ we *do not* use <title> for TikTok to avoid “Make Your Day”.
+    return null;
+  } catch { return null; }
+}
+
+// 🥇 Best title chooser
+async function getBestTitle(url: string): Promise<string | null> {
+  const u = ensureHttps(url);
+
+  if (isTikTokLike(u)) {
+    const { finalUrl, id } = await resolveTikTokEmbedUrl(u);
+    const canonical = finalUrl || u;
+
+    // Order: H1/JSON ➜ oEmbed ➜ embed meta
+    const fromMain = await getTikTokFromMainPage(canonical);
+    if (fromMain) return fromMain;
+
+    const fromOembed = await getTikTokOEmbedTitle(canonical);
+    if (fromOembed) return cleanTitle(fromOembed, canonical);
+
+    if (id) {
+      const fromEmbed = await getTikTokEmbedTitle(id, canonical);
+      if (fromEmbed) return fromEmbed;
+    }
+
+    return null; // never return the junk
+  }
+
+  // Non-TikTok: usual suspects
+  try {
+    const html = (await fetchWithUA(u, 7000, "text")) as string;
+    const host = (() => { try { return new URL(u).hostname; } catch { return ""; } })();
+    const cands: string[] = [];
+    const og = extractMetaContent(html, "og:title"); if (og) cands.push(og);
+    const tw = extractMetaContent(html, "twitter:title"); if (tw) cands.push(tw);
+    const h1 = extractTagText(html, "h1"); if (h1) cands.push(h1);
+    const tt = extractTagText(html, "title"); if (tt) cands.push(tt);
+
+    const seen = new Set<string>();
+    const cleaned = cands
+      .map((x) => cleanTitle(x, u))
+      .map((x) => decodeEntities(x))
+      .filter((x) => x && !seen.has(x) && !isWeakTitle(x) && x.length >= 4 && x.length <= 140 && x.toLowerCase() !== hostToBrand(host))
+      .filter((x) => { seen.add(x); return true; });
+
+    if (!cleaned.length) return null;
+
+    const score = (s: string) => { const len = s.length, words = s.split(/\s+/).length;
+      let sc = 0; if (len >= 6 && len <= 90) sc += 5; sc += Math.min(words, 8);
+      if (/[A-Z]/.test(s) && /[a-z]/.test(s)) sc += 2; if (/[|–—\-•]/.test(s)) sc -= 2; return sc; };
+    cleaned.sort((a, b) => score(b) - score(a));
+    return cleaned[0] || null;
+  } catch { return null; }
+}
+
+/* ---------------------------- duplicate detection ---------------------------- */
 async function buildDuplicateCandidatesFromRaw(raw: string): Promise<string[]> {
   const ensured = ensureHttps(raw.trim());
   const finalResolved = await resolveFinalUrl(ensured);
@@ -168,8 +315,7 @@ async function buildDuplicateCandidatesFromRaw(raw: string): Promise<string[]> {
     const { finalUrl } = await resolveTikTokEmbedUrl(finalResolved);
     if (finalUrl) tiktokFinal = finalUrl;
   }
-  const candidates = [ensured, finalResolved, tiktokFinal, canonicalizeUrl(ensured), canonicalizeUrl(finalResolved), canonicalizeUrl(tiktokFinal)]
-    .filter(Boolean) as string[];
+  const candidates = [ensured, finalResolved, tiktokFinal, canonicalizeUrl(ensured), canonicalizeUrl(finalResolved), canonicalizeUrl(tiktokFinal)].filter(Boolean) as string[];
   return Array.from(new Set(candidates));
 }
 async function checkDuplicateSourceUrl(rawUrl: string): Promise<boolean> {
@@ -179,134 +325,58 @@ async function checkDuplicateSourceUrl(rawUrl: string): Promise<boolean> {
     const { data, error } = await supabase.from("recipes").select("id, title, source_url").in("source_url", candidates).limit(1);
     if (error) return false;
     return !!(data && data.length);
-  } catch {
-    return false;
-  }
-}
-function decodeEntities(s: string) {
-  return s
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
-}
-async function fetchTitleQuick(url: string): Promise<string | null> {
-  try {
-    const res = await withTimeout(fetch(url), 6000);
-    const html = await res.text();
-    const m1 =
-      html.match(/<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']/i) ||
-      html.match(/<meta[^>]+name=["']title["'][^>]*content=["']([^"']+)["']/i);
-    const m2 = html.match(/<title[^>]*>([^<]{3,160})<\/title>/i);
-    const candidate = decodeEntities((m1?.[1] || m2?.[1] || "").trim());
-    return candidate || null;
-  } catch {
-    return null;
-  }
-}
-async function fetchTikTokOEmbedTitle(url: string): Promise<string | null> {
-  try {
-    const { finalUrl } = await resolveTikTokEmbedUrl(url);
-    const target = finalUrl || url;
-    const o = await withTimeout(fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(target)}`), 5000);
-    if (!o.ok) return null;
-    const j = await o.json();
-    const t: string | undefined = j?.title;
-    return (t && t.trim()) || null;
-  } catch {
-    return null;
-  }
+  } catch { return false; }
 }
 
-/* ---------------------------- tiny anim helpers ---------------------------- */
+/* ---------------------------- HUD (smooth & independent) ---------------------------- */
 function useLoop(duration = 1200, delay = 0) {
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.delay(delay),
-        Animated.timing(v, { toValue: 1, duration: duration / 2, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-        Animated.timing(v, { toValue: 0, duration: duration / 2, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
+    const loop = Animated.loop(Animated.sequence([
+      Animated.delay(delay),
+      Animated.timing(v, { toValue: 1, duration: duration / 2, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.timing(v, { toValue: 0, duration: duration / 2, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+    ]));
+    loop.start(); return () => loop.stop();
   }, [v, duration, delay]);
   return v;
 }
 function useBlipAnims(count: number, baseDelay = 220) {
   const animsRef = useRef<Animated.Value[]>([]);
-  if (animsRef.current.length !== count) {
-    animsRef.current = Array.from({ length: count }, () => new Animated.Value(0));
-  }
+  if (animsRef.current.length !== count) animsRef.current = Array.from({ length: count }, () => new Animated.Value(0));
   useEffect(() => {
-    // 🛠 FIX: run forever, not tied to steps
     const loops = animsRef.current.map((v, i) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(i * baseDelay),
-          Animated.timing(v, { toValue: 1, duration: 800, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-          Animated.timing(v, { toValue: 0, duration: 800, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-          Animated.delay(300),
-        ])
-      )
+      Animated.loop(Animated.sequence([
+        Animated.delay(i * baseDelay),
+        Animated.timing(v, { toValue: 1, duration: 800, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        Animated.timing(v, { toValue: 0, duration: 800, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+        Animated.delay(300),
+      ]))
     );
-    loops.forEach((l) => l.start());
-    return () => loops.forEach((l) => l.stop());
+    loops.forEach((l) => l.start()); return () => loops.forEach((l) => l.stop());
   }, [count, baseDelay]);
   return animsRef.current;
 }
 function useSpin(duration = 1800) {
-  // 🛠 FIX: spin is created once and never reset (smooth sweep)
   const v = useRef<Animated.Value | null>(null);
   if (!v.current) v.current = new Animated.Value(0);
   useEffect(() => {
     const loop = Animated.loop(Animated.timing(v.current!, { toValue: 1, duration, easing: Easing.linear, useNativeDriver: true }));
-    loop.start();
-    return () => loop.stop();
+    loop.start(); return () => loop.stop();
   }, [duration]);
   const deg = v.current!.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
   return { transform: [{ rotate: deg }] } as const;
 }
 
-/* ---------------------------- HUD overlay ---------------------------- */
 const { width: SCREEN_W } = Dimensions.get("window");
 const RADAR_SIZE = Math.min(SCREEN_W * 0.8, 340);
-const BLIP_COUNT = 7; // a few sweet dots
+const BLIP_COUNT = 7;
 type HUDPhase = "scanning" | "acquired";
 
-function MilitaryImportOverlay({
-  visible,
-  phase = "scanning",
-  stageIndex,
-  steps = ["Importing photo", "Reading title", "Parsing ingredients", "Parsing steps"],
-  headline = "SCANNING… STAND BY",
-}: {
-  visible: boolean;
-  phase?: HUDPhase;
-  stageIndex: number;
-  steps?: string[];
-  headline?: string;
-}) {
-  const spinStyle = useSpin(2000); // 🛠 FIX: runs smoothly on its own
+function MilitaryImportOverlay({ visible, phase = "scanning", stageIndex, steps = ["Importing photo", "Reading title", "Parsing ingredients", "Parsing steps"], headline = "SCANNING… STAND BY" }: { visible: boolean; phase?: HUDPhase; stageIndex: number; steps?: string[]; headline?: string; }) {
+  const spinStyle = useSpin(2000);
   const centerPulse = useLoop(1400, 0);
   const blipAnims = useBlipAnims(BLIP_COUNT, 200);
-
-  // make random target positions once (so they don't hop)
-  const blipPositions = useMemo(() => {
-    const arr: { x: number; y: number }[] = [];
-    for (let i = 0; i < BLIP_COUNT; i++) {
-      const r = (RADAR_SIZE / 2) * (0.22 + Math.random() * 0.68);
-      const theta = Math.random() * Math.PI * 2;
-      const x = RADAR_SIZE / 2 + r * Math.cos(theta);
-      const y = RADAR_SIZE / 2 + r * Math.sin(theta);
-      arr.push({ x, y });
-    }
-    return arr;
-  }, []);
-
   const progressPct = Math.max(0, Math.min(stageIndex / steps.length, 1)) * 100;
 
   const acquiredAnim = useRef(new Animated.Value(0)).current;
@@ -332,7 +402,6 @@ function MilitaryImportOverlay({
 
           {/* radar */}
           <View style={hudStyles.radarWrap}>
-            {/* rings + crosshair */}
             <Svg width={RADAR_SIZE} height={RADAR_SIZE}>
               <Circle cx={RADAR_SIZE / 2} cy={RADAR_SIZE / 2} r={RADAR_SIZE * 0.48} stroke="rgba(47,174,102,0.18)" strokeWidth={1} fill="none" />
               <Circle cx={RADAR_SIZE / 2} cy={RADAR_SIZE / 2} r={RADAR_SIZE * 0.34} stroke="rgba(47,174,102,0.18)" strokeWidth={1} fill="none" />
@@ -341,44 +410,28 @@ function MilitaryImportOverlay({
               <Line x1={RADAR_SIZE / 2} y1={RADAR_SIZE * 0.1} x2={RADAR_SIZE / 2} y2={RADAR_SIZE * 0.9} stroke="rgba(47,174,102,0.18)" strokeWidth={1} />
             </Svg>
 
-            {/* 🛠 FIX: smooth sweeping beam (independent of steps) */}
+            {/* smooth sweep */}
             <Animated.View style={[hudStyles.beamPivot, spinStyle]}>
               <View style={hudStyles.beamArm} />
               <View style={hudStyles.beamGlow} />
             </Animated.View>
 
-            {/* 🛠 FIX: add targets */}
-            {blipPositions.map((pos, i) => {
+            {/* glowing targets */}
+            {Array.from({ length: BLIP_COUNT }).map((_, i) => {
+              const r = (RADAR_SIZE / 2) * (0.22 + (i / BLIP_COUNT) * 0.65);
+              const theta = (Math.PI * 2 * (i + 1)) / BLIP_COUNT;
+              const x = RADAR_SIZE / 2 + r * Math.cos(theta);
+              const y = RADAR_SIZE / 2 + r * Math.sin(theta);
               const a = blipAnims[i % blipAnims.length];
               const scale = a.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1.4] });
               const opacity = a.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] });
-              return (
-                <Animated.View
-                  key={`blip-${i}`}
-                  style={{
-                    position: "absolute",
-                    left: pos.x - 6,
-                    top: pos.y - 6,
-                    width: 12,
-                    height: 12,
-                    borderRadius: 6,
-                    backgroundColor: "rgba(47,174,102,0.9)",
-                    opacity,
-                    transform: [{ scale }],
-                  }}
-                />
-              );
+              return (<Animated.View key={`blip-${i}`} style={{ position: "absolute", left: x - 6, top: y - 6, width: 12, height: 12, borderRadius: 6, backgroundColor: "rgba(47,174,102,0.9)", opacity, transform: [{ scale }] }} />);
             })}
 
-            {/* pulsing center dot */}
-            <Animated.View
-              style={[
-                hudStyles.centerDot,
-                { transform: [{ scale: centerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.2] }) }] },
-              ]}
-            />
+            {/* center pulse */}
+            <Animated.View style={[hudStyles.centerDot, { transform: [{ scale: centerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.2] }) }] }]} />
 
-            {/* acquired badge */}
+            {/* acquired flash */}
             {phase === "acquired" && (
               <Animated.View style={[hudStyles.acquiredWrap, { opacity: acquiredOpacity, transform: [{ scale: acquiredScale }] }]}>
                 <Text style={hudStyles.acquiredText}>TARGET ACQUIRED</Text>
@@ -386,20 +439,13 @@ function MilitaryImportOverlay({
             )}
           </View>
 
-          {/* steps + progress */}
+          {/* steps */}
           <View style={[hudStyles.stepsBox, phase === "acquired" && { opacity: 0.5 }]}>
             {steps.map((label, i) => {
-              const done = i < stageIndex;
-              const active = i === stageIndex;
+              const done = i < stageIndex, active = i === stageIndex;
               return (
                 <View key={label} style={hudStyles.stepRow}>
-                  <View
-                    style={[
-                      hudStyles.checkbox,
-                      done && { backgroundColor: "rgba(46,204,113,0.2)", borderColor: MESSHALL_GREEN },
-                      active && { borderColor: "#a7f3d0" },
-                    ]}
-                  >
+                  <View style={[hudStyles.checkbox, done && { backgroundColor: "rgba(46,204,113,0.2)", borderColor: MESSHALL_GREEN }, active && { borderColor: "#a7f3d0" }]}>
                     {done ? <Text style={{ color: "#a7f3d0", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: MESSHALL_GREEN, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
                   </View>
                   <Text style={[hudStyles.stepText, done && { color: "#a7f3d0" }, active && { color: "#e2e8f0", fontWeight: "600" }]}>{label}</Text>
@@ -407,16 +453,12 @@ function MilitaryImportOverlay({
               );
             })}
           </View>
-
-          <View style={hudStyles.progressOuter}>
-            <View style={[hudStyles.progressInner, { width: `${progressPct}%` }]} />
-          </View>
+          <View style={hudStyles.progressOuter}><View style={[hudStyles.progressInner, { width: `${progressPct}%` }]} /></View>
         </View>
       </View>
     </Modal>
   );
 }
-
 const hudStyles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.65)", alignItems: "center", justifyContent: "center", padding: 16 },
   card: { width: "100%", maxWidth: 540, backgroundColor: COLORS.bg, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: "rgba(147,197,114,0.15)" },
@@ -436,16 +478,8 @@ const hudStyles = StyleSheet.create({
   progressInner: { height: "100%", backgroundColor: MESSHALL_GREEN },
 });
 
-/* ---------------------------- abort popup ---------------------------- */
-function MissionAbortedPopup({
-  visible,
-  text = "MISSION ABORTED",
-  onRequestClose,
-}: {
-  visible: boolean;
-  text?: string;
-  onRequestClose: () => void;
-}) {
+/* ---------------------------- duplicate popup ---------------------------- */
+function MissionAbortedPopup({ visible, text = "MISSION ABORTED", onRequestClose }: { visible: boolean; text?: string; onRequestClose: () => void; }) {
   const opacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.9)).current;
   useEffect(() => {
@@ -480,14 +514,10 @@ const abortStyles = StyleSheet.create({
   pillText: { color: COLORS.red, fontSize: 18, fontWeight: "900", letterSpacing: 1.2, textAlign: "center" },
 });
 
-/* ---------------------------- image fixer ---------------------------- */
+/* ---------------------------- image helpers ---------------------------- */
 async function getLocalDimensions(uri: string): Promise<{ w: number; h: number }> {
-  try {
-    const r = await ImageManipulator.manipulateAsync(uri, [], { compress: 0, format: ImageManipulator.SaveFormat.JPEG });
-    return { w: r.width ?? 0, h: r.height ?? 0 };
-  } catch {
-    return { w: 0, h: 0 };
-  }
+  try { const r = await ImageManipulator.manipulateAsync(uri, [], { compress: 0, format: ImageManipulator.SaveFormat.JPEG }); return { w: r.width ?? 0, h: r.height ?? 0 }; }
+  catch { return { w: 0, h: 0 }; }
 }
 async function ensureMinLocalImage(uri: string, wantW = MIN_IMG_W, wantH = MIN_IMG_H): Promise<string | null> {
   const { w, h } = await getLocalDimensions(uri);
@@ -495,19 +525,22 @@ async function ensureMinLocalImage(uri: string, wantW = MIN_IMG_W, wantH = MIN_I
   if (w >= wantW && h >= wantH) return uri;
   if (w >= SOFT_MIN_W && h >= SOFT_MIN_H) {
     const scale = Math.max(wantW / w, wantH / h);
-    const newW = Math.round(w * scale);
-    const newH = Math.round(h * scale);
+    const newW = Math.round(w * scale), newH = Math.round(h * scale);
     try {
       const out = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: newW, height: newH } }], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG });
       return out.uri || null;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
   return null;
 }
 
-/* ---------------------------- main screen ---------------------------- */
+/* ---------------------------- screen ---------------------------- */
+type ImageSourceState =
+  | { kind: "none" }
+  | { kind: "url-og"; url: string; resolvedImageUrl: string }
+  | { kind: "picker"; localUri: string }
+  | { kind: "camera"; localUri: string };
+
 export default function CaptureScreen() {
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
@@ -517,11 +550,12 @@ export default function CaptureScreen() {
   const [steps, setSteps] = useState<string[]>([""]);
   const [img, setImg] = useState<ImageSourceState>({ kind: "none" });
 
-  // HUD
+  // HUD and flow
   const [hudVisible, setHudVisible] = useState(false);
   const [hudPhase, setHudPhase] = useState<HUDPhase>("scanning");
-
-  // saving spinner
+  const IMPORT_STEPS = ["Importing photo", "Reading title", "Parsing ingredients", "Parsing steps"];
+  const [stageIndex, setStageIndex] = useState(0);
+  const bumpStage = useCallback((n: number) => setStageIndex((s) => (n > s ? n : s)), []);
   const [saving, setSaving] = useState(false);
 
   // TikTok snapper
@@ -531,18 +565,18 @@ export default function CaptureScreen() {
   const [snapResnapKey, setSnapResnapKey] = useState(0);
   const [improvingSnap, setImprovingSnap] = useState(false);
 
-  // TitleSnap
+  // TitleSnap (optional, last-resort)
   const [titleSnapVisible, setTitleSnapVisible] = useState(false);
   const [queuedTitleSnapUrl, setQueuedTitleSnapUrl] = useState<string | null>(null);
 
-  // import flow
+  // import control
   const [pendingImportUrl, setPendingImportUrl] = useState<string | null>(null);
   const [abortVisible, setAbortVisible] = useState(false);
 
+  // refs
   const snapResolverRef = useRef<null | ((uri: string) => void)>(null);
   const snapRejectRef = useRef<null | ((e: any) => void)>(null);
   const snapCancelledRef = useRef(false);
-
   const importRunIdRef = useRef(0);
   const gotSomethingForRunRef = useRef(false);
   const lastResolvedUrlRef = useRef<string>("");
@@ -553,7 +587,6 @@ export default function CaptureScreen() {
     if (uri.startsWith("file://")) return await getLocalDimensions(uri);
     return await new Promise<{ w: number; h: number }>((ok) => RNImage.getSize(uri, (w, h) => ok({ w, h }), () => ok({ w: 0, h: 0 })));
   }, []);
-
   const validateOrRepairLocal = useCallback(async (uri: string): Promise<string | null> => {
     try {
       const info = await FileSystem.getInfoAsync(uri);
@@ -562,13 +595,9 @@ export default function CaptureScreen() {
         if (!resaved?.uri) return null;
         uri = resaved.uri;
       }
-    } catch {
-      return null;
-    }
-    const fixed = await ensureMinLocalImage(uri, MIN_IMG_W, MIN_IMG_H);
-    return fixed;
+    } catch { return null; }
+    return await ensureMinLocalImage(uri, MIN_IMG_W, MIN_IMG_H);
   }, []);
-
   const isValidCandidate = useCallback(async (uri: string): Promise<{ ok: boolean; useUri?: string }> => {
     if (!uri) return { ok: false };
     if (uri.startsWith("file://")) {
@@ -596,10 +625,6 @@ export default function CaptureScreen() {
     return "";
   }, [img]);
 
-  const IMPORT_STEPS = ["Importing photo", "Reading title", "Parsing ingredients", "Parsing steps"];
-  const [stageIndex, setStageIndex] = useState(0);
-  const bumpStage = useCallback((n: number) => setStageIndex((s) => (n > s ? n : s)), []);
-
   const setGoodPreview = useCallback((uri: string, originUrl: string) => {
     bumpStage(1);
     if (uri.startsWith("http")) setImg({ kind: "url-og", url: originUrl, resolvedImageUrl: uri });
@@ -618,7 +643,6 @@ export default function CaptureScreen() {
     if (b.w * b.h > a.w * a.h * IMPROVEMENT_FACTOR) setGoodPreview(test.useUri, originUrl);
   }, [currentPreviewUri, getImageDims, isValidCandidate, setGoodPreview]);
 
-  // 🛠 FIX: hard reset so Import can be tapped again (clears any stuck overlays/locks)
   const hardResetImport = useCallback(() => {
     snapCancelledRef.current = false;
     snapResolverRef.current = null;
@@ -633,8 +657,6 @@ export default function CaptureScreen() {
     setStageIndex(0);
   }, []);
 
-  // ⬇️ Removed the old “bump HUD layer” key logic so the beam stays smooth.
-
   useEffect(() => {
     if (hudVisible && pendingImportUrl) {
       const url = pendingImportUrl;
@@ -644,7 +666,7 @@ export default function CaptureScreen() {
         await startImport(url);
       })();
     }
-  }, [hudVisible, pendingImportUrl]); // do not add other deps
+  }, [hudVisible, pendingImportUrl]);
 
   const autoSnapTikTok = useCallback(async (rawUrl: string, maxAttempts = SNAP_ATTEMPTS) => {
     const { embedUrl, finalUrl } = await resolveTikTokEmbedUrl(rawUrl);
@@ -657,11 +679,9 @@ export default function CaptureScreen() {
     setImprovingSnap(true);
 
     let best: string | null = null;
-
     for (let i = 1; i <= maxAttempts; i++) {
       if (snapCancelledRef.current) break;
-      if (i === 1) setSnapReloadKey((k) => k + 1);
-      else setSnapResnapKey((k) => k + 1);
+      if (i === 1) setSnapReloadKey((k) => k + 1); else setSnapResnapKey((k) => k + 1);
 
       const attemptPromise: Promise<string | null> = new Promise((resolve, reject) => {
         snapResolverRef.current = (uri) => resolve(uri);
@@ -676,18 +696,10 @@ export default function CaptureScreen() {
         const fixed = await validateOrRepairLocal(winner);
         if (fixed) {
           const dims = await getImageDims(fixed);
-          if (dims.w >= MIN_IMG_W && dims.h >= MIN_IMG_H) {
-            setGoodPreview(fixed, lastResolvedUrlRef.current);
-            best = fixed;
-            break;
-          }
+          if (dims.w >= MIN_IMG_W && dims.h >= MIN_IMG_H) { setGoodPreview(fixed, lastResolvedUrlRef.current); best = fixed; break; }
         }
         const test = await isValidCandidate(winner);
-        if (test.ok && test.useUri) {
-          setGoodPreview(test.useUri, lastResolvedUrlRef.current);
-          best = test.useUri;
-          break;
-        }
+        if (test.ok && test.useUri) { setGoodPreview(test.useUri, lastResolvedUrlRef.current); best = test.useUri; break; }
       }
       if (snapCancelledRef.current) break;
       await new Promise((r) => setTimeout(r, BETWEEN_SHOTS_MS));
@@ -718,7 +730,6 @@ export default function CaptureScreen() {
     const watchdog = setTimeout(() => {
       if (importRunIdRef.current !== runId) return;
       if (!gotSomethingForRunRef.current) {
-        // 🛠 FIX: ensure everything is fully closed so Import is tappable again
         hardResetImport();
         Alert.alert("Import took too long", "We tried our best. You can try again.");
       }
@@ -728,14 +739,17 @@ export default function CaptureScreen() {
     try {
       lastResolvedUrlRef.current = url;
 
-      fetchTitleQuick(url).then((t) => t && setTitle((prev) => (isWeakTitle(prev) ? t : prev))).catch(() => {});
-      if (isTikTokLike(url)) fetchTikTokOEmbedTitle(url).then((t) => t && setTitle((prev) => (isWeakTitle(prev) ? t : prev))).catch(() => {});
+      // 🟢 Get best title (H1-first for TikTok). Runs fine behind HUD.
+      const best = await getBestTitle(url);
+      if (best && isWeakTitle(title)) setTitle(best);
 
+      // 🟢 TikTok image via WebView
       if (isTikTokLike(url)) {
         const shot = await autoSnapTikTok(url, SNAP_ATTEMPTS);
         if (shot) success = true;
       }
 
+      // 🟢 Meta for ingredients/steps & image fallbacks
       const metaP = fetchMeta(url);
       const ogP = fetchOgForUrl(url);
       setStageIndex((s) => Math.max(s, 2));
@@ -744,9 +758,11 @@ export default function CaptureScreen() {
       const meta = metaRes.status === "fulfilled" ? metaRes.value : null;
       const og   = ogRes.status === "fulfilled" ? ogRes.value   : null;
 
-      const candT = (meta?.title || og?.title || "").trim();
-      if (candT) setTitle((prev) => (isWeakTitle(prev) ? candT : prev));
+      // Only update title if still weak and the candidate is not junk
+      const candidate = cleanTitle((meta?.title || og?.title || ""), url);
+      if (candidate && !isTikTokJunkTitle(candidate) && isWeakTitle(title)) setTitle(candidate);
 
+      // ingredients
       if (meta?.ingredients?.length) {
         const parsed = normalizeIngredientLines(meta.ingredients);
         const canon = parsed.map((p) => p.canonical).filter(Boolean);
@@ -756,9 +772,12 @@ export default function CaptureScreen() {
         if (guess.length) setIngredients(guess);
       }
       setStageIndex((s) => Math.max(s, 3));
+
+      // steps
       if (meta?.steps?.length) setSteps(meta.steps.filter(Boolean));
       setStageIndex((s) => Math.max(s, 4));
 
+      // image fallback
       if (!success && !gotSomethingForRunRef.current) {
         let used = false;
         if (meta?.image) used = await tryImageUrl(meta.image, url);
@@ -775,22 +794,18 @@ export default function CaptureScreen() {
       Alert.alert("Import error", e?.message || "Could not read that webpage.");
     } finally {
       clearTimeout(watchdog);
-
       if (success || gotSomethingForRunRef.current) {
         setHudPhase("acquired");
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         await new Promise((r) => setTimeout(r, 800));
       }
-
-      // 🛠 FIX: always close everything so Import is free to be tapped again
       setHudVisible(false);
       setTitleSnapVisible(false);
       setSnapVisible(false);
     }
-  }, [autoSnapTikTok, tryImageUrl, hardResetImport]);
+  }, [autoSnapTikTok, tryImageUrl, title, hardResetImport]);
 
   const resolveOg = useCallback(async (raw: string) => {
-    // 🛠 FIX: clean up any stuck overlays BEFORE starting new import
     hardResetImport();
 
     const url = extractFirstUrl(raw?.trim() || "");
@@ -811,6 +826,7 @@ export default function CaptureScreen() {
     setHudPhase("scanning");
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
+    // optional visual title helper
     if (isTikTokLike(url) && isWeakTitle(title)) {
       setQueuedTitleSnapUrl(url);
       setTitleSnapVisible(true);
@@ -821,36 +837,26 @@ export default function CaptureScreen() {
       setSnapVisible(true);
     }
 
-    // IMPORTANT: open HUD last so it sits on top; we don't remount it afterwards.
     setHudVisible(true);
     setPendingImportUrl(url);
   }, [title, hardResetImport]);
 
-  const onPaste = useCallback(async () => {
-    const t = await Clipboard.getStringAsync();
-    if (t) setPastedUrl(t.trim());
-  }, []);
-
+  // UI helpers
+  const onPaste = useCallback(async () => { const t = await Clipboard.getStringAsync(); if (t) setPastedUrl(t.trim()); }, []);
   const pickOrCamera = useCallback(async () => {
     Alert.alert("Add Photo", "Choose where to get your picture", [
-      {
-        text: "Camera",
-        onPress: async () => {
+      { text: "Camera", onPress: async () => {
           const { status } = await ImagePicker.requestCameraPermissionsAsync();
           if (status !== "granted") return Alert.alert("Camera permission is required.");
           const r = await ImagePicker.launchCameraAsync({ quality: 0.92, allowsEditing: true, aspect: [4, 3] });
           if (!r.canceled && r.assets?.[0]?.uri) setImg({ kind: "camera", localUri: r.assets[0].uri });
-        },
-      },
-      {
-        text: "Gallery",
-        onPress: async () => {
+        } },
+      { text: "Gallery", onPress: async () => {
           const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
           if (status !== "granted") return Alert.alert("Photo permission is required.");
           const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.92, allowsEditing: true, aspect: [4, 3] });
           if (!r.canceled && r.assets?.[0]?.uri) setImg({ kind: "picker", localUri: r.assets[0].uri });
-        },
-      },
+        } },
       { text: "Cancel", style: "cancel" },
     ]);
   }, []);
@@ -891,9 +897,7 @@ export default function CaptureScreen() {
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("Save failed", e?.message ?? "Please try again.");
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   }, [title, timeMinutes, servings, ingredients, steps, previewUri]);
 
   const renderRightActions = (onDelete: () => void) => (
@@ -905,21 +909,11 @@ export default function CaptureScreen() {
   );
 
   const resetForm = useCallback(() => {
-    setPastedUrl("");
-    setTitle("");
-    setTimeMinutes("");
-    setServings("");
-    setIngredients([""]);
-    setSteps([""]);
-    setImg({ kind: "none" });
+    setPastedUrl(""); setTitle(""); setTimeMinutes(""); setServings("");
+    setIngredients([""]); setSteps([""]); setImg({ kind: "none" });
     hardResetImport();
   }, [hardResetImport]);
-
-  useFocusEffect(
-    useCallback(() => {
-      return () => { resetForm(); };
-    }, [resetForm])
-  );
+  useFocusEffect(useCallback(() => { return () => { resetForm(); }; }, [resetForm]));
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "bottom"]}>
@@ -929,15 +923,9 @@ export default function CaptureScreen() {
 
           {/* Title */}
           <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
-          <TextInput
-            value={title}
-            onChangeText={setTitle}
-            placeholder="My Tasty Pizza"
-            placeholderTextColor="#64748b"
-            style={{ color: "white", backgroundColor: COLORS.sunken, borderRadius: 12, padding: 12, marginBottom: 12 }}
-          />
+          <TextInput value={title} onChangeText={setTitle} placeholder="My Tasty Pizza" placeholderTextColor="#64748b" style={{ color: "white", backgroundColor: COLORS.sunken, borderRadius: 12, padding: 12, marginBottom: 12 }} />
 
-          {/* Import box */}
+          {/* Import */}
           <View style={{ backgroundColor: COLORS.card, borderRadius: 14, borderColor: COLORS.border, borderWidth: 1, padding: 12, marginBottom: 12 }}>
             <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Import from a link (YouTube/TikTok/blog)…</Text>
             <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -950,42 +938,29 @@ export default function CaptureScreen() {
                 autoCorrect={false}
                 style={{ flex: 1, color: COLORS.text, backgroundColor: COLORS.sunken, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, marginRight: 8 }}
               />
-              <TouchableOpacity
-                onPress={onPaste}
-                disabled={hudVisible}
-                style={{ backgroundColor: COLORS.sunken, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, marginRight: 8, opacity: hudVisible ? 0.6 : 1 }}
-              >
+              <TouchableOpacity onPress={onPaste} disabled={hudVisible} style={{ backgroundColor: COLORS.sunken, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, marginRight: 8, opacity: hudVisible ? 0.6 : 1 }}>
                 <Text style={{ color: COLORS.text, fontWeight: "600" }}>Paste</Text>
               </TouchableOpacity>
-
-              {/* 🛠 FIX: This button is only disabled while HUD is showing.
-                  We also hard-reset before each run so you can tap again if last try failed. */}
-              <TouchableOpacity
-                onPress={() => resolveOg(pastedUrl)}
-                disabled={hudVisible}
-                style={{ backgroundColor: COLORS.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, opacity: hudVisible ? 0.6 : 1 }}
-              >
+              <TouchableOpacity onPress={() => resolveOg(pastedUrl)} disabled={hudVisible} style={{ backgroundColor: COLORS.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, opacity: hudVisible ? 0.6 : 1 }}>
                 <Text style={{ color: "#0B1120", fontWeight: "700" }}>{hudVisible ? "Importing…" : "Import"}</Text>
               </TouchableOpacity>
             </View>
 
             {/* Preview */}
             <View style={{ marginTop: 10 }}>
-              {!hudVisible ? (
-                (() => {
-                  const uri = currentPreviewUri();
-                  return uri ? (
-                    <>
-                      <Image source={{ uri }} style={{ width: "100%", height: 220, borderRadius: 12 }} contentFit="cover" />
-                      {improvingSnap && <Text style={{ color: COLORS.sub, marginTop: 6, textAlign: "center" }}>Improving image…</Text>}
-                    </>
-                  ) : (
-                    <View style={{ height: 220, borderRadius: 12, backgroundColor: COLORS.sunken, borderWidth: 1, borderColor: COLORS.border, alignItems: "center", justifyContent: "center" }}>
-                      <Text style={{ color: COLORS.sub }}>No imported image yet</Text>
-                    </View>
-                  );
-                })()
-              ) : null}
+              {!hudVisible ? (() => {
+                const uri = currentPreviewUri();
+                return uri ? (
+                  <>
+                    <Image source={{ uri }} style={{ width: "100%", height: 220, borderRadius: 12 }} contentFit="cover" />
+                    {improvingSnap && <Text style={{ color: COLORS.sub, marginTop: 6, textAlign: "center" }}>Improving image…</Text>}
+                  </>
+                ) : (
+                  <View style={{ height: 220, borderRadius: 12, backgroundColor: COLORS.sunken, borderWidth: 1, borderColor: COLORS.border, alignItems: "center", justifyContent: "center" }}>
+                    <Text style={{ color: COLORS.sub }}>No imported image yet</Text>
+                  </View>
+                );
+              })() : null}
             </View>
           </View>
 
@@ -1001,13 +976,7 @@ export default function CaptureScreen() {
               <Swipeable key={`ing-${i}`} renderRightActions={() => renderRightActions(() => setIngredients((a) => a.filter((_, idx) => idx !== i)))} overshootRight={false} friction={2}>
                 <View style={styles.row}>
                   <Text style={styles.rowIndex}>{i + 1}.</Text>
-                  <TextInput
-                    value={ing}
-                    onChangeText={(v) => setIngredients((a) => a.map((x, idx) => (idx === i ? v : x)))}
-                    placeholder="2 cups flour…"
-                    placeholderTextColor="#64748b"
-                    style={styles.rowInput}
-                  />
+                  <TextInput value={ing} onChangeText={(v) => setIngredients((a) => a.map((x, idx) => (idx === i ? v : x)))} placeholder="2 cups flour…" placeholderTextColor="#64748b" style={styles.rowInput} />
                 </View>
                 {i !== ingredients.length - 1 && <View style={styles.thinLine} />}
               </Swipeable>
@@ -1024,14 +993,7 @@ export default function CaptureScreen() {
               <Swipeable key={`step-${i}`} renderRightActions={() => renderRightActions(() => setSteps((a) => a.filter((_, idx) => idx !== i)))} overshootRight={false} friction={2}>
                 <View style={styles.row}>
                   <Text style={styles.rowIndex}>{i + 1}.</Text>
-                  <TextInput
-                    value={st}
-                    onChangeText={(t) => setSteps((a) => a.map((x, idx) => (idx === i ? t : x)))}
-                    placeholder="Mix everything…"
-                    placeholderTextColor="#64748b"
-                    multiline
-                    style={[styles.rowInput, { minHeight: 60 }]}
-                  />
+                  <TextInput value={st} onChangeText={(t) => setSteps((a) => a.map((x, idx) => (idx === i ? t : x)))} placeholder="Mix everything…" placeholderTextColor="#64748b" multiline style={[styles.rowInput, { minHeight: 60 }]} />
                 </View>
                 {i !== steps.length - 1 && <View style={styles.thinLine} />}
               </Swipeable>
@@ -1044,11 +1006,7 @@ export default function CaptureScreen() {
 
         {/* Save bar */}
         <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 12, backgroundColor: COLORS.bg, borderTopWidth: 1, borderColor: COLORS.border }}>
-          <TouchableOpacity
-            onPress={onSave}
-            disabled={saving}
-            style={{ backgroundColor: saving ? "#475569" : COLORS.green, paddingVertical: 14, borderRadius: 12, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, opacity: saving ? 0.7 : 1 }}
-          >
+          <TouchableOpacity onPress={onSave} disabled={saving} style={{ backgroundColor: saving ? "#475569" : COLORS.green, paddingVertical: 14, borderRadius: 12, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, opacity: saving ? 0.7 : 1 }}>
             {saving && <ActivityIndicator size="small" color="#fff" />}
             <Text style={{ color: "#fff", fontWeight: "800" }}>{saving ? "Saving…" : "Save"}</Text>
           </TouchableOpacity>
@@ -1067,10 +1025,7 @@ export default function CaptureScreen() {
             snapCancelledRef.current = true;
             setSnapVisible(false);
             setImprovingSnap(false);
-            if (snapRejectRef.current) {
-              snapRejectRef.current(new Error("snap-cancelled"));
-              snapRejectRef.current = null;
-            }
+            if (snapRejectRef.current) { snapRejectRef.current(new Error("snap-cancelled")); snapRejectRef.current = null; }
           }}
           onFound={async (uri) => {
             gotSomethingForRunRef.current = true;
@@ -1086,27 +1041,21 @@ export default function CaptureScreen() {
               if (snapRejectRef.current) snapRejectRef.current = null;
               resolve(fixed || uri);
             } else {
-              (async () => {
-                if (fixed) await maybeUpgradePreview(fixed, lastResolvedUrlRef.current);
-                else await maybeUpgradePreview(uri, lastResolvedUrlRef.current);
-              })();
+              if (fixed) await maybeUpgradePreview(fixed, lastResolvedUrlRef.current);
+              else await maybeUpgradePreview(uri, lastResolvedUrlRef.current);
             }
           }}
         />
 
-        {/* TitleSnap */}
+        {/* TitleSnap (optional) */}
         <TitleSnap
           visible={titleSnapVisible}
           url={queuedTitleSnapUrl || ""}
           onFound={(good) => {
-            if (good) setTitle((prev) => (isWeakTitle(prev) ? good : prev));
-            setTitleSnapVisible(false);
-            setQueuedTitleSnapUrl(null);
+            if (good && !isTikTokJunkTitle(good) && isWeakTitle(title)) setTitle(cleanTitle(good, queuedTitleSnapUrl || ""));
+            setTitleSnapVisible(false); setQueuedTitleSnapUrl(null);
           }}
-          onClose={() => {
-            setTitleSnapVisible(false);
-            setQueuedTitleSnapUrl(null);
-          }}
+          onClose={() => { setTitleSnapVisible(false); setQueuedTitleSnapUrl(null); }}
         />
 
         {/* HUD */}
@@ -1119,7 +1068,7 @@ export default function CaptureScreen() {
   );
 }
 
-/* ---------------------------- styles ---------------------------- */
+/* ---------------------------- list row styles ---------------------------- */
 const styles = StyleSheet.create({
   swipeRightActionContainer: { justifyContent: "center", alignItems: "flex-end" },
   swipeDeleteButton: { backgroundColor: COLORS.red, paddingHorizontal: 16, justifyContent: "center", alignItems: "center", minWidth: 88, borderTopRightRadius: 12, borderBottomRightRadius: 12 },
