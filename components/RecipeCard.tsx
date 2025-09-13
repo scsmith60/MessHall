@@ -596,7 +596,7 @@ const styles = StyleSheet.create({
   // 👉 BOTTOM-RIGHT calorie pill
   caloriePillPos: {
     position: "absolute",
-    bottom: 10,
+    bottom: 4,
     right: 10,
     zIndex: 9,
     elevation: 9,
@@ -605,8 +605,9 @@ const styles = StyleSheet.create({
   titleSticker: {
     position: "absolute",
     left: 10,
+    right: 66,
     bottom: 10,
-    maxWidth: "85%",
+    //maxWidth: "85%",
     backgroundColor: "rgba(2, 6, 23, 0.55)",
     paddingHorizontal: 10,
     paddingVertical: 6,
