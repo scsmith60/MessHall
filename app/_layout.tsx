@@ -11,6 +11,9 @@ import "../lib/polyfills";
 
 // 🧰 React pieces we need
 import React, { useEffect, useState } from "react";
+// inside app/(tabs)/_layout.tsx
+import { useAuthRedirect } from "../../src/hooks/useAuthRedirect";
+
 
 // 🚪 Expo Router: helps us move between screen groups like (auth) and (tabs)
 import { Slot, useRouter, useSegments } from "expo-router";
@@ -39,13 +42,13 @@ import { supabase } from "../lib/supabase";
    like I'm 5:
    - We peek at where we are (segments): "(auth)/..." or "(tabs)/..." or maybe "recipe/..."
    - We ask Supabase: "Do we have a session?" (Are we signed in?)
-   - If NOT signed in and NOT in (auth), we send you to sign-in.
+   - If NOT signed in and NOT in (auth), we send you to login.
    - If signed in and stuck in (auth) OR at the empty root, we send you into the app tabs.
    - Otherwise, we do nothing so routes like /recipe/[id] can load normally.
 */
 function useAuthGate() {
   const router = useRouter();
-  const segments = useSegments(); // e.g., ["(tabs)", "index"] or ["recipe", "123"] or ["(auth)", "sign-in"]
+  const segments = useSegments(); // e.g., ["(tabs)", "index"] or ["recipe", "123"] or ["(auth)", "login"]
 
   const [ready, setReady] = useState(false); // did we finish checking?
   const [signedIn, setSignedIn] = useState<boolean | null>(null); // are we signed in?
@@ -83,7 +86,7 @@ function useAuthGate() {
     if (!signedIn) {
       // Not signed in → always go to sign-in (unless already in (auth))
       if (!inAuth) {
-        router.replace("/(auth)/sign-in");
+        router.replace("/(auth)/login");
       }
       return;
     }

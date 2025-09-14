@@ -54,7 +54,7 @@ export default function Login() {
     try { setBusy(true);
       const { error } = await supabase.auth.signInWithOAuth({ provider });
       if (error) throw error;
-    } catch (e: any) { Alert.alert("Sign-in failed", e.message); }
+    } catch (e: any) { Alert.alert("login failed", e.message); }
     finally { setBusy(false); }
   }
 

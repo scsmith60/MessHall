@@ -318,3 +318,140 @@ export function useRecipeCalories(
 
   return { loading, total, perServing };
 }
+
+/* =====================================================================
+   NEW SECTION — CHIP PERSISTENCE (calories / protein / fat / carbs)
+   -----------------------------------------------------------------
+   Like I'm 5: We keep your chip numbers safe on the phone so they come
+   back after logout/app restart. We save by recipeId.
+
+   ✔ Does NOT touch your existing server/USDA logic above.
+   ✔ Lazy-loads AsyncStorage so builds won't break if it's not installed.
+   ✔ If AsyncStorage isn't installed yet, we fall back to an in-memory box
+     (works while the app is open; install AsyncStorage for true persistence).
+===================================================================== */
+
+// 1) Tiny type for the four chips
+export type RecipeMacros = {
+  calories: number | null;
+  protein: number | null;
+  fat: number | null;
+  carbs: number | null;
+};
+
+// defaults when nothing saved yet
+const EMPTY_MACROS: RecipeMacros = { calories: null, protein: null, fat: null, carbs: null };
+
+// 2) "Storage-like" shape so we can swap real AsyncStorage or a memory fallback
+type StorageLike = {
+  getItem(key: string): Promise<string | null>;
+  setItem(key: string, value: string): Promise<void>;
+  removeItem(key: string): Promise<void>;
+};
+
+// simple in-memory fallback (only lasts until app is killed)
+const __mem__: Record<string, string> = {};
+const MemoryStorage: StorageLike = {
+  async getItem(key) {
+    return key in __mem__ ? __mem__[key] : null;
+  },
+  async setItem(key, value) {
+    __mem__[key] = value;
+  },
+  async removeItem(key) {
+    delete __mem__[key];
+  },
+};
+
+// 3) Lazy loader for AsyncStorage so importing this file never crashes
+async function getStorage(): Promise<StorageLike> {
+  try {
+    // This import only runs when you call the macros functions.
+    const mod = await import("@react-native-async-storage/async-storage");
+    const as = (mod as any)?.default;
+    if (as && typeof as.getItem === "function") return as as StorageLike;
+  } catch {
+    // ignore; we'll just use memory
+  }
+  return MemoryStorage;
+}
+
+// 4) Key helper — one saved record per recipe
+function macrosKey(recipeId: string) {
+  return `mh:nutrition:macros:${recipeId}`;
+}
+
+// 5) Read / Save / Clear helpers
+export async function readRecipeMacros(recipeId: string): Promise<RecipeMacros> {
+  const storage = await getStorage();
+  const raw = await storage.getItem(macrosKey(recipeId));
+  if (!raw) return { ...EMPTY_MACROS };
+  try {
+    const parsed = JSON.parse(raw);
+    return { ...EMPTY_MACROS, ...parsed };
+  } catch {
+    return { ...EMPTY_MACROS };
+  }
+}
+
+export async function saveRecipeMacros(recipeId: string, macros: RecipeMacros): Promise<void> {
+  const storage = await getStorage();
+  await storage.setItem(macrosKey(recipeId), JSON.stringify(macros));
+}
+
+export async function clearRecipeMacros(recipeId: string): Promise<void> {
+  const storage = await getStorage();
+  await storage.removeItem(macrosKey(recipeId));
+}
+
+// 6) Hook for screens to use the chips easily
+export function useRecipeMacros(recipeId: string | undefined) {
+  const [macros, setMacros] = useState<RecipeMacros>(EMPTY_MACROS);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (!recipeId) return;
+        const data = await readRecipeMacros(recipeId);
+        if (alive) setMacros(data);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [recipeId]);
+
+  const save = async (next: RecipeMacros) => {
+    setMacros(next);
+    if (!recipeId) return;
+    await saveRecipeMacros(recipeId, next);
+  };
+
+  const clear = async () => {
+    setMacros(EMPTY_MACROS);
+    if (!recipeId) return;
+    await clearRecipeMacros(recipeId);
+  };
+
+  return { macros, setMacros, save, clear, loading } as const;
+}
+
+/* ========================== HOW TO USE (ELI5) ==========================
+1) In your Add/Edit Recipe screen:
+   import { useRecipeMacros } from "@/lib/nutrition";
+   const { macros, setMacros, save: saveMacros } = useRecipeMacros(recipeId);
+
+   // When user edits a chip:
+   setMacros({ ...macros, calories: 420 }); // or protein/fat/carbs
+
+   // In your Save button (AFTER saving the recipe to DB):
+   await saveMacros(macros); // makes chips stick across logout/restart
+
+2) For true persistence across restarts, install AsyncStorage once:
+   npm i @react-native-async-storage/async-storage
+   (If you skip this, it still works while the app is open using memory.)
+======================================================================== */

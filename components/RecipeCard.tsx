@@ -20,6 +20,20 @@ import {
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 
+// ⭐ CALORIE PILL CACHING (additive; safe if AsyncStorage not installed)
+type StorageLike = { getItem(k: string): Promise<string|null>; setItem(k: string, v: string): Promise<void>; };
+const __mem__: Record<string, string> = {};
+const MemoryStorage: StorageLike = {
+  async getItem(k){ return k in __mem__ ? __mem__[k] : null; },
+  async setItem(k,v){ __mem__[k]=v; }
+};
+async function getStorage(): Promise<StorageLike> {
+  try { const mod = await import("@react-native-async-storage/async-storage"); return (mod as any).default as StorageLike; }
+  catch { return MemoryStorage; }
+}
+const calKey = (id: string) => `mh:recipe:calpill:${id}`;
+
+
 import SwipeCard from "@/components/ui/SwipeCard";
 import HapticButton from "@/components/ui/HapticButton";
 import { COLORS, RADIUS } from "@/lib/theme";
@@ -225,6 +239,38 @@ function RecipeCard(props: Props) {
 
   // 🔥 FEED CALORIES (read + realtime subscribe)
   const [calTotal, setCalTotal] = useState<number | null>(null);
+
+// 0) read cached pill immediately (so it sticks across app restarts/logout)
+useEffect(() => {
+  let gone = false;
+  (async () => {
+    try {
+      const storage = await getStorage();
+      const raw = await storage.getItem(calKey(id));
+      if (!raw) return;
+      const obj = JSON.parse(raw) as { total?: number|null; perServing?: number|null };
+      if (!gone) {
+        setCalTotal(typeof obj.total === "number" ? obj.total : null);
+        setCalPerServ(typeof obj.perServing === "number" ? obj.perServing : null);
+
+
+;(async () => {
+  try {
+    const storage = await getStorage();
+    await storage.setItem(calKey(id), JSON.stringify({ total: t ?? null, perServing: p ?? null }));
+  } catch {}
+})();
+// cache latest values so pill sticks next launch
+try {
+  const storage = await getStorage();
+  await storage.setItem(calKey(id), JSON.stringify({ total: t ?? null, perServing: p ?? null }));
+} catch {}
+
+      }
+    } catch {}
+  })();
+  return () => { gone = true; };
+}, [id]);
   const [calPerServ, setCalPerServ] = useState<number | null>(null);
 
   // 1) initial fetch (fast read)
