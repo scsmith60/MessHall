@@ -1,10 +1,10 @@
 // app/(tabs)/profile.tsx
 //
 // LIKE I'M 5:
-// • We kept your profile screen the same.
-// • We added a friendly "Affiliate Disclosure" card in Settings (for compliance).
-// • Tapping it opens a small modal that explains we may earn from qualifying purchases.
-// • It matches your colors and rounded style.
+// • Your profile screen stays the same.
+// • We added 2 tiny things:
+//   1) When the Settings sheet opens, we quickly check if you’re eligible to monetize.
+//   2) A new “Monetization” button inside Settings that shows a friendly status and goes to the Monetization screen.
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
@@ -144,6 +144,10 @@ export default function Profile() {
 
   // 🆕 Affiliate Disclosure modal
   const [showAffiliate, setShowAffiliate] = useState(false);
+
+  // 🧁 NEW — Monetization status shown in Settings (kid-simple label)
+  const [monetizeLabel, setMonetizeLabel] = useState("Check your eligibility");
+  const [monetizeLoading, setMonetizeLoading] = useState(false);
 
   // 1) load profile row
   useEffect(() => {
@@ -300,9 +304,8 @@ export default function Profile() {
     setCookedLoading(false);
   }, [userId]);
 
-  // 8) 🆕 load MY remixes
+  // 8) load MY remixes
   const loadRemixesOfMine = useCallback(async () => {
-    // LIKE I'M 5: "my remixes" = recipes I made that have a parent
     if (!userId) return;
     setRemixesLoading(true);
 
@@ -526,6 +529,32 @@ export default function Profile() {
       .then((list) => setConnectedStores(list.length))
       .catch(() => setConnectedStores(0));
   }, [userId]);
+
+  // 🧁 NEW — when Settings opens, quickly check monetization eligibility
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!showSettings) return; // only when the sheet is open
+      try {
+        setMonetizeLoading(true);
+        const token = (await supabase.auth.getSession()).data.session?.access_token;
+        const res = await fetch(
+          process.env.EXPO_PUBLIC_SUPABASE_URL + "/functions/v1/eligibility-check",
+          { method: "POST", headers: { Authorization: `Bearer ${token}` } }
+        );
+        const json = await res.json();
+        if (!alive) return;
+        if (json?.eligible === true) setMonetizeLabel("Ready to apply");
+        else if (Array.isArray(json?.checklist) && json.checklist.length > 0) setMonetizeLabel("Complete a few steps");
+        else setMonetizeLabel("Check your eligibility");
+      } catch {
+        if (alive) setMonetizeLabel("Check your eligibility");
+      } finally {
+        if (alive) setMonetizeLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [showSettings]);
 
   // ✅ RETURN
   return (
@@ -762,6 +791,18 @@ export default function Profile() {
                   <Text style={{ color: COLORS.text, fontWeight: "900" }}>Manage Stores</Text>
                   <Text style={{ color: COLORS.sub, marginTop: 4 }}>
                     {connectedStores > 0 ? `${connectedStores} connected` : "Not connected yet"}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* 🆕 Monetization entry — opens the Monetization screen */}
+                <TouchableOpacity
+                  onPress={() => { setShowSettings(false); router.push("/(account)/monetization"); }}
+                  activeOpacity={0.9}
+                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Monetization</Text>
+                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                    {monetizeLoading ? "Checking…" : monetizeLabel}
                   </Text>
                 </TouchableOpacity>
 

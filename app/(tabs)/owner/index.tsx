@@ -1,9 +1,9 @@
-// app/(tabs)/owner.tsx
+// app/(tabs)/owner/index.tsx
 // 🧒 what this does (like i'm 5):
 // - checks if you're an admin
 // - if not admin, sends you back to the tabs
-// - shows Owner Dashboard with a pretty "+ New Slot" button and "Manage Slots" button
-// - shows card blocks (Revenue, Ad Slots, Payouts)
+// - shows Owner Dashboard with quick buttons
+// - NOW INCLUDES: "Review Creator Requests" button to open our approvals screen
 
 import React, { useEffect, useState, useMemo } from "react";
 import {
@@ -114,7 +114,29 @@ export default function OwnerScreen() {
         Only admins can see this. 🎯
       </Text>
 
-      {/* NEW: Manage Slots button */}
+      {/* NEW: Review Creator Requests button (goes to approvals screen) */}
+      <TouchableOpacity
+        onPress={() => router.push("/(tabs)/owner/creator-approvals")}
+        activeOpacity={0.85}
+        style={{
+          alignSelf: "flex-start",
+          flexDirection: "row",
+          alignItems: "center",
+          backgroundColor: "#2563eb",
+          paddingVertical: 10,
+          paddingHorizontal: 14,
+          borderRadius: 999,
+          marginBottom: 12,
+          gap: 6,
+        }}
+      >
+        <Ionicons name="checkmark-done-circle" size={20} color="#ffffff" />
+        <Text style={{ color: "#ffffff", fontWeight: "900", fontSize: 16 }}>
+          Review Creator Requests
+        </Text>
+      </TouchableOpacity>
+
+      {/* Existing: Manage Slots button */}
       <Text
         onPress={() => router.push("/(tabs)/owner/owner-slots")}
         style={{
