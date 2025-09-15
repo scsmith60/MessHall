@@ -1,10 +1,10 @@
 // app/(tabs)/profile.tsx
 //
 // LIKE I'M 5:
-// • The "Remixes" tab should show MY remixes.
-// • A remix is just a recipe I made that has parent_recipe_id filled in.
-// • So we load from recipes where user_id = me AND parent_recipe_id IS NOT NULL.
-// • Everything else stays the same: layout, other tabs, modals, etc.
+// • We kept your profile screen the same.
+// • We added a friendly "Affiliate Disclosure" card in Settings (for compliance).
+// • Tapping it opens a small modal that explains we may earn from qualifying purchases.
+// • It matches your colors and rounded style.
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
@@ -141,6 +141,9 @@ export default function Profile() {
 
   // 🛒 how many stores connected? (for banner + settings label)
   const [connectedStores, setConnectedStores] = useState(0);
+
+  // 🆕 Affiliate Disclosure modal
+  const [showAffiliate, setShowAffiliate] = useState(false);
 
   // 1) load profile row
   useEffect(() => {
@@ -308,7 +311,7 @@ export default function Profile() {
       .select("id, user_id, title, image_url, cooks_count, likes_count, parent_recipe_id")
       .eq("user_id", userId)                  // me
       .not("parent_recipe_id", "is", null)    // and it's a remix
-      .order("id", { ascending: false })      // newest-ish first (id desc is simple + fast)
+      .order("id", { ascending: false })      // newest-ish first
       .limit(60);
 
     if (error) {
@@ -345,7 +348,7 @@ export default function Profile() {
   // pick right list for each tab
   useEffect(() => {
     if (tab === "cooked") loadCookedByMe();
-    if (tab === "remixes") loadRemixesOfMine(); // 👈 now shows MY remixes
+    if (tab === "remixes") loadRemixesOfMine();
     if (tab === "saved") loadSavedByMe();
   }, [tab, loadCookedByMe, loadRemixesOfMine, loadSavedByMe]);
 
@@ -749,7 +752,7 @@ export default function Profile() {
                 <View style={{ height: 4, width: 44, borderRadius: 2, backgroundColor: "#324156" }} />
               </View>
 
-              <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 12 }}>
+              <ScrollView style={{ maxHeight: 480 }} contentContainerStyle={{ gap: 12 }}>
                 {/* Manage Stores */}
                 <TouchableOpacity
                   onPress={() => { setShowSettings(false); router.push("/profile/stores"); }}
@@ -804,6 +807,18 @@ export default function Profile() {
                   </TouchableOpacity>
                 </View>
 
+                {/* 🆕 Affiliate Disclosure (compliance) */}
+                <TouchableOpacity
+                  onPress={() => setShowAffiliate(true)}
+                  activeOpacity={0.9}
+                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Affiliate Disclosure</Text>
+                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                    MessHall may earn from qualifying purchases when you use Send to Cart.
+                  </Text>
+                </TouchableOpacity>
+
                 {/* Sign out */}
                 <TouchableOpacity
                   onPress={signOut}
@@ -820,6 +835,27 @@ export default function Profile() {
                   <Text style={{ color: COLORS.text, fontWeight: "800" }}>Close</Text>
                 </TouchableOpacity>
               </ScrollView>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* 🆕 Affiliate Disclosure modal */}
+        <Modal visible={showAffiliate} transparent animationType="fade" onRequestClose={() => setShowAffiliate(false)}>
+          <Pressable onPress={() => setShowAffiliate(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <Pressable onPress={() => {}} style={{ width: "100%", backgroundColor: COLORS.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
+              <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18 }}>Affiliate Disclosure</Text>
+              <Text style={{ color: COLORS.sub, marginTop: 10, lineHeight: 20 }}>
+                MessHall uses affiliate links for some stores. If you tap “Send to Cart” or visit a store from the app,
+                we may earn a commission from qualifying purchases.{"\n\n"}
+                <Text style={{ color: COLORS.text, fontWeight: "900" }}>Amazon Notice:</Text> As an Amazon Associate, MessHall earns from qualifying purchases.{"\n\n"}
+                This helps us keep the app free and cover hosting costs. Thanks for your support!
+              </Text>
+              <TouchableOpacity
+                onPress={() => setShowAffiliate(false)}
+                style={{ marginTop: 14, backgroundColor: COLORS.accent, paddingVertical: 10, borderRadius: 12, alignItems: "center" }}
+              >
+                <Text style={{ color: "#041016", fontWeight: "900" }}>Got it</Text>
+              </TouchableOpacity>
             </Pressable>
           </Pressable>
         </Modal>

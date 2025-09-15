@@ -1,7 +1,7 @@
 // lib/cart/providers.ts
 // LIKE I'M 5: these are our "store helpers" (Walmart, Amazon, Kroger, H-E-B, Albertsons).
-// - suggest(): shows brand/size choices (for now from our mini catalog)
-// - addToCart(): calls our server function to do the real API magic safely
+// - suggest(): shows brand/size choices (from our mini catalog)
+// - addToCart(): talks to our server function (cart-add). Server may give us a link to open.
 // - isConnected/connect(): reads/writes your store_links table
 
 import { supabase } from "@/lib/supabase";
@@ -31,13 +31,20 @@ export type SuggestionSet = {
   selectedIndex: number;  // which we picked first
 };
 
+// 🆕 what our server may return (ok + maybe a link to open)
+export type AddToCartResult = {
+  ok: boolean;
+  redirectUrl?: string;
+};
+
 export type ICartProvider = {
   id: ProviderId;
   label: string;
   isConnected: (userId: string) => Promise<boolean>;
   connect: (userId: string) => Promise<void>;
   suggest: (items: CartItem[], userId: string) => Promise<SuggestionSet[]>;
-  addToCart: (selections: SuggestionCandidate[], userId: string) => Promise<void>;
+  // 🆕 returns AddToCartResult so caller can open redirectUrl if present
+  addToCart: (selections: SuggestionCandidate[], userId: string) => Promise<AddToCartResult>;
 };
 
 // 🔎 which stores are connected for this user?
@@ -114,14 +121,16 @@ function makeSuggestionSetForProvider(pid: ProviderId, items: CartItem[]): Sugge
   return out;
 }
 
-// call our secure server function (Supabase Edge Function) to add things to a cart
-async function serverAddToCart(provider: ProviderId, selections: SuggestionCandidate[]) {
+// 🆕 call our secure server function (Supabase Edge Function) to add things to a cart
+async function serverAddToCart(provider: ProviderId, selections: SuggestionCandidate[]): Promise<AddToCartResult> {
   // LIKE I'M 5: we hand our picks to the server, the server talks to Walmart/Amazon/etc.
-  // This keeps your secret keys secret. If you use Cloudflare Workers instead, see section 4.
-  const { error } = await supabase.functions.invoke("cart-add", {
+  // This keeps your secret keys secret.
+  const { data, error } = await supabase.functions.invoke("cart-add", {
     body: { provider, selections },
   });
   if (error) throw error;
+  // ensure a consistent shape
+  return { ok: !!data?.ok, redirectUrl: data?.redirectUrl };
 }
 
 function stubProvider(id: ProviderId, label: string): ICartProvider {
@@ -145,8 +154,8 @@ function stubProvider(id: ProviderId, label: string): ICartProvider {
     },
     suggest: async (items, _userId) => makeSuggestionSetForProvider(id, items),
     addToCart: async (selections, _userId) => {
-      // 🔐 send to server (right now stubbed function will just log/echo)
-      await serverAddToCart(id, selections);
+      // 🔐 send to server and bubble the server response back to the caller (UI)
+      return await serverAddToCart(id, selections);
     },
   };
 }

@@ -1,14 +1,8 @@
 // app/(tabs)/shop.tsx
 // LIKE I'M 5:
 // - We added little "buzz" feelings so actions feel real.
-// - Where it buzzes:
-//    • Long-press row (select)  → tiny tick
-//    • Tap the little checkbox  → tiny tick
-//    • Select/Clear a category  → tiny tick
-//    • Switch To Buy / In Cart / All → tiny tick   👈 NEW
-//    • Swipe Purchased          → soft thump
-//    • Swipe Delete             → warning buzz
-//    • After Add to Cart works  → happy buzz
+// - We ALSO open store links if the server sends one back (redirectUrl).
+// - That means Amazon/Walmart affiliate flows can hop to the store app/website.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -21,6 +15,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Pressable,
+  Linking, // 🆕 so we can open redirectUrl
 } from "react-native";
 import { Swipeable } from "react-native-gesture-handler";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -37,30 +32,15 @@ import {
   type ProviderId,
   type SuggestionCandidate,
   type SuggestionSet,
+  type AddToCartResult, // 🆕 type of server response
 } from "@/lib/cart/providers";
 
 // 🆕 HAPTICS: Expo haptics helpers
 import * as Haptics from "expo-haptics";
-const hTick = async () => {
-  try {
-    await Haptics.selectionAsync(); // tiny "tick"
-  } catch {}
-};
-const hThump = async () => {
-  try {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); // soft thump
-  } catch {}
-};
-const hWarn = async () => {
-  try {
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); // warning buzz
-  } catch {}
-};
-const hSuccess = async () => {
-  try {
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); // happy buzz
-  } catch {}
-};
+const hTick = async () => { try { await Haptics.selectionAsync(); } catch {} };
+const hThump = async () => { try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); } catch {} };
+const hWarn = async () => { try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } catch {} };
+const hSuccess = async () => { try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {} };
 
 /* ---------------------- tiny types from your DB ---------------------- */
 type DBItem = {
@@ -437,7 +417,6 @@ export default function ShoppingListTab() {
         }}
       >
         <Pressable
-          // long-press = pick/unpick with a tiny tick
           onLongPress={async () => {
             await hTick();
             toggleSelect(item);
@@ -546,11 +525,23 @@ export default function ShoppingListTab() {
     if (!userId || !selectedStore) return;
     const provider = getProviderRegistry()[selectedStore];
     const chosen: SuggestionCandidate[] = suggestionSets.map((s) => s.candidates[s.selectedIndex]);
-    await provider.addToCart(chosen, userId);
-    setSuggestionsOpen(false);
 
-    // clear selection after successful send (nice and tidy)
+    // 🆕 capture the server response (may contain redirectUrl)
+    let result: AddToCartResult | undefined;
+    try {
+      result = await provider.addToCart(chosen, userId);
+    } catch (e: any) {
+      Alert.alert("Oops", e?.message ?? "Could not add to cart. Please try again.");
+      return;
+    }
+
+    setSuggestionsOpen(false);
     setSelectedIds(new Set());
+
+    // 🆕 if server wants us to open a link (affiliate/deep link), do it now
+    if (result?.redirectUrl) {
+      Linking.openURL(result.redirectUrl).catch(() => {});
+    }
 
     await hSuccess(); // happy buzz on success
     Alert.alert("Added", `We sent ${chosen.length} item(s) to your ${provider.label} cart.`);
@@ -612,21 +603,21 @@ export default function ShoppingListTab() {
           {/* To Buy | In Cart | All */}
           <View style={styles.segmentWrap}>
             <TouchableOpacity
-              onPress={() => setFilterH("toBuy")}   // 👈 NEW: haptic tick on press
+              onPress={() => setFilterH("toBuy")}
               activeOpacity={0.9}
               style={[styles.segmentBtn, filter === "toBuy" && styles.segmentBtnActive]}
             >
               <Text style={[styles.segmentText, filter === "toBuy" && styles.segmentTextActive]}>To Buy</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={() => setFilterH("inCart")}  // 👈 NEW
+              onPress={() => setFilterH("inCart")}
               activeOpacity={0.9}
               style={[styles.segmentBtn, filter === "inCart" && styles.segmentBtnActive]}
             >
               <Text style={[styles.segmentText, filter === "inCart" && styles.segmentTextActive]}>In Cart</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={() => setFilterH("all")}     // 👈 NEW
+              onPress={() => setFilterH("all")}
               activeOpacity={0.9}
               style={[styles.segmentBtn, filter === "all" && styles.segmentBtnActive]}
             >
@@ -672,7 +663,7 @@ export default function ShoppingListTab() {
                   <Text style={styles.sectionTitle}>{sec.title.toUpperCase()}</Text>
                   <Text style={styles.sectionCount}>{sec.data.length}</Text>
 
-                  {/* Select / Clear for this section (with tiny tick) */}
+                  {/* Select / Clear for this section */}
                   <TouchableOpacity
                     onPress={() => toggleSectionSelect(sec.title)}
                     style={[styles.selectAllBtn, allSelected && { borderColor: "#38bdf8" }]}
