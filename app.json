@@ -12,12 +12,29 @@
     "android": {
       "package": "com.yourco.messhall",
       "permissions": [],
-      "userInterfaceStyle": "automatic"
+      "userInterfaceStyle": "automatic",
+      "intentFilters": [
+        {
+          "autoVerify": true,
+          "action": "VIEW",
+          "category": ["BROWSABLE", "DEFAULT"],
+          "data": [
+            {
+              "scheme": "https",
+              "host": "messhall.app",
+              "pathPrefix": "/r"
+            }
+          ]
+        }
+      ]
     },
     "ios": {
       "bundleIdentifier": "com.yourco.messhall",
       "supportsTablet": true,
-      "userInterfaceStyle": "automatic"
+      "userInterfaceStyle": "automatic",
+      "associatedDomains": [
+        "applinks:messhall.app"
+      ]
     }
   }
 }

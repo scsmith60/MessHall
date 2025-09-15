@@ -9,7 +9,6 @@ import React, { useEffect, useMemo, useState, useCallback, memo } from "react";
 import {
   Alert,
   Image,
-  Share,
   StyleSheet,
   Text,
   View,
@@ -42,6 +41,8 @@ import { tap, success, warn } from "@/lib/haptics";
 import { dataAPI } from "@/lib/data";
 import { useUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { Share } from "react-native";
+import { recipeUrl } from "@/lib/links";
 
 // 👉 tiny badge
 import CaloriePill from "@/components/CaloriePill";
@@ -137,11 +138,16 @@ function RecipeCard(props: Props) {
     else props.onSave?.(id);
   }, [id, props]);
 
-  // 📤 share
-  const share = useCallback(async () => {
-    success();
-    await Share.share({ message: `${title} on MessHall — messhall://recipe/${id}` });
-  }, [id, title]);
+  // 📤 share (use https so everything becomes a real, tappable link)
+const share = useCallback(async () => {
+  const url = recipeUrl(id); // ex: https://messhall.app/r/ABC123
+  // 'subject' shows up in email/some apps; 'url' makes iOS treat it as a real link
+  await Share.share({
+    message: `${title} on MessHall\n${url}`,  // Android reads message
+    url,                                      // iOS attaches real link
+    subject: `${title} • MessHall`,
+  });
+}, [id, title]);
 
   // 🔍 open the recipe (tap big card)
   const open = useCallback(async () => {

@@ -66,10 +66,10 @@ export default function TabsLayout() {
       }}
     >
       {/* ✅ ONLY the tabs we want visible */}
-      <Tabs.Screen name="index"   options={{ title: "Home",    tabBarIcon: makeIcon("home") }} />
+      <Tabs.Screen name="index"   options={{ title: "Scuttlebut",    tabBarIcon: makeIcon("home") }} />
       <Tabs.Screen name="capture" options={{ title: "Capture", tabBarIcon: makeIcon("camera") }} />
       <Tabs.Screen name="planner" options={{ title: "Planner", tabBarIcon: makeIcon("calendar") }} />
-      <Tabs.Screen name="shop"    options={{ title: "Shop",    tabBarIcon: makeIcon("cart") }} />
+      <Tabs.Screen name="shop"    options={{ title: "Commissary",    tabBarIcon: makeIcon("cart") }} />
       <Tabs.Screen name="profile" options={{ title: "Profile", tabBarIcon: makeIcon("person") }} />
 
       {/* 👑 Owner tab (shows only if admin; hidden for everyone else) */}

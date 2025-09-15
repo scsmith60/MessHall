@@ -2,13 +2,14 @@
 
 import { SupabaseClient } from "@supabase/supabase-js";
 
-export type StoreKey = "walmart" | "kroger" | "amazon" | "heb";
+export type StoreKey = "walmart" | "kroger" | "amazon" | "heb" | "albertsons";
 
 export type UserPrefs = {
   walmart_enabled: boolean;
   kroger_enabled: boolean;
   amazon_enabled: boolean;
   heb_enabled: boolean;
+  albertsons_enabled: boolean; // 👈 optional column for future use
   default_store: StoreKey | null;
 };
 

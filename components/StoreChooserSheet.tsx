@@ -1,11 +1,12 @@
-// like I'm 5: this is a little popup that asks "where should we send it?"
-// it shows: Shopping List + any enabled stores. you pick one, we call onChoose.
+// components/StoreChooserSheet.tsx
+// LIKE I'M 5: this is the little bottom sheet picker.
+// We just added "albertsons" to the choices.
 
 import React from "react";
 import { View, Text, TouchableOpacity, Modal, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-export type StoreKey = "walmart" | "kroger" | "amazon" | "heb";
+export type StoreKey = "walmart" | "kroger" | "amazon" | "heb" | "albertsons";
 
 export function StoreChooserSheet({
   visible,
@@ -15,7 +16,7 @@ export function StoreChooserSheet({
   includeShoppingList = true,
 }: {
   visible: boolean;
-  enabledStores: StoreKey[];           // e.g. ["kroger"] or ["walmart","amazon"]
+  enabledStores: StoreKey[];
   onClose: () => void;
   onChoose: (choice: StoreKey | "shopping_list") => void;
   includeShoppingList?: boolean;
@@ -56,27 +57,19 @@ function labelForStore(s: StoreKey) {
   if (s === "kroger") return "Kroger Cart";
   if (s === "walmart") return "Walmart Cart";
   if (s === "amazon") return "Amazon";
-  if (s === "heb") return "HEB";
+  if (s === "heb") return "H-E-B";
+  if (s === "albertsons") return "Albertsons";
   return s;
 }
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
-  sheet: {
-    backgroundColor: "#0f172a",
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 16,
-  },
+  sheet: { backgroundColor: "#0f172a", borderTopLeftRadius: 18, borderTopRightRadius: 18, padding: 16 },
   handle: { width: 40, height: 4, backgroundColor: "#334155", borderRadius: 2, alignSelf: "center", marginBottom: 8 },
   title: { color: "#f1f5f9", fontSize: 18, fontWeight: "600", marginBottom: 8, textAlign: "center" },
   row: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#334155",
-    gap: 10,
+    flexDirection: "row", alignItems: "center", paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#334155", gap: 10,
   },
   rowText: { color: "#e2e8f0", fontSize: 16, flex: 1 },
   cancel: { paddingVertical: 12, alignItems: "center" },

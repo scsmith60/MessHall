@@ -1,13 +1,13 @@
 // lib/cart/providers.ts
-// LIKE I'M 5:
-// - "Providers" are stores (Amazon, Walmart, …).
-// - We ask each provider for suggestions (brands/sizes).
-// - We can later "addToCart" (stub for now).
+// LIKE I'M 5: these are our "store helpers" (Walmart, Amazon, Kroger, H-E-B, Albertsons).
+// - suggest(): shows brand/size choices (for now from our mini catalog)
+// - addToCart(): calls our server function to do the real API magic safely
+// - isConnected/connect(): reads/writes your store_links table
 
 import { supabase } from "@/lib/supabase";
 import { MINI_CATALOG, toStoreQuantity } from "./catalog";
 
-export type ProviderId = "amazon" | "walmart" | "kroger" | "heb";
+export type ProviderId = "amazon" | "walmart" | "kroger" | "heb" | "albertsons";
 
 export type CartItem = {
   name: string;
@@ -16,19 +16,19 @@ export type CartItem = {
 };
 
 export type SuggestionCandidate = {
-  id: string;             // for UI list
+  id: string;             // little ID for UI
   title: string;          // "Large Eggs"
   variant?: string;       // "12 count"
   storeProductId: string; // ASIN/SKU/UPC/etc.
-  quantity?: string;      // converted qty (e.g., "5 lb bag")
+  quantity?: string;      // converted qty (like "5 lb bag")
   source: "catalog" | "search";
 };
 
 export type SuggestionSet = {
   itemName: string;       // "eggs"
-  quantity?: string;      // "4" → or "5 lb bag"
+  quantity?: string;      // "4" or "5 lb bag"
   candidates: SuggestionCandidate[];
-  selectedIndex: number;  // which candidate we picked first
+  selectedIndex: number;  // which we picked first
 };
 
 export type ICartProvider = {
@@ -40,7 +40,7 @@ export type ICartProvider = {
   addToCart: (selections: SuggestionCandidate[], userId: string) => Promise<void>;
 };
 
-// who is connected?
+// 🔎 which stores are connected for this user?
 export async function getConnectedProviders(userId: string): Promise<ProviderId[]> {
   const { data } = await supabase
     .from("store_links")
@@ -49,6 +49,8 @@ export async function getConnectedProviders(userId: string): Promise<ProviderId[
     .eq("is_connected", true);
   return (data || []).map((r: any) => r.provider as ProviderId);
 }
+
+// ⭐ set a default store (we zero out current default and upsert)
 export async function setDefaultProvider(userId: string, provider: ProviderId) {
   await supabase.from("store_links").update({ is_default: false }).eq("user_id", userId);
   await supabase.from("store_links").upsert(
@@ -57,13 +59,19 @@ export async function setDefaultProvider(userId: string, provider: ProviderId) {
   );
 }
 
-function norm(s: string) { return (s || "").toLowerCase().trim(); }
+// tiny helper to normalize text
+function norm(s: string) {
+  return (s || "").toLowerCase().trim();
+}
 
+// make suggestion lists based on our tiny catalog (safe + local)
 function makeSuggestionSetForProvider(pid: ProviderId, items: CartItem[]): SuggestionSet[] {
+  // pick the right catalog key per store
   const pickKey: keyof (typeof MINI_CATALOG)[string][number] =
     pid === "amazon" ? "amazonAsin" :
     pid === "walmart" ? "walmartId" :
-    pid === "kroger"  ? "krogerUpc"  : "hebSku";
+    pid === "kroger"  ? "krogerUpc"  :
+    pid === "heb"     ? "hebSku"     : "albertsonsSku";
 
   const out: SuggestionSet[] = [];
   items.forEach((it, idx) => {
@@ -84,7 +92,7 @@ function makeSuggestionSetForProvider(pid: ProviderId, items: CartItem[]): Sugge
       });
     }
 
-    // fallback → simple "search" candidate (still cycles if more later)
+    // fallback → simple "search" candidate (so you can still cycle + send)
     if (candidates.length === 0) {
       candidates.push({
         id: `${pid}-${idx}-0`,
@@ -100,15 +108,26 @@ function makeSuggestionSetForProvider(pid: ProviderId, items: CartItem[]): Sugge
       itemName: it.name,
       quantity: toStoreQuantity(it.quantity, it.name),
       candidates,
-      selectedIndex: 0, // default pick is first one
+      selectedIndex: 0,
     });
   });
   return out;
 }
 
+// call our secure server function (Supabase Edge Function) to add things to a cart
+async function serverAddToCart(provider: ProviderId, selections: SuggestionCandidate[]) {
+  // LIKE I'M 5: we hand our picks to the server, the server talks to Walmart/Amazon/etc.
+  // This keeps your secret keys secret. If you use Cloudflare Workers instead, see section 4.
+  const { error } = await supabase.functions.invoke("cart-add", {
+    body: { provider, selections },
+  });
+  if (error) throw error;
+}
+
 function stubProvider(id: ProviderId, label: string): ICartProvider {
   return {
-    id, label,
+    id,
+    label,
     isConnected: async (userId) => {
       const { data } = await supabase
         .from("store_links")
@@ -126,17 +145,22 @@ function stubProvider(id: ProviderId, label: string): ICartProvider {
     },
     suggest: async (items, _userId) => makeSuggestionSetForProvider(id, items),
     addToCart: async (selections, _userId) => {
-      // Real API call goes here per store.
-      console.log(`[${label}] addToCart`, selections);
-      await new Promise(r => setTimeout(r, 400));
+      // 🔐 send to server (right now stubbed function will just log/echo)
+      await serverAddToCart(id, selections);
     },
   };
 }
 
+// our "phone book" of providers
 const registry: Record<ProviderId, ICartProvider> = {
-  amazon: stubProvider("amazon", "Amazon"),
-  walmart: stubProvider("walmart", "Walmart"),
-  kroger:  stubProvider("kroger",  "Kroger"),
-  heb:     stubProvider("heb",     "H-E-B"),
+  amazon:     stubProvider("amazon", "Amazon"),
+  walmart:    stubProvider("walmart", "Walmart"),
+  kroger:     stubProvider("kroger",  "Kroger"),
+  heb:        stubProvider("heb",     "H-E-B"),
+  albertsons: stubProvider("albertsons", "Albertsons"),
 };
-export function getProviderRegistry() { return registry; }
+
+// export a getter to avoid accidental mutation
+export function getProviderRegistry() {
+  return registry;
+}

@@ -23,6 +23,10 @@ export function makeStoreRouter() {
         return { kind: "success", message: "Kroger cart updated!" } as const;
       }
 
+      if (store === "albertsons") {
+        return { kind: "fallback" } as const; // add real deep link later
+      }
+
       if (store === "walmart") {
         // later: build an affiliate Add-To-Cart link with SKUs
         return { kind: "redirect", url: "https://your.api/walmart/atc?items=demo" } as const;
