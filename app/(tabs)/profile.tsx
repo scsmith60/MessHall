@@ -1,10 +1,17 @@
 // app/(tabs)/profile.tsx
 //
 // LIKE I'M 5:
-// • Your profile screen stays the same.
-// • We added 2 tiny things:
-//   1) When the Settings sheet opens, we quickly check if you’re eligible to monetize.
-//   2) A new “Monetization” button inside Settings that shows a friendly status and goes to the Monetization screen.
+// • Your profile screen still works the same.
+// • I added these *extra* things inside Settings (no breaking changes):
+//   1) Quit MessHall (schedule account deletion in 30 days, recipes no one saved get removed then).
+//   2) Export my recipes (quick self-serve JSON share + request full export via backend).
+//   3) Help & Support ticket (write message + attach up to 3 screenshots).
+//   4) Units: choose US or Metric for ingredients (saved on your profile).
+//   5) Callsign moved under Email and added State/Country fields (same save logic preserved).
+//
+// NOTE: If your DB doesn't yet have columns (units_preference/state/country/etc),
+// the UI shows the controls but will fail gracefully with a friendly alert.
+// That preserves current behavior while letting you add columns when ready.
 
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
@@ -19,6 +26,7 @@ import {
   Dimensions,
   Modal,
   Pressable,
+  Share, // 🆕 for quick JSON export
 } from "react-native";
 
 // 🧢 SAFE AREA helpers (so we don’t sit under the notch/home bar)
@@ -55,6 +63,12 @@ type ProfileRow = {
   avatar_url?: string | null;
   followers?: number | null;
   following?: number | null;
+  // 🆕 optional fields (won’t break if not present; we fetch them in a separate try/catch)
+  units_preference?: "us" | "metric" | null;
+  state?: string | null;
+  country?: string | null;
+  deletion_requested_at?: string | null;
+  deletion_effective_at?: string | null;
 };
 
 type RecipeRow = {
@@ -149,7 +163,22 @@ export default function Profile() {
   const [monetizeLabel, setMonetizeLabel] = useState("Check your eligibility");
   const [monetizeLoading, setMonetizeLoading] = useState(false);
 
-  // 1) load profile row
+  // 🆕 NEW — Units preference + Location fields + Export/Support/Delete UX state
+  const [units, setUnits] = useState<"us" | "metric">("us"); // ingredient units
+  const [stateRegion, setStateRegion] = useState<string>(""); // State/Region
+  const [country, setCountry] = useState<string>(""); // Country
+  const [exporting, setExporting] = useState(false); // export working flag
+
+  const [showSupport, setShowSupport] = useState(false); // support modal
+  const [ticketSubject, setTicketSubject] = useState("");
+  const [ticketMessage, setTicketMessage] = useState("");
+  const [ticketImages, setTicketImages] = useState<string[]>([]);
+  const [ticketSending, setTicketSending] = useState(false);
+
+  const [showDelete, setShowDelete] = useState(false); // delete modal
+  const [deleting, setDeleting] = useState(false);
+
+  // =============== 1) load profile row (core — unchanged) ===============
   useEffect(() => {
     let alive = true;
     async function load() {
@@ -177,12 +206,28 @@ export default function Profile() {
       setFollowers(Number(row.followers ?? 0));
       setFollowing(Number(row.following ?? 0));
       setLoading(false);
+
+      // 🆕 OPTIONAL fetch for new fields (won’t break if columns don’t exist)
+      try {
+        const { data: more } = await supabase
+          .from("profiles")
+          .select("units_preference, state, country, deletion_requested_at, deletion_effective_at")
+          .eq("id", userId)
+          .maybeSingle();
+        if (more && alive) {
+          setUnits(((more as any)?.units_preference as "us" | "metric") || "us");
+          setStateRegion(((more as any)?.state as string) || "");
+          setCountry(((more as any)?.country as string) || "");
+        }
+      } catch {
+        // ignore if columns not there yet
+      }
     }
     load();
     return () => { alive = false; };
   }, [userId]);
 
-  // 2) username availability checker
+  // =============== 2) username availability checker (unchanged) ===============
   useEffect(() => {
     let alive = true;
     const value = normalizeUsername(username);
@@ -212,7 +257,7 @@ export default function Profile() {
     return () => { alive = false; };
   }, [username, originalUsername, userId]);
 
-  // 3) can we save the callsign?
+  // =============== 3) can we save the callsign? (unchanged) ===============
   const canSave = useMemo(() => {
     const u = normalizeUsername(username);
     const changed = u.toLowerCase() !== (originalUsername || "").toLowerCase();
@@ -221,7 +266,7 @@ export default function Profile() {
     return changed && goodLength && noSpaces && (available === true || available === null) && !saving && !!userId;
   }, [username, originalUsername, available, saving, userId]);
 
-  // 4) save callsign
+  // =============== 4) save callsign (unchanged) ===============
   async function handleSave() {
     try {
       if (!userId) return;
@@ -246,13 +291,13 @@ export default function Profile() {
     }
   }
 
-  // 5) sign out
+  // =============== 5) sign out (unchanged) ===============
   async function signOut() {
     const { error } = await supabase.auth.signOut();
     if (error) Alert.alert("Error", error.message);
   }
 
-  // 6) load MY recipes
+  // =============== 6) load MY recipes (unchanged) ===============
   const loadRecipes = useCallback(async () => {
     if (!userId) return;
     setRecipesLoading(true);
@@ -284,7 +329,7 @@ export default function Profile() {
 
   useEffect(() => { if (tab === "recipes") loadRecipes(); }, [tab, loadRecipes]);
 
-  // 7) load recipes I cooked
+  // =============== 7) load recipes I cooked (unchanged) ===============
   const loadCookedByMe = useCallback(async () => {
     if (!userId) return;
     setCookedLoading(true);
@@ -304,7 +349,7 @@ export default function Profile() {
     setCookedLoading(false);
   }, [userId]);
 
-  // 8) load MY remixes
+  // =============== 8) load MY remixes (unchanged) ===============
   const loadRemixesOfMine = useCallback(async () => {
     if (!userId) return;
     setRemixesLoading(true);
@@ -326,7 +371,7 @@ export default function Profile() {
     setRemixesLoading(false);
   }, [userId]);
 
-  // 9) load recipes I saved
+  // =============== 9) load recipes I saved (unchanged) ===============
   const loadSavedByMe = useCallback(async () => {
     if (!userId) return;
     setSavedLoading(true);
@@ -348,14 +393,14 @@ export default function Profile() {
     setSavedLoading(false);
   }, [userId]);
 
-  // pick right list for each tab
+  // pick right list for each tab (unchanged)
   useEffect(() => {
     if (tab === "cooked") loadCookedByMe();
     if (tab === "remixes") loadRemixesOfMine();
     if (tab === "saved") loadSavedByMe();
   }, [tab, loadCookedByMe, loadRemixesOfMine, loadSavedByMe]);
 
-  // image picking
+  // =============== IMAGE PICKING for avatar (unchanged) ===============
   async function pickImage() {
     try {
       const existing = await ImagePicker.getMediaLibraryPermissionsAsync();
@@ -381,7 +426,7 @@ export default function Profile() {
     }
   }
 
-  // auth helper
+  // =============== auth helper (unchanged) ===============
   async function requireSession() {
     const { data, error } = await supabase.auth.getSession();
     if (error) console.log("getSession error:", error.message);
@@ -391,7 +436,7 @@ export default function Profile() {
     return userData?.user ? (await supabase.auth.getSession()).data.session : null;
   }
 
-  // upload avatar (upsert)
+  // =============== upload avatar (unchanged) ===============
   async function uploadAvatarIfNeeded(): Promise<string | null> {
     try {
       if (!editAvatar) return avatarUrl || null;
@@ -425,7 +470,7 @@ export default function Profile() {
     } finally { setUploading(false); }
   }
 
-  // save bio + avatar
+  // =============== save bio + avatar (unchanged) ===============
   async function saveProfileFields() {
     try {
       if (!userId) return;
@@ -446,7 +491,7 @@ export default function Profile() {
     }
   }
 
-  // avatar bubble (letter if no pic)
+  // =============== small UI helpers (unchanged) ===============
   function Avatar({ size = 72 }: { size?: number }) {
     const letter = (username || "U").slice(0, 1).toUpperCase();
     if (avatarUrl) {
@@ -459,7 +504,6 @@ export default function Profile() {
     );
   }
 
-  // stat tile
   function Stat({ label, value }: { label: string; value: number | string }) {
     return (
       <View style={{ flex: 1, backgroundColor: COLORS.card2, borderRadius: 12, paddingVertical: 12, alignItems: "center", justifyContent: "center" }}>
@@ -469,7 +513,7 @@ export default function Profile() {
     );
   }
 
-  // tiny unsave on Saved tab
+  // tiny unsave on Saved tab (unchanged)
   async function handleUnsave(recipeId: string | number) {
     try {
       if (!userId) return;
@@ -486,7 +530,7 @@ export default function Profile() {
     }
   }
 
-  // ONE recipe card
+  // card for one recipe (unchanged)
   function RecipeThumb({ r, onRemove }: { r: RecipeRow; onRemove?: (id: string | number) => void; }) {
     const goToRecipe = () => router.push(`/recipe/${r.id}`);
     return (
@@ -522,7 +566,7 @@ export default function Profile() {
     );
   }
 
-  // when we know who you are, count connected stores
+  // when we know who you are, count connected stores (unchanged)
   useEffect(() => {
     if (!userId) return;
     getConnectedProviders(userId)
@@ -530,7 +574,7 @@ export default function Profile() {
       .catch(() => setConnectedStores(0));
   }, [userId]);
 
-  // 🧁 NEW — when Settings opens, quickly check monetization eligibility
+  // 🧁 monetization eligibility check when settings opens (unchanged)
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -556,7 +600,192 @@ export default function Profile() {
     return () => { alive = false; };
   }, [showSettings]);
 
-  // ✅ RETURN
+  // ===================== NEW FEATURE HANDLERS =====================
+
+  // A) Units preference — save to profiles.units_preference
+  async function handleChangeUnits(next: "us" | "metric") {
+    try {
+      setUnits(next);
+      const { error } = await supabase
+        .from("profiles")
+        .update({ units_preference: next })
+        .eq("id", userId);
+      if (error) throw error;
+    } catch (e: any) {
+      Alert.alert("Oops", e?.message ?? "Could not save units. Ask us to enable this field.");
+    }
+  }
+
+  // B) Save State/Country — optional addition to profile
+  async function handleSaveLocation() {
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({
+          state: stateRegion?.trim() || null,
+          country: country?.trim() || null,
+        })
+        .eq("id", userId);
+      if (error) throw error;
+      Alert.alert("Saved", "Location updated.");
+    } catch (e: any) {
+      Alert.alert("Oops", e?.message ?? "Could not save location. Ask us to enable these fields.");
+    }
+  }
+
+  // C1) Quick self-serve export — share JSON of your latest recipes
+  async function handleQuickExport() {
+    try {
+      setExporting(true);
+      const { data, error } = await supabase
+        .from("recipes")
+        .select("id,title,slug,created_at,updated_at,ingredients,steps")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(100); // keep Share payload reasonable
+      if (error) throw error;
+      const payload = JSON.stringify(data ?? [], null, 2);
+      await Share.share({
+        title: "My MessHall Recipes (JSON)",
+        message: payload,
+      });
+    } catch (e: any) {
+      Alert.alert("Export failed", e?.message ?? "Could not export.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // C2) Request full export — call your Edge Function to build files + email link
+  async function handleRequestExport() {
+    try {
+      setExporting(true);
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const res = await fetch(
+        process.env.EXPO_PUBLIC_SUPABASE_URL + "/functions/v1/export-my-recipes",
+        { method: "POST", headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || "Export request failed");
+      }
+      Alert.alert("Requested", "We’ll email you a download link when it’s ready.");
+    } catch (e: any) {
+      Alert.alert("Export failed", e?.message ?? "Could not request export (is the function deployed?).");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // D1) Pick screenshots for support ticket (up to 3)
+  async function handlePickSupportScreens() {
+    const existing = await ImagePicker.getMediaLibraryPermissionsAsync();
+    let status = existing.status;
+    if (status !== "granted") {
+      const req = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      status = req.status;
+    }
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "We need photos permission to attach screenshots.");
+      return;
+    }
+
+    const res = await ImagePicker.launchImageLibraryAsync({
+      allowsMultipleSelection: true,
+      selectionLimit: 3,
+      mediaTypes:
+        // @ts-ignore SDK bridges
+        (ImagePicker as any)?.MediaType?.Images ??
+        (ImagePicker as any)?.MediaTypeOptions?.Images ??
+        undefined,
+      quality: 1,
+    });
+
+    if (res.canceled) return;
+    const uris = (res.assets || []).map((a) => a.uri).filter(Boolean) as string[];
+    setTicketImages((prev) => [...prev, ...uris].slice(0, 3));
+  }
+
+  // D2) Upload one screenshot to storage and get its public URL
+  async function uploadSupportScreenshot(fileUri: string) {
+    if (!userId) throw new Error("Not signed in");
+    const fileName = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+    const bin = await (await fetch(fileUri)).arrayBuffer();
+    const bytes = new Uint8Array(bin);
+    const { error } = await supabase.storage
+      .from("support")
+      .upload(fileName, bytes, { contentType: "image/jpeg", upsert: false });
+    if (error) throw error;
+    const { data: pub } = supabase.storage.from("support").getPublicUrl(fileName);
+    return pub.publicUrl;
+  }
+
+  // D3) Submit support ticket (subject, message, screenshot URLs)
+  async function handleSubmitTicket() {
+    if (!ticketSubject.trim() || !ticketMessage.trim()) {
+      Alert.alert("Missing", "Please add a subject and message.");
+      return;
+    }
+    try {
+      setTicketSending(true);
+      // upload images first
+      const urls: string[] = [];
+      for (const uri of ticketImages) {
+        const url = await uploadSupportScreenshot(uri);
+        urls.push(url);
+      }
+      const { data, error } = await supabase
+        .from("support_tickets")
+        .insert({
+          user_id: userId,
+          subject: ticketSubject.trim(),
+          message: ticketMessage.trim(),
+          screenshots: urls,
+          status: "open",
+        })
+        .select("id")
+        .single();
+      if (error) throw error;
+
+      setShowSupport(false);
+      setTicketSubject("");
+      setTicketMessage("");
+      setTicketImages([]);
+      Alert.alert("Sent", `Ticket #${data?.id ?? "created"}. We'll follow up by email.`);
+    } catch (e: any) {
+      Alert.alert("Could not send", e?.message ?? "Please try again.");
+    } finally {
+      setTicketSending(false);
+    }
+  }
+
+  // E) Request account deletion (schedule for 30 days)
+  async function handleRequestDeletion() {
+    try {
+      setDeleting(true);
+      const requestedAt = new Date().toISOString();
+      const effectiveAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const { error } = await supabase
+        .from("profiles")
+        .update({
+          deletion_requested_at: requestedAt,
+          deletion_effective_at: effectiveAt,
+        })
+        .eq("id", userId);
+      if (error) throw error;
+      setShowDelete(false);
+      Alert.alert(
+        "Scheduled",
+        `Your account is scheduled to be deleted on\n${new Date(effectiveAt).toDateString()}.\nSaved copies of your recipes remain for people who saved them.`
+      );
+    } catch (e: any) {
+      Alert.alert("Could not schedule deletion", e?.message ?? "Please try again.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  // ===================== RENDER =====================
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top"]}>
       <ScrollView
@@ -715,7 +944,7 @@ export default function Profile() {
           )}
         </View>
 
-        {/* Edit Profile modal */}
+        {/* Edit Profile modal (unchanged) */}
         <Modal visible={showEdit} transparent animationType="fade" onRequestClose={() => setShowEdit(false)}>
           <Pressable onPress={() => setShowEdit(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, alignItems: "center", justifyContent: "center" }}>
             <Pressable onPress={() => {}} style={{ width: "92%", backgroundColor: COLORS.card, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
@@ -758,7 +987,7 @@ export default function Profile() {
           </Pressable>
         </Modal>
 
-        {/* ⚙️ Settings bottom-sheet */}
+        {/* ⚙️ Settings bottom-sheet (kept, expanded with new sections) */}
         <Modal visible={showSettings} transparent animationType="fade" onRequestClose={() => setShowSettings(false)}>
           {/* tap outside to close */}
           <Pressable onPress={() => setShowSettings(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, justifyContent: "flex-end" }}>
@@ -781,8 +1010,8 @@ export default function Profile() {
                 <View style={{ height: 4, width: 44, borderRadius: 2, backgroundColor: "#324156" }} />
               </View>
 
-              <ScrollView style={{ maxHeight: 480 }} contentContainerStyle={{ gap: 12 }}>
-                {/* Manage Stores */}
+              <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 12 }}>
+                {/* Manage Stores (unchanged) */}
                 <TouchableOpacity
                   onPress={() => { setShowSettings(false); router.push("/profile/stores"); }}
                   activeOpacity={0.9}
@@ -794,7 +1023,7 @@ export default function Profile() {
                   </Text>
                 </TouchableOpacity>
 
-                {/* 🆕 Monetization entry — opens the Monetization screen */}
+                {/* Monetization (unchanged) */}
                 <TouchableOpacity
                   onPress={() => { setShowSettings(false); router.push("/(account)/monetization"); }}
                   activeOpacity={0.9}
@@ -806,15 +1035,14 @@ export default function Profile() {
                   </Text>
                 </TouchableOpacity>
 
-                {/* Email (read-only) */}
+                {/* ===== Account Info: Email + Callsign + Location (NEW grouping, same functionality) ===== */}
                 <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  {/* Email (read-only) */}
                   <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Email</Text>
                   <Text style={{ color: COLORS.text }}>{email || "—"}</Text>
-                </View>
 
-                {/* Callsign editor */}
-                <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
-                  <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Callsign (username)</Text>
+                  {/* Callsign editor (moved under email) */}
+                  <Text style={{ color: COLORS.sub, marginTop: 12, marginBottom: 6 }}>Callsign (username)</Text>
                   <TextInput
                     value={username}
                     onChangeText={setUsername}
@@ -830,6 +1058,8 @@ export default function Profile() {
                       borderColor: "#263041",
                       marginBottom: 8,
                     }}
+                    autoCapitalize="none"
+                    autoCorrect={false}
                   />
                   {!!checking && <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Checking availability…</Text>}
                   <Text style={{ color: COLORS.sub, marginBottom: 10 }}>Tip: 3+ characters. Spaces turn into underscores.</Text>
@@ -842,13 +1072,138 @@ export default function Profile() {
                       paddingVertical: 12,
                       borderRadius: 12,
                       alignItems: "center",
+                      marginBottom: 10,
                     }}
                   >
                     <Text style={{ color: canSave ? "#062113" : "#93a3b8", fontWeight: "900" }}>Save Callsign</Text>
                   </TouchableOpacity>
+
+                  {/* Location fields (NEW) */}
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: COLORS.sub, marginBottom: 6 }}>State</Text>
+                      <TextInput
+                        value={stateRegion}
+                        onChangeText={setStateRegion}
+                        placeholder="e.g., AZ"
+                        placeholderTextColor="#6b7280"
+                        style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 }}
+                        autoCapitalize="characters"
+                        autoCorrect={false}
+                        maxLength={32}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Country</Text>
+                      <TextInput
+                        value={country}
+                        onChangeText={setCountry}
+                        placeholder="e.g., United States"
+                        placeholderTextColor="#6b7280"
+                        style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 }}
+                        autoCapitalize="words"
+                        autoCorrect={false}
+                        maxLength={56}
+                      />
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={handleSaveLocation}
+                    style={{ marginTop: 10, backgroundColor: COLORS.accent, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                  >
+                    <Text style={{ color: "#041016", fontWeight: "900" }}>Save Location</Text>
+                  </TouchableOpacity>
                 </View>
 
-                {/* 🆕 Affiliate Disclosure (compliance) */}
+                {/* ===== Units preference (NEW) ===== */}
+                <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Ingredient Units</Text>
+                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>Pick how measurements show up.</Text>
+
+                  <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                    <TouchableOpacity
+                      onPress={() => handleChangeUnits("us")}
+                      style={{
+                        flex: 1,
+                        paddingVertical: 10,
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: units === "us" ? COLORS.accent : COLORS.border,
+                        backgroundColor: units === "us" ? COLORS.accent : "transparent",
+                        alignItems: "center",
+                      }}
+                    >
+                      <Text style={{ color: units === "us" ? "#041016" : COLORS.text, fontWeight: "900" }}>US</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() => handleChangeUnits("metric")}
+                      style={{
+                        flex: 1,
+                        paddingVertical: 10,
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: units === "metric" ? COLORS.accent : COLORS.border,
+                        backgroundColor: units === "metric" ? COLORS.accent : "transparent",
+                        alignItems: "center",
+                      }}
+                    >
+                      <Text style={{ color: units === "metric" ? "#041016" : COLORS.text, fontWeight: "900" }}>Metric</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* ===== Export recipes (NEW) ===== */}
+                <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Export my recipes</Text>
+                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>Get your data. Your recipes belong to you.</Text>
+
+                  <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                    <TouchableOpacity
+                      onPress={handleQuickExport}
+                      disabled={exporting}
+                      style={{ flex: 1, paddingVertical: 10, borderRadius: 10, backgroundColor: COLORS.card2, alignItems: "center" }}
+                    >
+                      <Text style={{ color: COLORS.text, fontWeight: "900" }}>{exporting ? "Working…" : "Quick (JSON)"}</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={handleRequestExport}
+                      disabled={exporting}
+                      style={{ flex: 1, paddingVertical: 10, borderRadius: 10, backgroundColor: COLORS.card2, alignItems: "center" }}
+                    >
+                      <Text style={{ color: COLORS.text, fontWeight: "900" }}>{exporting ? "Working…" : "Email me CSV/JSON"}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* ===== Help & Support (NEW) ===== */}
+                <TouchableOpacity
+                  onPress={() => setShowSupport(true)}
+                  activeOpacity={0.9}
+                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Help & Support</Text>
+                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                    Send us a ticket. You can attach screenshots.
+                  </Text>
+                </TouchableOpacity>
+
+                {/* ===== Quit / Delete account (NEW) ===== */}
+                <TouchableOpacity
+                  onPress={() => setShowDelete(true)}
+                  activeOpacity={0.9}
+                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                >
+                  <Text style={{ color: COLORS.red, fontWeight: "900" }}>Quit MessHall (delete my account)</Text>
+                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                    Your profile stays for 30 days, then is deleted. Recipes nobody saved are removed after 30 days.
+                    Saved copies stay visible to the saver.
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Affiliate Disclosure (unchanged) */}
                 <TouchableOpacity
                   onPress={() => setShowAffiliate(true)}
                   activeOpacity={0.9}
@@ -860,7 +1215,7 @@ export default function Profile() {
                   </Text>
                 </TouchableOpacity>
 
-                {/* Sign out */}
+                {/* Sign out (unchanged) */}
                 <TouchableOpacity
                   onPress={signOut}
                   style={{ backgroundColor: COLORS.red, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}
@@ -868,7 +1223,7 @@ export default function Profile() {
                   <Text style={{ color: "#fff", fontWeight: "900" }}>Sign Out</Text>
                 </TouchableOpacity>
 
-                {/* Close */}
+                {/* Close (unchanged) */}
                 <TouchableOpacity
                   onPress={() => setShowSettings(false)}
                   style={{ backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
@@ -880,7 +1235,7 @@ export default function Profile() {
           </Pressable>
         </Modal>
 
-        {/* 🆕 Affiliate Disclosure modal */}
+        {/* Affiliate Disclosure modal (unchanged) */}
         <Modal visible={showAffiliate} transparent animationType="fade" onRequestClose={() => setShowAffiliate(false)}>
           <Pressable onPress={() => setShowAffiliate(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, alignItems: "center", justifyContent: "center", padding: 20 }}>
             <Pressable onPress={() => {}} style={{ width: "100%", backgroundColor: COLORS.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
@@ -897,6 +1252,97 @@ export default function Profile() {
               >
                 <Text style={{ color: "#041016", fontWeight: "900" }}>Got it</Text>
               </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* 🆘 Support Modal (NEW) */}
+        <Modal visible={showSupport} transparent animationType="fade" onRequestClose={() => setShowSupport(false)}>
+          <Pressable style={{ flex: 1, backgroundColor: "#00000088", padding: 20 }} onPress={() => setShowSupport(false)}>
+            <Pressable style={{ backgroundColor: COLORS.card, borderRadius: 16, padding: 16, gap: 10, borderWidth: 1, borderColor: COLORS.border }} onPress={() => {}}>
+              <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18 }}>Help & Support</Text>
+              <Text style={{ color: COLORS.sub }}>Tell us what’s wrong and add screenshots.</Text>
+
+              <Text style={{ color: COLORS.sub, marginTop: 8 }}>Subject</Text>
+              <TextInput
+                value={ticketSubject}
+                onChangeText={setTicketSubject}
+                placeholder="Short title"
+                placeholderTextColor="#6b7280"
+                style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 }}
+              />
+
+              <Text style={{ color: COLORS.sub, marginTop: 8 }}>Message</Text>
+              <TextInput
+                value={ticketMessage}
+                onChangeText={setTicketMessage}
+                placeholder="Tell us in simple words…"
+                placeholderTextColor="#6b7280"
+                style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, minHeight: 96 }}
+                multiline
+              />
+
+              {ticketImages.length > 0 && (
+                <ScrollView horizontal style={{ marginTop: 8 }} contentContainerStyle={{ gap: 8 }}>
+                  {ticketImages.map((uri) => (
+                    <Image key={uri} source={{ uri }} style={{ width: 80, height: 80, borderRadius: 8 }} />
+                  ))}
+                </ScrollView>
+              )}
+
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+                <TouchableOpacity
+                  onPress={handlePickSupportScreens}
+                  style={{ flex: 1, backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Add screenshots</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleSubmitTicket}
+                  disabled={ticketSending}
+                  style={{ flex: 1, backgroundColor: COLORS.accent, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                >
+                  <Text style={{ color: "#041016", fontWeight: "900" }}>{ticketSending ? "Sending…" : "Send ticket"}</Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity
+                onPress={() => setShowSupport(false)}
+                style={{ marginTop: 8, backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+              >
+                <Text style={{ color: COLORS.text, fontWeight: "900" }}>Close</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        {/* 🗑️ Delete / Quit Modal (NEW) */}
+        <Modal visible={showDelete} transparent animationType="fade" onRequestClose={() => setShowDelete(false)}>
+          <Pressable style={{ flex: 1, backgroundColor: "#00000088", padding: 20 }} onPress={() => setShowDelete(false)}>
+            <Pressable style={{ backgroundColor: COLORS.card, borderRadius: 16, padding: 16, gap: 10, borderWidth: 1, borderColor: COLORS.border }} onPress={() => {}}>
+              <Text style={{ color: COLORS.red, fontWeight: "900", fontSize: 18 }}>Quit MessHall</Text>
+              <Text style={{ color: COLORS.sub }}>
+                If you continue, your account is scheduled for deletion in 30 days.
+                Your profile remains visible until then.
+                Recipes nobody saved will be removed after 30 days.
+                Saved copies stay visible to the saver.
+              </Text>
+
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+                <TouchableOpacity
+                  onPress={() => setShowDelete(false)}
+                  style={{ flex: 1, backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleRequestDeletion}
+                  disabled={deleting}
+                  style={{ flex: 1, backgroundColor: COLORS.red, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "900" }}>{deleting ? "Working…" : "Yes, delete in 30 days"}</Text>
+                </TouchableOpacity>
+              </View>
             </Pressable>
           </Pressable>
         </Modal>

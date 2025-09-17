@@ -1,52 +1,76 @@
-// /app/(tabs)/owner-slot-creatives.tsx
-// 🧸 ELI5: See all creatives for this slot. Add new ones. Edit weights. Toggle active.
+// app/(tabs)/owner/owner-slot-creatives.tsx
+// 🧒 like I'm 5:
+// This is the list of images/text that live inside one slot. You can add one,
+// change its weight, and toggle on/off. SafeArea included.
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Text, TextInput, View } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
-import { supabase } from '../../../lib/supabase';
-import { COLORS, RADIUS, SPACING } from '../../../lib/theme';
-import HapticButton from '../../../components/ui/HapticButton';
-import PhotoPicker from '../../../components/PhotoPicker';
-import { uploadAdImage } from '../../../lib/uploads';
-
-type MaybeAsset = string | { uri?: string | null; mimeType?: string | null; fileName?: string | null };
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useLocalSearchParams } from "expo-router";
+import { supabase } from "../../../lib/supabase";
+import { COLORS, RADIUS, SPACING } from "../../../lib/theme";
+import HapticButton from "../../../components/ui/HapticButton";
+import PhotoPicker, { MaybeAsset } from "../../../components/PhotoPicker";
+import { uploadAdImage } from "../../../lib/uploads";
 
 type Creative = {
   id: string;
-  title: string;
-  image_url: string;
-  cta: string | null;
-  cta_url: string | null;
-  weight: number;
-  is_active: boolean;
+  slot_id: string;
+  title?: string | null;
+  image_url?: string | null;
+  cta?: string | null;
+  cta_url?: string | null;
+  weight?: number | null;
+  is_active?: boolean | null;
+  recipe_id?: string | null;
 };
 
-export default function OwnerSlotCreatives() {
-  const { id: slotId, brand } = useLocalSearchParams<{ id: string; brand?: string }>();
-  const [loading, setLoading] = useState(true);
-  const [items, setItems] = useState<Creative[]>([]);
+export default function SlotCreatives() {
+  const { id: slotId } = useLocalSearchParams<{ id: string }>();
 
-  // new creative draft
-  const [title, setTitle] = useState('');
-  const [ctaText, setCtaText] = useState('Learn more');
-  const [ctaUrl, setCtaUrl] = useState('');
-  const [weight, setWeight] = useState('1');
-  const [image, setImage] = useState<MaybeAsset | undefined>(undefined);
+  const C = useMemo(
+    () => ({
+      bg: COLORS.bg,
+      card: COLORS.card,
+      text: COLORS.text,
+      subtext: COLORS.subtext,
+      accent: COLORS.accent,
+      border: COLORS.border,
+    }),
+    []
+  );
+
+  const [rows, setRows] = useState<Creative[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // form to add a creative
+  const [title, setTitle] = useState("");
+  const [img, setImg] = useState<MaybeAsset | undefined>(undefined);
+  const [ctaText, setCtaText] = useState("Shop");
+  const [ctaUrl, setCtaUrl] = useState("https://example.com");
+  const [weight, setWeight] = useState<string>("3");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
-      setLoading(true);
       const { data, error } = await supabase
-        .from('sponsored_creatives')
-        .select('id, title, image_url, cta, cta_url, weight, is_active')
-        .eq('slot_id', slotId)
-        .order('created_at', { ascending: false });
+        .from("sponsored_creatives")
+        .select("*")
+        .eq("slot_id", slotId)
+        .order("weight", { ascending: false });
       if (error) throw error;
-      setItems(data ?? []);
+      setRows((data ?? []) as any);
     } catch (e: any) {
-      Alert.alert('Could not load', e?.message ?? 'Unknown error');
+      Alert.alert("Could not load creatives", e?.message ?? "Please try again.");
     } finally {
       setLoading(false);
     }
@@ -54,131 +78,166 @@ export default function OwnerSlotCreatives() {
 
   useEffect(() => { load(); }, [load]);
 
-  const create = async () => {
-    if (!title.trim()) { Alert.alert('Need title'); return; }
-    if (!image) { Alert.alert('Need image'); return; }
-    const wn = parseInt(weight, 10); const weightNum = Number.isFinite(wn) && wn > 0 ? wn : 1;
+  const bump = async (id: string, delta: number) => {
+    const c = rows.find((r) => r.id === id);
+    if (!c) return;
+    const next = Math.max(1, Number(c.weight || 1) + delta);
+    const { error } = await supabase.from("sponsored_creatives").update({ weight: next }).eq("id", id);
+    if (!error) setRows((prev) => prev.map((r) => (r.id === id ? { ...r, weight: next } : r)));
+  };
 
-    setBusy(true);
+  const toggle = async (id: string, on: boolean) => {
+    const { error } = await supabase.from("sponsored_creatives").update({ is_active: on }).eq("id", id);
+    if (!error) setRows((prev) => prev.map((r) => (r.id === id ? { ...r, is_active: on } : r)));
+  };
+
+  const add = async () => {
     try {
-      const { data: u } = await supabase.auth.getUser();
-      const uid = u.user?.id!;
-      const url = await uploadAdImage(uid, image);
-      const { error } = await supabase
-        .from('sponsored_creatives')
-        .insert({
-          slot_id: slotId,
-          title: title.trim(),
-          image_url: url,
-          cta: ctaText.trim(),
-          cta_url: ctaUrl.trim(),
-          weight: weightNum,
-          is_active: true
-        });
+      setBusy(true);
+      let image_url: string | null = null;
+      if (img) {
+        if (typeof img === "string") image_url = img;
+        else if (img.uri) image_url = await uploadAdImage(img.uri);
+      }
+      const { error } = await supabase.from("sponsored_creatives").insert({
+        slot_id: slotId,
+        title: title || null,
+        image_url,
+        cta: ctaText || null,
+        cta_url: ctaUrl || null,
+        weight: Number(weight) || 1,
+        is_active: true,
+      });
       if (error) throw error;
-      setTitle(''); setCtaText('Learn more'); setCtaUrl(''); setWeight('1'); setImage(undefined);
+
+      setTitle("");
+      setImg(undefined);
+      setCtaText("Shop");
+      setCtaUrl("https://example.com");
+      setWeight("3");
       await load();
     } catch (e: any) {
-      Alert.alert('Create failed', e?.message ?? 'Unknown error');
+      Alert.alert("Add failed", e?.message ?? "Please try again.");
     } finally {
       setBusy(false);
     }
   };
 
-  const toggleActive = async (c: Creative) => {
-    try {
-      const { error } = await supabase.from('sponsored_creatives').update({ is_active: !c.is_active }).eq('id', c.id);
-      if (error) throw error;
-      setItems(prev => prev.map(x => x.id === c.id ? { ...x, is_active: !c.is_active } : x));
-    } catch (e: any) {
-      Alert.alert('Update failed', e?.message ?? 'Unknown error');
-    }
-  };
+  const renderRow = ({ item }: { item: Creative }) => (
+    <View
+      style={{
+        backgroundColor: C.card,
+        borderRadius: 16,
+        padding: 14,
+        borderWidth: 1,
+        borderColor: C.border,
+        marginBottom: 12,
+      }}
+    >
+      <Text style={{ color: C.text, fontWeight: "800" }}>{item.title || "Creative"}</Text>
+      <Text style={{ color: C.subtext, marginTop: 2 }}>
+        weight {item.weight ?? 1} {item.is_active ? "• active" : "• inactive"}
+      </Text>
+      {!!item.cta_url && <Text style={{ color: C.subtext, marginTop: 2 }}>Link: {item.cta_url}</Text>}
 
-  const saveWeight = async (c: Creative, v: string) => {
-    const n = parseInt(v, 10);
-    const w = Number.isFinite(n) && n > 0 ? n : 1;
-    try {
-      const { error } = await supabase.from('sponsored_creatives').update({ weight: w }).eq('id', c.id);
-      if (error) throw error;
-      setItems(prev => prev.map(x => x.id === c.id ? { ...x, weight: w } : x));
-    } catch (e: any) {
-      Alert.alert('Weight update failed', e?.message ?? 'Unknown error');
-    }
-  };
+      <View style={{ flexDirection: "row", marginTop: 10, alignItems: "center" }}>
+        {item.is_active ? (
+          <TouchableOpacity onPress={() => toggle(item.id, false)}>
+            <Text style={{ color: "#ef4444", fontWeight: "800" }}>Deactivate</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity onPress={() => toggle(item.id, true)}>
+            <Text style={{ color: "#22c55e", fontWeight: "800" }}>Activate</Text>
+          </TouchableOpacity>
+        )}
 
-  const remove = async (c: Creative) => {
-    try {
-      const { error } = await supabase.from('sponsored_creatives').delete().eq('id', c.id);
-      if (error) throw error;
-      setItems(prev => prev.filter(x => x.id !== c.id));
-    } catch (e: any) {
-      Alert.alert('Delete failed', e?.message ?? 'Unknown error');
-    }
-  };
+        <View style={{ flex: 1 }} />
 
-  if (loading) {
-    return (
-      <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator />
-        <Text style={{ color: COLORS.subtext, marginTop: 8 }}>Loading creatives…</Text>
+        <TouchableOpacity onPress={() => bump(item.id, -1)} style={{ paddingHorizontal: 8 }}>
+          <Text style={{ color: C.text, fontWeight: "900" }}>−1</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => bump(item.id, +1)} style={{ paddingHorizontal: 8 }}>
+          <Text style={{ color: C.text, fontWeight: "900" }}>+1</Text>
+        </TouchableOpacity>
       </View>
-    );
-  }
+    </View>
+  );
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg }}>
-      <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: '900', marginBottom: 12 }}>
-        {brand ? `${brand} — ` : ''}Creatives
-      </Text>
+    <SafeAreaView style={{ flex: 1, backgroundColor: C.bg }} edges={["top", "left", "right"]}>
+      <View style={{ padding: SPACING.lg, flex: 1 }}>
+        <Text style={{ color: C.text, fontSize: 22, fontWeight: "900", marginBottom: 12 }}>
+          Slot Creatives
+        </Text>
 
-      {/* List existing creatives */}
-      <FlatList
-        data={items}
-        keyExtractor={(it) => it.id}
-        renderItem={({ item: c }) => (
-          <View style={{ backgroundColor: COLORS.card, borderRadius: RADIUS.lg, padding: 12, marginBottom: 10 }}>
-            <Text style={{ color: COLORS.text, fontWeight: '900', marginBottom: 6 }}>{c.title}</Text>
-            <Text style={{ color: COLORS.subtext, marginBottom: 6 }} numberOfLines={1}>{c.cta_url || 'no link'}</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Text style={{ color: COLORS.subtext }}>Weight</Text>
-              <TextInput
-                defaultValue={String(c.weight)}
-                onEndEditing={(e) => saveWeight(c, e.nativeEvent.text)}
-                keyboardType="number-pad"
-                style={{ backgroundColor: '#0f172a', color: COLORS.text, borderRadius: RADIUS.lg, paddingHorizontal: 10, paddingVertical: 6, minWidth: 60, textAlign: 'center' }}
-              />
-              <Text onPress={() => toggleActive(c)} style={{ marginLeft: 'auto', color: c.is_active ? COLORS.accent : '#a3a3a3', fontWeight: '900' }}>
-                {c.is_active ? 'Active (tap to disable)' : 'Inactive (tap to enable)'}
-              </Text>
-              <Text onPress={() => remove(c)} style={{ color: '#ffb4b4', fontWeight: '900', marginLeft: 10 }}>Delete</Text>
-            </View>
-          </View>
+        {loading ? (
+          <ActivityIndicator />
+        ) : (
+          <FlatList
+            data={rows}
+            keyExtractor={(r) => r.id}
+            renderItem={renderRow}
+            ListFooterComponent={
+              <View style={{ marginTop: 12 }}>
+                <Text style={{ color: C.text, fontWeight: "800", marginBottom: 8 }}>
+                  Add Creative
+                </Text>
+
+                <Text style={{ color: C.subtext, marginBottom: 6 }}>Title</Text>
+                <TextInput
+                  value={title}
+                  onChangeText={setTitle}
+                  placeholder="New product"
+                  placeholderTextColor={C.subtext}
+                  style={{ backgroundColor: C.card, color: C.text, borderRadius: RADIUS.lg, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }}
+                />
+
+                <Text style={{ color: C.subtext, marginBottom: 6 }}>Image</Text>
+                {/* ✅ picker works here too */}
+                <PhotoPicker uriOrAsset={img} onChange={setImg} />
+
+                <Text style={{ color: C.subtext, marginBottom: 6 }}>CTA Button Text</Text>
+                <TextInput
+                  value={ctaText}
+                  onChangeText={setCtaText}
+                  placeholder="Shop"
+                  placeholderTextColor={C.subtext}
+                  style={{ backgroundColor: C.card, color: C.text, borderRadius: RADIUS.lg, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }}
+                />
+
+                <Text style={{ color: C.subtext, marginBottom: 6 }}>CTA Link (full URL)</Text>
+                <TextInput
+                  value={ctaUrl}
+                  onChangeText={setCtaUrl}
+                  autoCapitalize="none"
+                  keyboardType="url"
+                  placeholder="https://brand.com/product"
+                  placeholderTextColor={C.subtext}
+                  style={{ backgroundColor: C.card, color: C.text, borderRadius: RADIUS.lg, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }}
+                />
+
+                <Text style={{ color: C.subtext, marginBottom: 6 }}>Weight</Text>
+                <TextInput
+                  value={weight}
+                  onChangeText={setWeight}
+                  keyboardType="number-pad"
+                  placeholder="3"
+                  placeholderTextColor={C.subtext}
+                  style={{ backgroundColor: C.card, color: C.text, borderRadius: RADIUS.lg, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }}
+                />
+
+                <HapticButton
+                  disabled={busy}
+                  onPress={add}
+                  style={{ backgroundColor: C.accent, padding: 14, borderRadius: RADIUS.lg, alignItems: "center", opacity: busy ? 0.6 : 1 }}
+                >
+                  {busy ? <ActivityIndicator /> : <Text style={{ color: "#001018", fontWeight: "900" }}>Add Creative</Text>}
+                </HapticButton>
+              </View>
+            }
+          />
         )}
-        ListEmptyComponent={<Text style={{ color: COLORS.subtext, marginBottom: 12 }}>No creatives yet.</Text>}
-        ListHeaderComponent={
-          <View style={{ marginBottom: 16 }}>
-            <Text style={{ color: COLORS.text, fontSize: 16, fontWeight: '900', marginBottom: 8 }}>Add New Creative</Text>
-            <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Title</Text>
-            <TextInput value={title} onChangeText={setTitle} placeholder="Ad headline" placeholderTextColor={COLORS.subtext}
-              style={{ backgroundColor: COLORS.card, color: COLORS.text, borderRadius: RADIUS.lg, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }} />
-            <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Image</Text>
-            <PhotoPicker uriOrAsset={image} onChange={setImage} />
-            <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>CTA Text</Text>
-            <TextInput value={ctaText} onChangeText={setCtaText} placeholder="Learn more" placeholderTextColor={COLORS.subtext}
-              style={{ backgroundColor: COLORS.card, color: COLORS.text, borderRadius: RADIUS.lg, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }} />
-            <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>CTA Link (full URL)</Text>
-            <TextInput value={ctaUrl} onChangeText={setCtaUrl} placeholder="https://brand.com/page" placeholderTextColor={COLORS.subtext} autoCapitalize="none" keyboardType="url"
-              style={{ backgroundColor: COLORS.card, color: COLORS.text, borderRadius: RADIUS.lg, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }} />
-            <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Weight</Text>
-            <TextInput value={weight} onChangeText={setWeight} placeholder="1" placeholderTextColor={COLORS.subtext} keyboardType="number-pad"
-              style={{ backgroundColor: COLORS.card, color: COLORS.text, borderRadius: RADIUS.lg, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 }} />
-            <HapticButton onPress={create} style={{ backgroundColor: COLORS.accent, padding: 14, borderRadius: RADIUS.lg, alignItems: 'center', opacity: busy ? 0.6 : 1 }}>
-              {busy ? <ActivityIndicator /> : <Text style={{ color: '#001018', fontWeight: '900' }}>Add Creative</Text>}
-            </HapticButton>
-          </View>
-        }
-      />
-    </View>
+      </View>
+    </SafeAreaView>
   );
 }

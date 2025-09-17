@@ -1,8 +1,11 @@
 // lib/data.ts
 // LIKE YOU'RE 5 🧸
-// - This file talks to the database (Supabase) and gives screens clean data.
-// - It hides other people’s private recipes.
-// - It still shows *your* private recipes to *you* (so your feed & profile look right).
+// - This file talks to Supabase and gives screens clean data.
+// - NEW (smarter): getSmartSuggestionsForContext()
+//     * "Quick Dinners": real mains, ≤35 min, no cookies/drinks.
+//     * "Game Day": appetizers/snacks (wings, dips, sliders, nachos, bites...).
+//     * Grill / Thanksgiving / Christmas: themed keywords.
+// - Everything else stays the same.
 
 import { supabase } from "./supabase";
 import {
@@ -33,13 +36,13 @@ export interface DataAPI {
           image: string | null;
           creator: string;
           creatorAvatar?: string | null;
-          knives: number;        // creator lifetime medals (profiles.knives)
-          cooks: number;         // this recipe’s cooks_count
-          likes: number;         // this recipe’s likes_count
-          commentCount: number;  // this recipe’s comment_count
+          knives: number;
+          cooks: number;
+          likes: number;
+          commentCount: number;
           createdAt: string;
           ownerId: string;
-          is_private?: boolean;  // 🔒 for the lock chip on the card
+          is_private?: boolean;
         }
       | {
           type: "sponsored";
@@ -123,6 +126,16 @@ export interface DataAPI {
   getRecipeCounts(
     recipeId: string
   ): Promise<{ likes: number; cooks: number; comments: number }>;
+
+  // 🆕 Smarter rail suggester used by Home rail when no sponsor slot is active
+  getSmartSuggestionsForContext?(
+    context: string
+  ): Promise<Array<{ id: string; title: string; image: string | null }>>;
+
+  // (kept) Simple suggester
+  getSuggestedRecipesForContext?(
+    context: string
+  ): Promise<Array<{ id: string; title: string; image: string | null }>>;
 }
 
 /* -----------------------------------------------------------
@@ -168,22 +181,15 @@ async function assertNotOwnerForCook(recipeId: string, viewerId: string): Promis
 ----------------------------------------------------------- */
 export const dataAPI: DataAPI = {
   /* -------------------------------------------------------
-     FEED LIST
-     Like I'm 5:
-     - If signed in → show PUBLIC recipes OR (PRIVATE & mine)
-     - If logged out → show only PUBLIC
-     - We apply pagination AFTER the filter
+     FEED LIST (unchanged)
   ------------------------------------------------------- */
   async getFeedPage(page, size) {
-    // what slice of the list do we want?
     const from = page * size;
     const to = from + size - 1;
 
-    // who is looking?
     const { data: auth } = await supabase.auth.getUser();
     const viewerId: string | null = auth?.user?.id ?? null;
 
-    // base select
     let q = supabase
       .from("recipes")
       .select(`
@@ -200,23 +206,17 @@ export const dataAPI: DataAPI = {
       `)
       .order("created_at", { ascending: false });
 
-    // IMPORTANT: filter FIRST
     if (viewerId) {
-      // public OR (private AND mine)
-      q = q.or(
-        `and(is_private.eq.false),and(is_private.eq.true,user_id.eq.${viewerId})`
-      );
+      q = q.or(`and(is_private.eq.false),and(is_private.eq.true,user_id.eq.${viewerId})`);
     } else {
       q = q.eq("is_private", false);
     }
 
-    // THEN paginate
     q = q.range(from, to);
 
     const { data: recipes, error } = await q;
     if (error) throw error;
 
-    // optional: ads we may sprinkle in
     const nowIso = new Date().toISOString();
     const { data: ads } = await supabase
       .from("sponsored_slots")
@@ -224,7 +224,6 @@ export const dataAPI: DataAPI = {
       .lte("active_from", nowIso)
       .or(`active_to.is.null,active_to.gte.${nowIso}`);
 
-    // shape rows for the UI
     const out: Array<
       | {
           type: "recipe";
@@ -253,9 +252,8 @@ export const dataAPI: DataAPI = {
 
     let adIdx = 0;
     (recipes ?? []).forEach((r: any, i: number) => {
-      // sprinkle an ad every ~6 cards (optional)
-      if (ads && i > 0 && i % 6 === 4 && adIdx < ads.length) {
-        const a = ads[adIdx++];
+      if (ads && i > 0 && i % 6 === 4 && adIdx < (ads as any).length) {
+        const a: any = (ads as any)[adIdx++];
         out.push({
           type: "sponsored",
           id: String(a.id),
@@ -279,17 +277,15 @@ export const dataAPI: DataAPI = {
         commentCount: Number(r.comment_count ?? 0),
         createdAt: r.created_at,
         ownerId: r.user_id,
-        is_private: !!r.is_private, // 🔒 card uses this for the lock
+        is_private: !!r.is_private,
       });
     });
 
-    // NOTE: do NOT filter the list again here.
-    // The DB filter already did the right thing (includes your own privates).
     return out;
   },
 
   /* -------------------------------------------------------
-     ONE RECIPE DETAILS
+     ONE RECIPE (unchanged)
   ------------------------------------------------------- */
   async getRecipeById(id) {
     const { data: r, error } = await supabase
@@ -346,7 +342,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     SAVE / LIKE / COOK
+     SAVE / LIKE / COOK (unchanged)
   ------------------------------------------------------- */
   async toggleSave(recipeId: string) {
     const userId = await getViewerIdStrict();
@@ -432,7 +428,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     CREATOR STATS
+     CREATOR STATS (unchanged)
   ------------------------------------------------------- */
   async getUserStats(userId: string) {
     const [{ data: prof }, { data: cookRows, error: cookErr }] = await Promise.all([
@@ -453,7 +449,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     OWNER HELPERS
+     OWNER HELPERS (unchanged)
   ------------------------------------------------------- */
   async getRecipeOwnerId(recipeId: string) {
     return await getOwnerId(recipeId);
@@ -481,7 +477,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     FULL EDIT FLOW
+     FULL EDIT FLOW (unchanged)
   ------------------------------------------------------- */
   async updateRecipeFull(args) {
     const {
@@ -540,7 +536,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     IMAGE REPLACE
+     IMAGE REPLACE (unchanged)
   ------------------------------------------------------- */
   async replaceRecipeImage(recipeId: string, sourceUri: string) {
     const url = await replaceRecipeImageUpload(recipeId, sourceUri);
@@ -553,7 +549,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     ADVANCED SEARCH (PUBLIC ONLY)
+     ADVANCED SEARCH (unchanged)
   ------------------------------------------------------- */
   async searchRecipesAdvanced({
     text,
@@ -600,7 +596,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     SIMPLE SEARCH (PUBLIC ONLY)
+     SIMPLE SEARCH (unchanged)
   ------------------------------------------------------- */
   async searchRecipes(query: string) {
     const q = (query || "").trim();
@@ -665,7 +661,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     COMMENTS
+     COMMENTS (unchanged)
   ------------------------------------------------------- */
   async hideComment(commentId: string) {
     const { error } = await supabase
@@ -701,10 +697,247 @@ export const dataAPI: DataAPI = {
       comments: Number(data?.comment_count ?? 0),
     };
   },
+
+  /* -------------------------------------------------------
+     🆕 SMART SEASONAL PICKER for the rail
+     * Quick Dinners: mains (≤35m), exclude sweets/drinks.
+     * Game Day: appetizers/snacks keywords.
+     * Others: themed keywords.
+     * Two-phase for Quick Dinners so we never fall back to random sweets.
+  ------------------------------------------------------- */
+  async getSmartSuggestionsForContext(context: string) {
+    const topic = (context || "").toLowerCase().trim();
+
+    async function run(base: any) {
+      const { data, error } = await base
+        .eq("is_private", false)
+        .order("created_at", { ascending: false })
+        .limit(48);
+      if (error) throw error;
+      return (data ?? []).map((r: any) => ({
+        id: String(r.id),
+        title: r.title ?? "Recipe",
+        image: r.image_url ?? null,
+      }));
+    }
+
+    // QUICK DINNERS → real dinners (mains), not cookies/drinks.
+    if (topic.includes("quick")) {
+      // words to exclude
+      const EX = [
+        "cookie","brownie","cake","cupcake","pie","bar ","bars","cheesecake","pudding",
+        "ice cream","fudge","donut","doughnut","muffin","scone","candy","frost","cinnamon roll",
+        "macaron","macaroon","tart","crumble","cobbler","sweet ","smoothie","shake","latte","mocha",
+        "coffee","tea ","soda","cocktail","mocktail","lemonade","punch","spritzer","margarita",
+        "sangria","wine","beer"
+      ];
+
+      // Phase A: minutes + excludes + MUST match a "quick meal shape"
+      let qa = supabase
+        .from("recipes")
+        .select("id, title, image_url, minutes, created_at")
+        .or("minutes.lte.35,minutes.is.null");
+
+      EX.forEach((w) => { qa = qa.not("title", "ilike", `%${w}%`); });
+
+      qa = qa.or(
+        [
+          "title.ilike.%skillet%",
+          "title.ilike.%sheet pan%",
+          "title.ilike.%sheet-pan%",
+          "title.ilike.%one pan%",
+          "title.ilike.%one-pan%",
+          "title.ilike.%stir fry%",
+          "title.ilike.%taco%",
+          "title.ilike.%pasta%",
+          "title.ilike.%bowl%",
+          "title.ilike.%chicken%",
+          "title.ilike.%beef%",
+          "title.ilike.%pork%",
+          "title.ilike.%shrimp%",
+          "title.ilike.%salmon%",
+          "title.ilike.%soup%",
+          "title.ilike.%chili%",
+          "title.ilike.%curry%",
+          "title.ilike.%bake%",
+          "title.ilike.%casserole%",
+          "title.ilike.%quesadilla%",
+          "title.ilike.%wrap%",
+          "title.ilike.%burger%",
+        ].join(",")
+      );
+
+      let phaseA = await run(qa);
+      if (phaseA.length >= 12) return phaseA.slice(0, 24);
+
+      // Phase B: minutes + excludes only (broader, but still no sweets/drinks)
+      let qb = supabase
+        .from("recipes")
+        .select("id, title, image_url, minutes, created_at")
+        .or("minutes.lte.35,minutes.is.null");
+      EX.forEach((w) => { qb = qb.not("title", "ilike", `%${w}%`); });
+
+      const phaseB = await run(qb);
+      return phaseB.slice(0, 24);
+    }
+
+    // GAMEDAY → appetizers/snacks (not big entrées)
+    if (topic.includes("gameday")) {
+      let q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at");
+
+      // include classic game-day snack words
+      q = q.or(
+        [
+          "title.ilike.%wing%",
+          "title.ilike.%dip%",
+          "title.ilike.%slider%",
+          "title.ilike.%nacho%",
+          "title.ilike.%pizza%",
+          "title.ilike.%flatbread%",
+          "title.ilike.%queso%",
+          "title.ilike.%pretzel%",
+          "title.ilike.%sausage roll%",
+          "title.ilike.%pigs in a blanket%",
+          "title.ilike.%bite%",
+          "title.ilike.%bites%",
+          "title.ilike.%ball%",
+          "title.ilike.%balls%",
+          "title.ilike.%popper%",
+          "title.ilike.%poppers%",
+          "title.ilike.%taquito%",
+          "title.ilike.%tender%",
+          "title.ilike.%tenders%",
+          "title.ilike.%chips%",
+          "title.ilike.%salsa%",
+          "title.ilike.%guacamole%",
+          "title.ilike.%buffalo%",
+          "title.ilike.%7 layer%",
+          "title.ilike.%seven layer%",
+          "title.ilike.%party%",
+          "title.ilike.%appetizer%",
+        ].join(",")
+      );
+
+      // gently avoid obvious entrées
+      const AVOID_ENTREE = ["casserole","roast","steak","whole","sheet pan dinner","lasagna","salmon fillet"];
+      AVOID_ENTREE.forEach((w) => { q = q.not("title", "ilike", `%${w}%`); });
+
+      const picks = await run(q);
+      return picks.slice(0, 24);
+    }
+
+    // GRILL
+    if (topic.includes("grill")) {
+      const q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at")
+        .or(
+          [
+            "title.ilike.%grill%",
+            "title.ilike.%bbq%",
+            "title.ilike.%barbecue%",
+            "title.ilike.%smok%",
+            "title.ilike.%kebab%",
+            "title.ilike.%skewer%",
+            "title.ilike.%burger%",
+            "title.ilike.%steak%",
+            "title.ilike.%rib%",
+            "title.ilike.%brat%",
+            "title.ilike.%hot dog%",
+          ].join(",")
+        );
+      return (await run(q)).slice(0, 24);
+    }
+
+    // THANKSGIVING
+    if (topic.includes("thanksgiving")) {
+      const q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at")
+        .or(
+          [
+            "title.ilike.%thanksgiving%",
+            "title.ilike.%turkey%",
+            "title.ilike.%stuffing%",
+            "title.ilike.%dressing%",
+            "title.ilike.%gravy%",
+            "title.ilike.%mashed%",
+            "title.ilike.%sweet potato%",
+            "title.ilike.%green bean%",
+            "title.ilike.%cranberry%",
+            "title.ilike.%pumpkin%",
+            "title.ilike.%pecan%",
+            "title.ilike.%roll%",
+          ].join(",")
+        );
+      return (await run(q)).slice(0, 24);
+    }
+
+    // CHRISTMAS / HOLIDAY
+    if (topic.includes("christmas") || topic.includes("holiday")) {
+      const q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at")
+        .or(
+          [
+            "title.ilike.%christmas%",
+            "title.ilike.%holiday%",
+            "title.ilike.%ham%",
+            "title.ilike.%prime rib%",
+            "title.ilike.%roast%",
+            "title.ilike.%tenderloin%",
+            "title.ilike.%potato%",
+            "title.ilike.%green bean%",
+            "title.ilike.%cranberry%",
+            "title.ilike.%yule%",
+          ].join(",")
+        );
+      return (await run(q)).slice(0, 24);
+    }
+
+    // default: newest public
+    const base = supabase.from("recipes").select("id, title, image_url, created_at");
+    return (await run(base)).slice(0, 24);
+  },
+
+  /* -------------------------------------------------------
+     Simple suggester (kept)
+  ------------------------------------------------------- */
+  async getSuggestedRecipesForContext(context: string) {
+    const topic = (context || "").trim() || "quick";
+    let out: Array<{ id: string; title: string; image: string | null }> = [];
+
+    const { data: rows } = await supabase
+      .from("recipes")
+      .select("id, title, image_url, is_private")
+      .eq("is_private", false)
+      .ilike("title", `%${topic}%`)
+      .order("created_at", { ascending: false })
+      .limit(24);
+
+    (rows ?? []).forEach((r: any) => {
+      out.push({ id: String(r.id), title: r.title ?? "Recipe", image: r.image_url ?? null });
+    });
+
+    if (!out.length) {
+      const { data: rows2 } = await supabase
+        .from("recipes")
+        .select("id, title, image_url")
+        .eq("is_private", false)
+        .order("created_at", { ascending: false })
+        .limit(24);
+      (rows2 ?? []).forEach((r: any) => {
+        out.push({ id: String(r.id), title: r.title ?? "Recipe", image: r.image_url ?? null });
+      });
+    }
+    return out;
+  },
 };
 
 /* -----------------------------------------------------------
-   Social / follow helpers (named exports used elsewhere)
+   Social helpers (unchanged)
 ----------------------------------------------------------- */
 async function viewerIdStrict(): Promise<string> {
   const { data, error } = await supabase.auth.getUser();
@@ -780,7 +1013,7 @@ export async function getFollowState(otherUserId: string): Promise<boolean> {
     .eq("follower_id", me)
     .eq("following_id", otherUserId)
     .maybeSingle();
-  // @ts-ignore (ignore "no rows" code)
+  // @ts-ignore
   if (error && error.code !== "PGRST116") throw error;
 
   return !!data;
