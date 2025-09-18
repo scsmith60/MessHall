@@ -221,8 +221,10 @@ export const dataAPI: DataAPI = {
     const { data: ads } = await supabase
       .from("sponsored_slots")
       .select("*")
-      .lte("active_from", nowIso)
-      .or(`active_to.is.null,active_to.gte.${nowIso}`);
+      .eq("is_active", true)
+      .or(`starts_at.is.null,starts_at.lte.${nowIso}`)
+      .or(`ends_at.is.null,ends_at.gte.${nowIso}`);
+
 
     const out: Array<
       | {

@@ -639,7 +639,7 @@ export default function Profile() {
       setExporting(true);
       const { data, error } = await supabase
         .from("recipes")
-        .select("id,title,slug,created_at,updated_at,ingredients,steps")
+        .select("id,title,created_at,updated_at,ingredients,steps")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(100); // keep Share payload reasonable
