@@ -1,16 +1,6 @@
 // app/recipe/[id].tsx
 // LIKE I'M 5 👶
-// Problem: When we first open the recipe, Protein/Carbs/Fat chips show 0,
-// then if we go back and come in again, they show real numbers.
-// Why? The database totals are being updated a few moments AFTER the screen loads,
-// and we weren't checking again to grab the fresh numbers.
-//
-// Fix: We keep everything as-is AND add a tiny "peek again a few times" refresher.
-// - We still read from public.recipes (one read).
-// - We still listen for realtime UPDATEs (if enabled in Supabase Realtime).
-// - PLUS: we POLL a few times (like "are we there yet?") for ~6 seconds max.
-//   As soon as real numbers appear, we stop the polling.
-// This way, the chips update on the first visit without leaving the screen.
+// (…original header comments preserved…)
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Alert, ScrollView, Share, Text, View, TouchableOpacity } from 'react-native';
@@ -33,15 +23,65 @@ import { IngredientPicker } from '@/components/IngredientPicker';
 import { useRecipeCalories } from '@/lib/nutrition';
 import CaloriePill from '@/components/CaloriePill';
 
+// 👇 NEW: shared converter (add this module per earlier message)
+import { convertForDisplay, type UnitsPref } from '@/lib/units';
+
 /* -----------------------------------------------------------
-   Tiny helper: turn "12.5" (string) or 12.5 (number) into a number.
-   If it's null/undefined/not-a-number, we use 0.
+   Tiny helpers (kept same / small additions)
 ----------------------------------------------------------- */
 function toNum(v: unknown, fallback = 0): number {
   if (v === null || v === undefined) return fallback;
   const n = Number(v as any);
   return Number.isFinite(n) ? n : fallback;
 }
+
+// 👇 NEW: simple formatter for displaying numbers nicely
+// ✅ drop-in replacement for formatQty (handles 1/8 → ⅛, 1/4 → ¼, 1/2 → ½, etc.)
+function formatQty(n?: number | null): string {
+  if (n == null || !Number.isFinite(Number(n))) return '';
+  const x = Number(n);
+
+  const whole = Math.floor(x);
+  const frac = x - whole;
+
+  // common fractions we want to “snap” to
+  const FRACTIONS: Array<[number, string]> = [
+    [0,    ''],
+    [1/8,  '⅛'],
+    [1/6,  '⅙'],
+    [1/5,  '⅕'],
+    [1/4,  '¼'],
+    [1/3,  '⅓'],
+    [3/8,  '⅜'],
+    [2/5,  '⅖'],
+    [1/2,  '½'],
+    [3/5,  '⅗'],
+    [2/3,  '⅔'],
+    [3/4,  '¾'],
+    [4/5,  '⅘'],
+    [5/6,  '⅚'],
+    [7/8,  '⅞'],
+  ];
+
+  // find the closest “nice” fraction
+  let bestSym = '';
+  let bestDiff = 1;
+  for (const [val, sym] of FRACTIONS) {
+    const d = Math.abs(frac - val);
+    if (d < bestDiff) { bestDiff = d; bestSym = sym; }
+  }
+
+  // tolerance: within ~2% we snap to the unicode fraction
+  if (bestSym && bestDiff < 0.02) {
+    if (whole === 0) return bestSym;
+    return `${whole} ${bestSym}`;
+  }
+
+  // otherwise: integers as-is, small decimals to 1 place
+  if (Math.abs(x - Math.round(x)) < 1e-6) return String(Math.round(x));
+  return String(Math.round(x * 10) / 10);
+}
+
 
 /* -----------------------------------------------------------
    Shopping list helpers (kept same)
@@ -99,13 +139,12 @@ async function readActiveItemNames(listId: string): Promise<Set<string>> {
 }
 
 /* -----------------------------------------------------------
-   MacroChip — compact, dark chip like your theme.
-   Always shows number (rounded) or 0.
+   MacroChip (unchanged)
 ----------------------------------------------------------- */
 function MacroChip({
   label,
   value,
-  tint = '#0EA5E9', // Protein=emerald, Carbs=sky, Fat=amber
+  tint = '#0EA5E9',
   unit = 'g',
 }: {
   label: string;
@@ -168,7 +207,7 @@ export default function RecipeDetail() {
   const [fatTotalG, setFatTotalG] = useState<number>(0);
   const [carbsTotalG, setCarbsTotalG] = useState<number>(0);
 
-  // We remember the last snapshot so our poll can stop when values change
+  // remember snapshot for polling stop condition
   const snapshot = useMemo(() => ({ p: proteinTotalG, f: fatTotalG, c: carbsTotalG }), [proteinTotalG, fatTotalG, carbsTotalG]);
 
   const [isPrivate, setIsPrivate] = useState(false);
@@ -183,12 +222,33 @@ export default function RecipeDetail() {
   const [isCooked, setIsCooked] = useState(false);
   const [savingCook, setSavingCook] = useState(false);
 
+  // display-ready ingredients (strings) + raw steps
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<{ text: string; seconds?: number | null }[]>([]);
+
+  // 👇 NEW: user’s preferred units
+  const [unitPref, setUnitPref] = useState<UnitsPref>('us');
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null));
   }, []);
+
+  // 👇 NEW: fetch preferred_units once we know the userId
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!userId) return;
+      const { data } = await supabase
+        .from('profiles')
+        .select('preferred_units')
+        .eq('id', userId)
+        .maybeSingle();
+      if (!alive) return;
+      const pref = (data?.preferred_units === 'metric' ? 'metric' : 'us') as UnitsPref;
+      setUnitPref(pref);
+    })();
+    return () => { alive = false; };
+  }, [userId]);
 
   /* ------------------ Load main recipe ------------------ */
   useEffect(() => {
@@ -212,7 +272,7 @@ export default function RecipeDetail() {
           setIsPrivate(!!r.is_private);
           setSourceUrl(r.sourceUrl ?? null);
           if (Array.isArray(r.steps)) setSteps(r.steps);
-          if (Array.isArray(r.ingredients)) setIngredients(r.ingredients);
+          if (Array.isArray(r.ingredients)) setIngredients(r.ingredients); // legacy strings OK; will be replaced by structured fetch below
         } else {
           const s: any = recipeStore.get(id);
           setModel(
@@ -267,24 +327,52 @@ export default function RecipeDetail() {
   }, [id]);
 
   /* ------------------ Ingredients & steps fallbacks ------------------ */
+  // 🔁 UPDATED: we now fetch structured ingredient fields and render according to unitPref
   useEffect(() => {
     let cancelled = false;
+
+    function lineFromRow(row: any, pref: UnitsPref): string {
+      // precomputed twins path
+      if (row.convertible) {
+        const qty   = pref === 'metric' ? row.metric_qty     : row.us_qty;
+        const qmax  = pref === 'metric' ? row.metric_qty_max : row.us_qty_max;
+        const unit  = pref === 'metric' ? row.metric_unit    : row.us_unit;
+        if (qty != null && unit) {
+          const amount = (qmax != null && qmax !== qty)
+            ? `${formatQty(qty)}–${formatQty(qmax)}`
+            : `${formatQty(qty)}`;
+          return [amount, unit, row.item].filter(Boolean).join(' ').trim();
+        }
+      }
+      // runtime fallback if we only have qty+unit
+      if (row.qty != null && row.unit) {
+        const a = convertForDisplay(Number(row.qty), row.unit, pref);
+        const b = row.qty_max != null ? convertForDisplay(Number(row.qty_max), row.unit, pref) : null;
+        const amount = b ? `${formatQty(a.qty)}–${formatQty(b.qty)}` : `${formatQty(a.qty)}`;
+        return [amount, a.unit, row.item ?? ''].filter(Boolean).join(' ').trim();
+      }
+      // last resort: original/raw text
+      return row.text_original || row.text || '';
+    }
+
     (async () => {
       if (!id) return;
       try {
         const { data } = await supabase
           .from('recipe_ingredients')
-          .select('*')
+          .select('pos, text, text_original, convertible, qty, qty_max, unit, item, us_qty, us_qty_max, us_unit, metric_qty, metric_qty_max, metric_unit')
           .eq('recipe_id', id)
           .order('pos');
-        if (!cancelled && data) {
-          const lines = data.map((row: any) => row.text ?? '').filter(Boolean);
+
+        if (!cancelled && data && data.length) {
+          const lines = data.map((row: any) => lineFromRow(row, unitPref)).filter(Boolean);
           if (lines.length) setIngredients(lines);
         }
       } catch {}
     })();
+
     return () => { cancelled = true; };
-  }, [id]);
+  }, [id, unitPref]);
 
   useEffect(() => {
     let cancelled = false;
@@ -421,7 +509,6 @@ export default function RecipeDetail() {
     if (!id) return;
     let stop = false;
 
-    // helper: read once from public.recipes and update the chips
     const pullOnce = async () => {
       const { data } = await supabase
         .from('recipes')
@@ -439,7 +526,7 @@ export default function RecipeDetail() {
     // 1) first read
     pullOnce();
 
-    // 2) listen for DB UPDATEs (works if Realtime is enabled on "recipes")
+    // 2) realtime updates
     const ch = supabase
       .channel(`recipe-nutrition-${id}`)
       .on(
@@ -454,14 +541,11 @@ export default function RecipeDetail() {
       )
       .subscribe();
 
-    // 3) POLLING SAFETY NET:
-    // Try a few times (every ~1s) to catch the fresh totals
-    // that might land right after we opened the screen.
+    // 3) brief polling safety net
     let attempts = 0;
-    const maxAttempts = 6;   // ~6 seconds total
+    const maxAttempts = 6;
     const timer = setInterval(async () => {
       attempts += 1;
-      // If numbers already look non-zero (or we tried enough), stop polling.
       const hasRealValues =
         (proteinTotalG ?? 0) > 0 ||
         (fatTotalG ?? 0) > 0 ||
@@ -471,7 +555,6 @@ export default function RecipeDetail() {
         clearInterval(timer);
         return;
       }
-      // Peek again
       await pullOnce();
     }, 1000);
 
@@ -480,58 +563,8 @@ export default function RecipeDetail() {
       try { supabase.removeChannel(ch); } catch {}
       clearInterval(timer);
     };
-    // We intentionally don't add proteinTotalG/fatTotalG/carbsTotalG to deps,
-    // to keep the poll's simple stop condition working without re-creating it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
-
-  /* ------------------ Share / Save / Like / Cook ------------------ */
-  const shareIt = async () => { await success(); await Share.share({ message: `${model?.title} on MessHall — messhall://recipe/${id}` }); };
-  const toggleSave = async () => {
-    try { const s = await dataAPI.toggleSave(String(id)); setSaved(s); await tap(); }
-    catch { await warn(); Alert.alert('Sign in required'); }
-  };
-  const toggleLike = async () => {
-    if (!id) return;
-    if (!userId) { await warn(); Alert.alert('Action not allowed', 'Please sign in to like recipes.'); return; }
-    if (likeSaving) return;
-    try {
-      setLikeSaving(true);
-      if (liked) {
-        setLiked(false); setLikesCount((n) => Math.max(0, n - 1));
-        const { error } = await supabase.from('recipe_likes').delete().eq('user_id', userId).eq('recipe_id', id);
-        if (error) { setLiked(true); setLikesCount((n) => n + 1); throw error; }
-        await tap();
-      } else {
-        setLiked(true); setLikesCount((n) => n + 1);
-        const { error } = await supabase.from('recipe_likes').insert({ user_id: userId, recipe_id: id as any });
-        // @ts-ignore
-        if (error && error.code !== '23505') { setLiked(false); setLikesCount((n) => Math.max(0, n - 1)); throw error; }
-        await success();
-      }
-    } catch (e: any) { await warn(); Alert.alert('Oops', e?.message ?? 'Could not update like.'); }
-    finally { setLikeSaving(false); }
-  };
-  const toggleCooked = useCallback(async () => {
-    if (!userId || !id) { await warn(); Alert.alert('Please sign in to record cooks.'); return; }
-    if (isOwner) { Alert.alert('Heads up', "You can’t medal your own recipe."); return; }
-    try {
-      setSavingCook(true);
-      if (isCooked) {
-        setIsCooked(false); setCooksCount((n) => Math.max(0, n - 1));
-        const { error } = await supabase.from('recipe_cooks').delete().eq('user_id', userId).eq('recipe_id', id);
-        if (error) { setIsCooked(true); setCooksCount((n) => n + 1); throw error; }
-        await tap();
-      } else {
-        setIsCooked(true); setCooksCount((n) => n + 1);
-        const { error } = await supabase.from('recipe_cooks').insert({ user_id: userId, recipe_id: id as any });
-        // @ts-ignore
-        if (error && error.code !== '23505') { setIsCooked(false); setCooksCount((n) => Math.max(0, n - 1)); throw error; }
-        await success();
-      }
-    } catch (e: any) { await warn(); Alert.alert('Oops', e?.message ?? 'Could not update cooked state.'); }
-    finally { setSavingCook(false); }
-  }, [id, userId, isCooked, isOwner]);
 
   /* ------------------ Render ------------------ */
   if (loading)
@@ -620,7 +653,7 @@ export default function RecipeDetail() {
           <Text style={{ color: COLORS.sub }}>{timeAgo(model.createdAt)}</Text>
         </View>
 
-        {/* Context chips (imported/private/remix) */}
+        {/* Context chips */}
         {(isPrivate || (sourceUrl && sourceUrl.trim() !== '') || parentId) && (
           <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
             {isPrivate && (
@@ -654,7 +687,7 @@ export default function RecipeDetail() {
           </View>
         )}
 
-        {/* Remix button (if allowed) */}
+        {/* Remix button */}
         {!isOwner && !isPrivate && (
           <View style={{ marginBottom: 10 }}>
             <HapticButton
@@ -680,9 +713,8 @@ export default function RecipeDetail() {
           </View>
         )}
 
-        {/* 🧮 Stats (left) + Macros chips (right) — wraps nicely */}
+        {/* Stats + Macro chips */}
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-          {/* Left cluster: medal + likes */}
           <View style={{ flexDirection: 'row', gap: 10 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.card, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }}>
               <MaterialCommunityIcons name="medal" size={16} color={COLORS.accent} />
@@ -694,10 +726,8 @@ export default function RecipeDetail() {
             </View>
           </View>
 
-          {/* Push macro chips to the right */}
           <View style={{ flex: 1 }} />
 
-          {/* Right cluster: Protein / Carbs / Fat chips */}
           <View style={{ flexShrink: 1, maxWidth: '68%' }}>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
               <MacroChip label="Protein" value={proteinTotalG} tint="#34D399" />

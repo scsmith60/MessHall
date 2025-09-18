@@ -34,7 +34,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
 import { getConnectedProviders } from "@/lib/cart/providers";
@@ -211,11 +211,16 @@ export default function Profile() {
       try {
         const { data: more } = await supabase
           .from("profiles")
-          .select("units_preference, state, country, deletion_requested_at, deletion_effective_at")
+          .select("units_preference, preferred_units, state, country, deletion_requested_at, deletion_effective_at")
           .eq("id", userId)
           .maybeSingle();
         if (more && alive) {
-          setUnits(((more as any)?.units_preference as "us" | "metric") || "us");
+          // prefer units_preference; fall back to legacy preferred_units; default to "us"
+          setUnits(
+            (((more as any)?.units_preference as "us" | "metric")
+              ?? ((more as any)?.preferred_units as "us" | "metric")
+              ?? "us")
+          );
           setStateRegion(((more as any)?.state as string) || "");
           setCountry(((more as any)?.country as string) || "");
         }
@@ -226,6 +231,31 @@ export default function Profile() {
     load();
     return () => { alive = false; };
   }, [userId]);
+
+  // ✅ Re-read units when screen regains focus (prevents “snaps back to US”)
+  useFocusEffect(
+    useCallback(() => {
+      let cancel = false;
+      (async () => {
+        if (!userId) return;
+        try {
+          const { data } = await supabase
+            .from("profiles")
+            .select("units_preference, preferred_units")
+            .eq("id", userId)
+            .maybeSingle();
+          if (cancel) return;
+          const pref = ((data?.units_preference as "us" | "metric") ??
+                        (data?.preferred_units as "us" | "metric") ??
+                        "us");
+          setUnits(pref);
+        } catch {
+          /* ignore */
+        }
+      })();
+      return () => { cancel = true; };
+    }, [userId])
+  );
 
   // =============== 2) username availability checker (unchanged) ===============
   useEffect(() => {
@@ -602,13 +632,13 @@ export default function Profile() {
 
   // ===================== NEW FEATURE HANDLERS =====================
 
-  // A) Units preference — save to profiles.units_preference
+  // A) Units preference — save to profiles.units_preference (+ legacy preferred_units)
   async function handleChangeUnits(next: "us" | "metric") {
     try {
       setUnits(next);
       const { error } = await supabase
         .from("profiles")
-        .update({ units_preference: next })
+        .update({ units_preference: next, preferred_units: next })
         .eq("id", userId);
       if (error) throw error;
     } catch (e: any) {
@@ -1116,41 +1146,34 @@ export default function Profile() {
                   </TouchableOpacity>
                 </View>
 
-                {/* ===== Units preference (NEW) ===== */}
+                {/* ===== Units preference (UPDATED to segmented slider) ===== */}
                 <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
                   <Text style={{ color: COLORS.text, fontWeight: "900" }}>Ingredient Units</Text>
                   <Text style={{ color: COLORS.sub, marginTop: 4 }}>Pick how measurements show up.</Text>
 
-                  <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
-                    <TouchableOpacity
-                      onPress={() => handleChangeUnits("us")}
-                      style={{
-                        flex: 1,
-                        paddingVertical: 10,
-                        borderRadius: 10,
-                        borderWidth: 1,
-                        borderColor: units === "us" ? COLORS.accent : COLORS.border,
-                        backgroundColor: units === "us" ? COLORS.accent : "transparent",
-                        alignItems: "center",
-                      }}
-                    >
-                      <Text style={{ color: units === "us" ? "#041016" : COLORS.text, fontWeight: "900" }}>US</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      onPress={() => handleChangeUnits("metric")}
-                      style={{
-                        flex: 1,
-                        paddingVertical: 10,
-                        borderRadius: 10,
-                        borderWidth: 1,
-                        borderColor: units === "metric" ? COLORS.accent : COLORS.border,
-                        backgroundColor: units === "metric" ? COLORS.accent : "transparent",
-                        alignItems: "center",
-                      }}
-                    >
-                      <Text style={{ color: units === "metric" ? "#041016" : COLORS.text, fontWeight: "900" }}>Metric</Text>
-                    </TouchableOpacity>
+                  {/* segmented pill */}
+                  <View style={{ marginTop: 10, flexDirection: "row", backgroundColor: COLORS.card2, borderRadius: 999, padding: 4 }}>
+                    {(["us", "metric"] as const).map((opt) => {
+                      const active = units === opt;
+                      return (
+                        <TouchableOpacity
+                          key={opt}
+                          onPress={() => handleChangeUnits(opt)}
+                          activeOpacity={0.85}
+                          style={{
+                            flex: 1,
+                            paddingVertical: 10,
+                            alignItems: "center",
+                            borderRadius: 999,
+                            backgroundColor: active ? COLORS.accent : "transparent",
+                          }}
+                        >
+                          <Text style={{ color: active ? "#041016" : COLORS.text, fontWeight: "900" }}>
+                            {opt === "us" ? "US" : "Metric"}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
                 </View>
 

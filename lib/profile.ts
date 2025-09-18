@@ -38,7 +38,8 @@ export async function updateUnitsPreference(units: "us" | "metric") {
   if (!u?.user) throw new Error("Not signed in");
   const { error } = await supabase
     .from("profiles")
-    .update({ units_preference: units })
+    // write modern + legacy columns so older builds read the same value
+    .update({ units_preference: units, preferred_units: units })
     .eq("id", u.user.id);
   if (error) throw error;
 }
@@ -77,13 +78,6 @@ export async function requestAccountDeletion() {
     .eq("id", u.user.id);
   if (error) throw error;
 
-  // OPTION B (optional): if you have an Edge Function to enqueue background cleanup:
-  // const token = (await supabase.auth.getSession()).data.session?.access_token;
-  // await fetch(process.env.EXPO_PUBLIC_SUPABASE_URL + "/functions/v1/request-account-deletion", {
-  //   method: "POST",
-  //   headers: { Authorization: `Bearer ${token}` }
-  // });
-
   return { requestedAt, effectiveAt };
 }
 
@@ -106,8 +100,6 @@ export async function fetchMyRecipesForQuickExport(limit = 100) {
 
 /** Ask the server to build a full export and email it. */
 export async function requestRecipesExport() {
-  // If you made an Edge Function for export:
-  // POST /functions/v1/export-my-recipes
   const token = (await supabase.auth.getSession()).data.session?.access_token;
   const res = await fetch(
     process.env.EXPO_PUBLIC_SUPABASE_URL + "/functions/v1/export-my-recipes",

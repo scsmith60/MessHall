@@ -1,102 +1,119 @@
-// super-simple kitchen unit converter for display only.
-// it converts between common US <-> METRIC units.
-// if we don't recognize the unit, we return the original.
+// /lib/shared/units.ts
+export type UnitsPref = 'us' | 'metric';
 
-export type UnitsPref = "us" | "metric";
+type NormUnit =
+  | 'tsp' | 'tbsp' | 'cup' | 'floz' | 'ml' | 'l'
+  | 'g' | 'kg' | 'oz' | 'lb'
+  | 'c' | 't' | 'T'; // tolerated aliases, normalized below
 
-type Qty = number | string | null | undefined;
-
-const toNum = (x: Qty) => (typeof x === "number" ? x : parseFloat(String(x ?? "")));
-
-const round = (n: number, dp = 2) => {
-  const p = Math.pow(10, dp);
-  return Math.round(n * p) / p;
-};
-
-// factors based on standard kitchen measures
+// --- constants ---
+const ML_PER_TSP = 5;
+const ML_PER_TBSP = 15;
+const ML_PER_FLOZ = 29.5735;
+const ML_PER_CUP = 240;                // cooking-friendly
 const G_PER_OZ = 28.3495;
-const ML_PER_TSP = 4.92892;
-const TSP_PER_TBSP = 3;
-const TBSP_PER_CUP = 16;
-const ML_PER_CUP = ML_PER_TSP * TSP_PER_TBSP * TBSP_PER_CUP; // ~236.588
 const G_PER_LB = 453.592;
-const C_PER_F = (f: number) => (f - 32) * (5 / 9);
-const F_PER_C = (c: number) => c * (9 / 5) + 32;
 
-type Unit =
-  | "tsp" | "tbsp" | "cup"
-  | "oz" | "lb" | "g" | "kg"
-  | "ml" | "l"
-  | "°f" | "°c";
+// --- aliases ---
+const UNIT_ALIASES: Record<string, NormUnit> = Object.fromEntries([
+  // teaspoons
+  ['tsp','tsp'], ['teaspoon','tsp'], ['tea spoon','tsp'], ['t','tsp'],
+  // tablespoons
+  ['tbsp','tbsp'], ['tablespoon','tbsp'], ['tbl','tbsp'], ['T','tbsp'],
+  // cups
+  ['cup','cup'], ['c','cup'],
+  // fluid ounces
+  ['fl oz','floz'], ['floz','floz'], ['fluid ounce','floz'], ['fluid ounces','floz'],
+  // metric volumes
+  ['ml','ml'], ['milliliter','ml'], ['millilitre','ml'],
+  ['l','l'], ['liter','l'], ['litre','l'],
+  // mass
+  ['g','g'], ['gram','g'], ['grams','g'],
+  ['kg','kg'], ['kilogram','kg'],
+  ['oz','oz'], ['ounce','oz'], ['ounces','oz'],
+  ['lb','lb'], ['lbs','lb'], ['pound','lb'], ['pounds','lb'],
+].map(([k,v]) => [k, v as NormUnit]));
 
-const normalizeUnit = (u: string): Unit | null => {
-  const s = u.trim().toLowerCase();
-  if (["teaspoon","teaspoons","tsp"].includes(s)) return "tsp";
-  if (["tablespoon","tablespoons","tbsp"].includes(s)) return "tbsp";
-  if (["cup","cups"].includes(s)) return "cup";
-  if (["ounce","ounces","oz"].includes(s)) return "oz";
-  if (["pound","pounds","lb","lbs"].includes(s)) return "lb";
-  if (["gram","grams","g"].includes(s)) return "g";
-  if (["kilogram","kilograms","kg"].includes(s)) return "kg";
-  if (["milliliter","millilitre","milliliters","millilitres","ml"].includes(s)) return "ml";
-  if (["liter","litre","liters","litres","l"].includes(s)) return "l";
-  if (["f","°f","fahrenheit"].includes(s)) return "°f";
-  if (["c","°c","celsius","centigrade"].includes(s)) return "°c";
-  return null;
-};
-
-export function convertForDisplay(
-  quantity: Qty,
-  unit: string | null | undefined,
-  pref: UnitsPref
-): { qty: number | string, unit: string } {
-  if (!unit) return { qty: quantity ?? "", unit: "" };
-
-  const n = toNum(quantity);
-  const u = normalizeUnit(unit);
-  if (!u || Number.isNaN(n)) return { qty: quantity ?? "", unit: unit };
-
-  // already preferred
-  if (pref === "us") {
-    switch (u) {
-      case "g":   return { qty: round(n / G_PER_OZ, 2), unit: "oz" };
-      case "kg":  return { qty: round((n * 1000) / G_PER_OZ / 16, 2), unit: "lb" };
-      case "ml":  {
-        // convert to tsp/tbsp/cup with friendly thresholds
-        if (n < 15) return { qty: round(n / ML_PER_TSP, 2), unit: "tsp" };
-        if (n < 90) return { qty: round(n / (ML_PER_TSP * TSP_PER_TBSP), 2), unit: "tbsp" };
-        return { qty: round(n / ML_PER_CUP, 2), unit: "cup" };
-      }
-      case "l":   return { qty: round((n * 1000) / ML_PER_CUP, 2), unit: "cup" };
-      case "°c":  return { qty: Math.round(F_PER_C(n)), unit: "°F" };
-      default:    return { qty: n, unit: pretty(u) };
-    }
-  } else {
-    // metric preferred
-    switch (u) {
-      case "oz":  return { qty: round(n * G_PER_OZ, 0), unit: "g" };
-      case "lb":  return { qty: round(n * G_PER_LB / 1000, 2), unit: "kg" };
-      case "tsp": return { qty: round(n * ML_PER_TSP, 0), unit: "ml" };
-      case "tbsp":return { qty: round(n * ML_PER_TSP * TSP_PER_TBSP, 0), unit: "ml" };
-      case "cup": return { qty: round(n * ML_PER_CUP, 0), unit: "ml" };
-      case "°f":  return { qty: Math.round(C_PER_F(n)), unit: "°C" };
-      default:    return { qty: n, unit: pretty(u) };
-    }
-  }
+export function normalizeUnit(unit: string | null | undefined): NormUnit | null {
+  if (!unit) return null;
+  const u = unit.trim().toLowerCase();
+  return UNIT_ALIASES[u] ?? (UNIT_ALIASES[u.replace(/\./g,'')] ?? null);
 }
 
-const pretty = (u: Unit) => {
-  switch (u) {
-    case "tsp": return "tsp";
-    case "tbsp": return "tbsp";
-    case "cup": return "cup";
-    case "oz": return "oz";
-    case "lb": return "lb";
-    case "g": return "g";
-    case "kg": return "kg";
-    case "ml": return "ml";
-    case "l": return "L";
-    case "°f": return "°F";
-    case "°c": return "°C";
+export function detectSystemFromUnit(unit: string): UnitsPref | null {
+  const u = normalizeUnit(unit);
+  if (!u) return null;
+  if (u === 'ml' || u === 'l' || u === 'g' || u === 'kg') return 'metric';
+  if (u === 'tsp' || u === 'tbsp' || u === 'cup' || u === 'floz' || u === 'oz' || u === 'lb') return 'us';
+  return null;
+}
+
+// rounding helpers
+function roundTo(n: number, step: number) { return Math.round(n / step) * step; }
+function toNiceUSVolume(ml: number): { qty: number; unit: 'tsp'|'tbsp'|'cup'|'floz' } {
+  // choose best US unit by thresholds
+  if (ml < 15)       return { qty: roundTo(ml / ML_PER_TSP, 0.25), unit: 'tsp' };
+  if (ml < 90)       return { qty: roundTo(ml / ML_PER_TBSP, 0.25), unit: 'tbsp' };
+  if (ml < 360)      return { qty: roundTo(ml / ML_PER_FLOZ, 0.25), unit: 'floz' };
+  return                 { qty: roundTo(ml / ML_PER_CUP, 0.25), unit: 'cup' };
+}
+function toNiceMetricVolume(ml: number): { qty: number; unit: 'ml'|'l' } {
+  if (ml >= 1000) return { qty: roundTo(ml / 1000, 0.05), unit: 'l' };
+  return { qty: Math.round(ml), unit: 'ml' };
+}
+function toNiceUSMass(g: number): { qty: number; unit: 'oz'|'lb' } {
+  if (g >= G_PER_LB) return { qty: roundTo(g / G_PER_LB, 0.05), unit: 'lb' };
+  return { qty: roundTo(g / G_PER_OZ, 0.05), unit: 'oz' };
+}
+function toNiceMetricMass(g: number): { qty: number; unit: 'g'|'kg' } {
+  if (g >= 1000) return { qty: roundTo(g / 1000, 0.01), unit: 'kg' };
+  return { qty: Math.round(g), unit: 'g' };
+}
+
+export function convertForDisplay(
+  qty: number,
+  unit: string,
+  pref: UnitsPref
+): { qty: number; unit: string } {
+  const u = normalizeUnit(unit);
+  if (!u || Number.isNaN(qty)) return { qty, unit };
+
+  // Volume path (ml as hub)
+  if (u === 'ml' || u === 'l' || u === 'tsp' || u === 'tbsp' || u === 'cup' || u === 'floz') {
+    const ml =
+      u === 'ml' ? qty :
+      u === 'l' ? qty * 1000 :
+      u === 'tsp' ? qty * ML_PER_TSP :
+      u === 'tbsp' ? qty * ML_PER_TBSP :
+      u === 'floz' ? qty * ML_PER_FLOZ :
+      /* cup */     qty * ML_PER_CUP;
+
+    if (pref === 'metric') {
+      const m = toNiceMetricVolume(ml);
+      return { qty: m.qty, unit: m.unit };
+    } else {
+      const v = toNiceUSVolume(ml);
+      return { qty: v.qty, unit: v.unit };
+    }
   }
-};
+
+  // Mass path (g as hub)
+  if (u === 'g' || u === 'kg' || u === 'oz' || u === 'lb') {
+    const g =
+      u === 'g' ? qty :
+      u === 'kg' ? qty * 1000 :
+      u === 'oz' ? qty * G_PER_OZ :
+      /* lb */     qty * G_PER_LB;
+
+    if (pref === 'metric') {
+      const m = toNiceMetricMass(g);
+      return { qty: m.qty, unit: m.unit };
+    } else {
+      const w = toNiceUSMass(g);
+      return { qty: w.qty, unit: w.unit };
+    }
+  }
+
+  // Unknown/unsupported → no-op
+  return { qty, unit };
+}
