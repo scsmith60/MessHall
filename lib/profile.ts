@@ -94,8 +94,8 @@ export async function fetchMyRecipesForQuickExport(limit = 100) {
 
   // Keep payload small & safe for "Share"
   const { data, error } = await supabase
-    .from("recipes")
-    .select("id,title,created_at,updated_at,ingredients,steps")
+    .from("recipe_export_v1")
+    .select("*")
     .eq("user_id", u.user.id)
     .order("created_at", { ascending: false })
     .limit(limit);

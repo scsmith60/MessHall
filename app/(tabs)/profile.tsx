@@ -638,11 +638,11 @@ export default function Profile() {
     try {
       setExporting(true);
       const { data, error } = await supabase
-        .from("recipes")
-        .select("id,title,created_at,updated_at,ingredients,steps")
+        .from("recipe_export_v1")
+        .select("*")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
-        .limit(100); // keep Share payload reasonable
+        .limit(100);
       if (error) throw error;
       const payload = JSON.stringify(data ?? [], null, 2);
       await Share.share({
