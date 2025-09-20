@@ -1,17 +1,20 @@
 // app/(auth)/_layout.tsx
-// ✅ Keep auth screens public, but leave if already logged in
 
 import React from "react";
-import { Stack, Redirect } from "expo-router";
+import { Stack, Redirect, usePathname } from "expo-router";
 import { useAuth } from "../../lib/auth";
 
 export default function AuthLayout() {
-  const { isLoggedIn, loading } = useAuth();
+  const { loading, isLoggedIn } = useAuth();
+  const pathname = usePathname();
+  const inLogoutFlow =
+    pathname === "/logout" ||
+    pathname === "/logout-complete" ||
+    pathname?.endsWith("/logout") ||
+    pathname?.endsWith("/logout-complete");
 
-  // don’t flash; only redirect when we know
-  if (!loading && isLoggedIn) {
-    console.log("[AuthLayout] logged in → go home");
-    return <Redirect href="/" />;
+  if (!loading && isLoggedIn && !inLogoutFlow) {
+    return <Redirect href="/(tabs)" />;
   }
 
   return <Stack screenOptions={{ headerShown: false }} />;

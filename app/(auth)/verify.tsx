@@ -1,5 +1,5 @@
 // app/(auth)/verify.tsx
-// ✅ Waits for a confirmed session BEFORE navigating, so Tabs mount reliably.
+// 🧸 verify code — restored Messhall green
 
 import React, { useEffect, useRef, useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, Alert } from "react-native";
@@ -11,9 +11,8 @@ const COLORS = {
   text: "#e5e7eb",
   sub: "#9ca3af",
   field: "#1f2937",
-  button: "#6EE7B7",
   green: "#22c55e",
-  disabled: "#334155",
+  greenDim: "#16a34a",
 };
 
 export default function Verify() {
@@ -36,48 +35,36 @@ export default function Verify() {
     try {
       setBusy(true);
 
-      // 1) Ask Supabase to confirm the sign-up code.
-      const { data, error } = await supabase.auth.verifyOtp({
+      const { error } = await supabase.auth.verifyOtp({
         email,
         token: code,
         type: "signup",
       });
       if (error) throw error;
 
-      // 2) If a session is already present, we can send you home.
       const { data: userNow } = await supabase.auth.getUser();
       if (userNow?.user?.id) {
-        console.log("[verify] user confirmed immediately:", userNow.user.id);
-        router.replace("/"); // Home = app/(tabs)/index.tsx
+        router.replace("/");
         return;
       }
 
-      // 3) Otherwise, wait for the auth listener to deliver the session.
-      console.log("[verify] waiting for auth session…");
       if (unsubRef.current) unsubRef.current();
-
       const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
         if (session?.user?.id) {
-          console.log("[verify] session arrived:", session.user.id);
-          // Clean up listener before navigating
           sub.subscription.unsubscribe();
           unsubRef.current = null;
-          router.replace("/"); // Home
+          router.replace("/");
         }
       });
-
       unsubRef.current = () => sub.subscription.unsubscribe();
 
-      // 4) Failsafe: after 6s, check again (covers edge cases on slower devices).
       setTimeout(async () => {
         if (!unsubRef.current) return;
         const { data: userLater } = await supabase.auth.getUser();
         if (userLater?.user?.id) {
-          console.log("[verify] failsafe ok:", userLater.user.id);
           unsubRef.current?.();
           router.replace("/");
         } else {
-          console.log("[verify] failsafe still no session");
           Alert.alert("Almost there", "Code verified, but session isn’t ready yet. Try again.");
         }
       }, 6000);
@@ -89,7 +76,6 @@ export default function Verify() {
   }
 
   useEffect(() => {
-    // cleanup listener if we leave the screen
     return () => {
       if (unsubRef.current) {
         unsubRef.current();
@@ -152,14 +138,16 @@ export default function Verify() {
         onPress={verify}
         disabled={!canVerify}
         style={{
-          backgroundColor: canVerify ? COLORS.button : COLORS.disabled,
+          backgroundColor: canVerify ? COLORS.green : COLORS.greenDim,
           padding: 14,
           borderRadius: 12,
           alignItems: "center",
           marginTop: 12,
         }}
       >
-        <Text style={{ color: "#0b0f19", fontWeight: "800" }}>{busy ? "Please wait..." : "Verify & Continue"}</Text>
+        <Text style={{ color: "#0b0f19", fontWeight: "800" }}>
+          {busy ? "Please wait..." : "Verify & Continue"}
+        </Text>
       </TouchableOpacity>
 
       <TouchableOpacity onPress={resend} disabled={busy} style={{ marginTop: 16, alignItems: "center" }}>

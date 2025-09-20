@@ -1,17 +1,10 @@
 // app/(auth)/signup.tsx
-// 👶 kid version (super simple):
-// - You type Email, Password, and Username.
-// - We check if the Username is free (green = good, red = taken).
-// - We create your account in Supabase (email must be unique).
-// - We save { email, username } into public.profiles for your user.
-// - We also set auth.user_metadata.display_name = username.
-// - THEN we send you to a screen to enter the 6-digit code from your email
-//   (/(auth)/verify), so no broken deep links.
-//
-// Requirements (already covered by our setup):
-// - public.profiles has columns: id (uuid PK), email text, username text
-// - UNIQUE INDEX on lower(username) and lower(email)
-// - RLS: anyone can select; user can update their own row
+// 🧸 Like-you're-5 notes:
+// - Same big "M" image on top.
+// - Same logo green for highlights.
+// - We keep your username availability checker and normal logic working.
+
+// 👇 IMPORTANT: put your logo file at assets/brand/messhall-m.png
 
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -21,43 +14,46 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Image, // <-- show logo
 } from "react-native";
 import { Link, router } from "expo-router";
 import { supabase } from "../../lib/supabase";
+
+// 🎨 colors that match the logo
+const M_GREEN = "#53856b";
+const M_GREEN_DIM = "#3f6b55";
 
 const COLORS = {
   bg: "#0f172a",
   text: "#e5e7eb",
   sub: "#9ca3af",
   field: "#1f2937",
-  button: "#6EE7B7",
-  green: "#22c55e",
+  green: M_GREEN,      // logo green
+  greenDim: M_GREEN_DIM,
   red: "#ef4444",
 };
 
-// 🧼 take what user typed and make it username-safe (spaces → underscores)
+// 🧼 make username safe (spaces → underscores)
 function normalize(s: string) {
   return s.trim().replace(/\s+/g, "_");
 }
 
 export default function SignUp() {
-  // ✍️ what the user types
+  // boxes that remember what you type
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
 
-  // 🔎 username availability status
+  // username checker
   const [checking, setChecking] = useState(false);
   const [available, setAvailable] = useState<boolean | null>(null);
 
-  // ⏱️ buttons/requests state
+  // button spinner
   const [busy, setBusy] = useState(false);
 
-  // 👂 live check username availability as they type (case-insensitive)
+  // 🔍 check if username is taken while user types
   useEffect(() => {
     const value = normalize(username);
-
-    // Too short? Don’t check yet.
     if (value.length < 3) {
       setAvailable(null);
       return;
@@ -66,8 +62,6 @@ export default function SignUp() {
     let alive = true;
     (async () => {
       setChecking(true);
-
-      // ILIKE = case-insensitive exact match (we pass the full normalized value)
       const { data, error } = await supabase
         .from("profiles")
         .select("id")
@@ -77,18 +71,14 @@ export default function SignUp() {
       if (!alive) return;
 
       setChecking(false);
-
-      // available if no row was found (and no error)
       setAvailable(!error && (data?.length ?? 0) === 0);
     })();
 
-    // if component unmounts quickly, stop updating state
     return () => {
       alive = false;
     };
   }, [username]);
 
-  // ✅ can we press the CREATE ACCOUNT button?
   const canSubmit = useMemo(() => {
     return (
       email.includes("@") &&
@@ -99,7 +89,7 @@ export default function SignUp() {
     );
   }, [email, password, username, available, busy]);
 
-  // 🚀 main sign-up flow
+  // 🧒 Create the account
   async function handleSignup() {
     try {
       setBusy(true);
@@ -108,39 +98,29 @@ export default function SignUp() {
       if (!u || u.length < 3) throw new Error("Username must be at least 3 characters.");
       if (available === false) throw new Error("That username is already taken.");
 
-      // 1) Create the auth user. Supabase enforces unique email here.
       const { data: sign, error: signErr } = await supabase.auth.signUp({
         email,
         password,
-        options: {
-          // Keep display name in auth metadata so it shows up in dashboards/logs.
-          data: { display_name: u },
-        },
+        options: { data: { display_name: u } },
       });
       if (signErr) throw signErr;
 
-      // We should have a user id even if email confirmation is required.
       const userId = sign.user?.id;
       if (!userId) throw new Error("Could not create user.");
 
-      // 2) Save username + email on our profiles row (linked by id).
-      //    UNIQUE INDEX on lower(username) protects against races.
       const { error: profileErr } = await supabase
         .from("profiles")
         .update({ username: u, email })
         .eq("id", userId);
 
       if (profileErr) {
-        // 23505 = unique violation (someone grabbed that username a split-second before)
         if ((profileErr as any).code === "23505") {
           throw new Error("That username was just taken. Please choose another.");
         }
         throw profileErr;
       }
 
-      // 3) Instead of deep-linking via email “magic page”, we take users to
-      //    a friendly 6-digit code screen. They already got the code by email.
-      router.replace({ pathname: "/(auth)/verify", params: { email } });
+      router.replace({ pathname: "/verify", params: { email } });
     } catch (e: any) {
       Alert.alert("Sign up failed", e.message ?? String(e));
     } finally {
@@ -150,14 +130,27 @@ export default function SignUp() {
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.bg, padding: 24, justifyContent: "center" }}>
-      {/* App title */}
-      <Text style={{ color: COLORS.green, fontSize: 32, fontWeight: "800", textAlign: "center", marginBottom: 16 }}>
-        MESS HALL
-      </Text>
+      {/* ===================== Header with Logo ===================== */}
+      <View style={{ alignItems: "center", marginBottom: 16 }}>
+        <Image
+          source={require("../../assets/brand/messhall-m.png")}
+          accessibilityLabel="MessHall logo"
+          style={{
+            width: 96,
+            height: 96,
+            borderRadius: 18,
+            marginBottom: 10,
+            resizeMode: "contain",
+          }}
+        />
+        <Text style={{ color: COLORS.green, fontSize: 28, fontWeight: "900", letterSpacing: 2 }}>
+          MESSHALL
+        </Text>
+      </View>
 
-      {/* Header tabs (Login / Sign Up) */}
+      {/* ======================= Tab Switcher ======================= */}
       <View style={{ flexDirection: "row", gap: 24, justifyContent: "center", marginBottom: 16 }}>
-        <Link href="/(auth)/login">
+        <Link href="/login">
           <Text style={{ color: COLORS.sub, fontWeight: "600" }}>Login</Text>
         </Link>
         <Text style={{ color: COLORS.text, fontWeight: "700", borderBottomColor: COLORS.green, borderBottomWidth: 2 }}>
@@ -165,7 +158,7 @@ export default function SignUp() {
         </Text>
       </View>
 
-      {/* Email */}
+      {/* ============================ Email ========================= */}
       <TextInput
         placeholder="Email"
         placeholderTextColor={COLORS.sub}
@@ -182,7 +175,7 @@ export default function SignUp() {
         }}
       />
 
-      {/* Password */}
+      {/* ========================== Password ======================== */}
       <TextInput
         placeholder="Password (min 6)"
         placeholderTextColor={COLORS.sub}
@@ -198,7 +191,7 @@ export default function SignUp() {
         }}
       />
 
-      {/* Username */}
+      {/* =========================== Username ======================= */}
       <TextInput
         placeholder="Username (your public @name)"
         placeholderTextColor={COLORS.sub}
@@ -213,7 +206,7 @@ export default function SignUp() {
         }}
       />
 
-      {/* Availability feedback */}
+      {/* ------------- Availability message (live checker) ---------- */}
       <View style={{ minHeight: 22, justifyContent: "center", marginTop: 6 }}>
         {checking ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -229,12 +222,12 @@ export default function SignUp() {
         )}
       </View>
 
-      {/* Create Account */}
+      {/* ==================== Create Account Button ================= */}
       <TouchableOpacity
         onPress={handleSignup}
         disabled={!canSubmit}
         style={{
-          backgroundColor: canSubmit ? COLORS.button : "#334155",
+          backgroundColor: canSubmit ? COLORS.green : COLORS.greenDim,
           padding: 14,
           borderRadius: 12,
           alignItems: "center",
@@ -246,11 +239,11 @@ export default function SignUp() {
         </Text>
       </TouchableOpacity>
 
-      {/* Bottom link */}
+      {/* -------------------- Bottom link -------------------- */}
       <View style={{ flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 }}>
         <Text style={{ color: COLORS.sub }}>Already have an account?</Text>
-        <Link href="/(auth)/login">
-          <Text style={{ color: "#22c55e", fontWeight: "700" }}>Login.</Text>
+        <Link href="/login">
+          <Text style={{ color: COLORS.green, fontWeight: "700" }}>Login.</Text>
         </Link>
       </View>
     </View>

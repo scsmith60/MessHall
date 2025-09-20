@@ -186,12 +186,11 @@ export default function Profile() {
       setLoading(true);
       const { data, error } = await supabase
         .from("profiles")
-        .select("id, email, username, bio, avatar_url, followers, following")
+        .select("id, email, username, bio, avatar_url, followers, following, state, country, units_preference, preferred_units")
         .eq("id", userId)
         .single();
       if (!alive) return;
       if (error) {
-        console.log("profiles SELECT error:", error.message);
         Alert.alert("Error", error.message);
         setLoading(false);
         return;
@@ -205,28 +204,13 @@ export default function Profile() {
       setAvatarUrl(row.avatar_url ?? null);
       setFollowers(Number(row.followers ?? 0));
       setFollowing(Number(row.following ?? 0));
+      setStateRegion(row.state ?? "");
+      setCountry(row.country ?? "");
+      setUnits((row.units_preference as "us" | "metric") ?? (row.preferred_units as "us" | "metric") ?? "us");
       setLoading(false);
 
       // 🆕 OPTIONAL fetch for new fields (won’t break if columns don’t exist)
-      try {
-        const { data: more } = await supabase
-          .from("profiles")
-          .select("units_preference, preferred_units, state, country, deletion_requested_at, deletion_effective_at")
-          .eq("id", userId)
-          .maybeSingle();
-        if (more && alive) {
-          // prefer units_preference; fall back to legacy preferred_units; default to "us"
-          setUnits(
-            (((more as any)?.units_preference as "us" | "metric")
-              ?? ((more as any)?.preferred_units as "us" | "metric")
-              ?? "us")
-          );
-          setStateRegion(((more as any)?.state as string) || "");
-          setCountry(((more as any)?.country as string) || "");
-        }
-      } catch {
-        // ignore if columns not there yet
-      }
+      
     }
     load();
     return () => { alive = false; };
@@ -275,7 +259,6 @@ export default function Profile() {
       if (!alive) return;
       setChecking(false);
       if (error) {
-        console.log("username availability error:", error.message);
         setAvailable(null);
       } else if (!data || data.length === 0) {
         setAvailable(true);
@@ -314,18 +297,13 @@ export default function Profile() {
       setAvailable(null);
       Alert.alert("Saved", "Your username has been updated.");
     } catch (e: any) {
-      console.log("handleSave error:", e?.message || e);
       Alert.alert("Could not save", e.message ?? String(e));
     } finally {
       setSaving(false);
     }
   }
 
-  // =============== 5) sign out (unchanged) ===============
-  async function signOut() {
-    const { error } = await supabase.auth.signOut();
-    if (error) Alert.alert("Error", error.message);
-  }
+
 
   // =============== 6) load MY recipes (unchanged) ===============
   const loadRecipes = useCallback(async () => {
@@ -345,7 +323,6 @@ export default function Profile() {
       .limit(30);
 
     if (error) {
-      console.log("recipes SELECT error:", error.message);
       setRecipes([]);
       setTotalMedals(0);
     } else {
@@ -370,7 +347,6 @@ export default function Profile() {
       .order("created_at", { ascending: false })
       .limit(30);
     if (error) {
-      console.log("loadCooked error:", error.message);
       setCookedRecipes([]);
     } else {
       const list = (data || []).map((row: any) => row.recipes as RecipeRow).filter(Boolean);
@@ -393,7 +369,6 @@ export default function Profile() {
       .limit(60);
 
     if (error) {
-      console.log("loadRemixes error:", error.message);
       setRemixRecipes([]);
     } else {
       setRemixRecipes((data || []) as RecipeRow[]);
@@ -412,7 +387,6 @@ export default function Profile() {
       .order("created_at", { ascending: false })
       .limit(60);
     if (error) {
-      console.log("loadSaved error:", error.message);
       setSavedRecipes([]);
     } else {
       const list = (data || [])
@@ -451,7 +425,6 @@ export default function Profile() {
       if (!uri) { Alert.alert("Oops", "Could not read selected image."); return; }
       setEditAvatar(uri);
     } catch (e: any) {
-      console.log("[ImagePicker] error:", e?.message || e);
       Alert.alert("Picker error", e?.message ?? String(e));
     }
   }
@@ -1226,21 +1199,20 @@ export default function Profile() {
                   </Text>
                 </TouchableOpacity>
 
-                {/* Affiliate Disclosure (unchanged) */}
+                {/* Sign out — close the sheet first, then navigate */}
                 <TouchableOpacity
-                  onPress={() => setShowAffiliate(true)}
-                  activeOpacity={0.9}
-                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
-                >
-                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Affiliate Disclosure</Text>
-                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
-                    MessHall may earn from qualifying purchases when you use Send to Cart.
-                  </Text>
-                </TouchableOpacity>
+                  onPress={() => {
+                  // close the modal/sheet first so navigation isn't blocked
+                  setShowSettings(false);
 
-                {/* Sign out (unchanged) */}
-                <TouchableOpacity
-                  onPress={signOut}
+                  // wait one frame so the close animation starts, then navigate
+                  requestAnimationFrame(() => {
+                    setTimeout(() => {
+                      router.replace("/logout");
+                    }, 0);
+                  });
+                }}
+
                   style={{ backgroundColor: COLORS.red, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}
                 >
                   <Text style={{ color: "#fff", fontWeight: "900" }}>Sign Out</Text>

@@ -1,42 +1,45 @@
 // lib/auth.tsx
-// LIKE I'M 5: this file keeps track of "who is logged in".
-// We only say "yes, logged in" if Supabase's getUser() confirms a real user.
-// If storage lies (old/stale session), we sign out so we stay clean + safe.
+// 🧸 Like I'm 5: This is the brain that tells the app if you're logged in.
+// What’s new here:
+// - After ANY auth event, we re-check getSession() to grab the freshest session.
+// - We briefly set loading=true during flips so screens don't run early.
+// - We NEVER report isLoggedIn=true while loading is true.
 
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  PropsWithChildren,
+} from "react";
+import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
+import { d } from "./debug";
 
-// 🧠 What we share with the app
-// - session: whatever is in storage (can be null)
-// - loading: true while we are checking with the server
-// - isLoggedIn: only true if server says we have a real user
-// - userId: the confirmed user id (or null)
 type AuthContextType = {
+  loading: boolean;       // ⏳ still checking?
+  isLoggedIn: boolean;    // ✅ only true when loading=false AND user exists
   session: Session | null;
-  loading: boolean;
-  isLoggedIn: boolean;
-  userId: string | null;
+  user: User | null;
 };
 
 const AuthContext = createContext<AuthContextType>({
-  session: null,
   loading: true,
   isLoggedIn: false,
-  userId: null,
+  session: null,
+  user: null,
 });
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // 🗃️ This is “what storage says” (might be stale)
+export function AuthProvider({ children }: PropsWithChildren) {
   const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const user = session?.user ?? null;
 
-  // ⏳ Are we busy checking with the server?
-  const [loading, setLoading] = useState(true);
+  // ✅ never true while loading
+  const isLoggedIn = !loading && !!user?.id;
 
-  // ✅ This is the only truth we trust for "who am I"
-  const [confirmedUserId, setConfirmedUserId] = useState<string | null>(null);
-
-  // 🔍 Step 1: read whatever is in storage (may be stale)
+  // 1) first snapshot on mount
   useEffect(() => {
     let alive = true;
 
@@ -44,12 +47,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data } = await supabase.auth.getSession();
       if (!alive) return;
       setSession(data.session ?? null);
+      setLoading(false);
+
+      d.log("[auth-hook]", "initial getSession()", {
+        hasSession: !!data.session,
+        userId: data.session?.user?.id ?? null,
+        email: data.session?.user?.email ?? null,
+      });
     })();
 
-    // 👂 Listen for future auth changes (login/logout/refresh)
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s ?? null);
-      // when auth changes, Step 2 (below) runs again to re-validate
+    // 2) react to auth flips
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, nextFromEvent) => {
+      // 🔒 hold navigation while we settle the new truth
+      setLoading(true);
+
+      // 🆕 re-check the REAL session (prevents “half-ready” states)
+      const { data } = await supabase.auth.getSession();
+      const freshest = nextFromEvent ?? data.session ?? null;
+
+      setSession(freshest);
+
+      await d.log("[auth-hook]", `onAuthStateChange: ${event}`, {
+        fromEvent: !!nextFromEvent,
+        hasSession: !!freshest,
+        userId: freshest?.user?.id ?? null,
+        email: freshest?.user?.email ?? null,
+      });
+
+      // 🧘 small micro-wait lets React commit state before guards read it
+      await new Promise((r) => setTimeout(r, 0));
+
+      setLoading(false);
     });
 
     return () => {
@@ -58,83 +86,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // ✅ Step 2: server-validate: only trust a session if getUser() returns a user
-  useEffect(() => {
-    let alive = true;
-
-    (async () => {
-      setLoading(true);
-
-      // 🧑‍⚖️ Ask the server: "Who am I?"
-      // If tokens are expired/invalid, this gives us no user.
-      const { data, error } = await supabase.auth.getUser();
-
-      if (!alive) return;
-
-      if (error || !data?.user?.id) {
-        // 🧹 Stale or invalid session → hard sign out to clear storage
-        try {
-          await supabase.auth.signOut();
-        } catch {
-          // ignore sign-out errors; goal is to ensure a clean state
-        }
-        setConfirmedUserId(null);
-      } else {
-        setConfirmedUserId(data.user.id);
-      }
-
-      setLoading(false);
-
-      // 🪵 Helpful log during debugging
-      // (Remove or guard in production if you like)
-      console.log("[Auth] validated", {
-        hasStoredSession: !!session,
-        confirmedUserId: data?.user?.id ?? null,
-        error: error?.message,
-      });
-    })();
-
-    // 🔁 Re-validate whenever the stored session object changes
-  }, [session]);
-
-  // 🎁 What we give to the rest of the app
   const value = useMemo<AuthContextType>(
-    () => ({
-      session,
-      loading,
-      isLoggedIn: !!confirmedUserId, // 👈 only true after validation
-      userId: confirmedUserId,
-    }),
-    [session, loading, confirmedUserId]
+    () => ({ loading, isLoggedIn, session, user }),
+    [loading, isLoggedIn, session, user]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-// 🪙 useAuth(): grab the whole auth package (loading, isLoggedIn, userId, session)
 export function useAuth() {
   return useContext(AuthContext);
 }
 
-// 🧩 useUserId(): tiny helper hook if you only need the id + loading flag
 export function useUserId() {
-  const { userId, loading } = useAuth();
-  return { userId, loading };
-}
-
-// 🧰 getCurrentUserId(): utility for places outside React (data layer, actions)
-// LIKE I'M 5: ask Supabase who I am right now, give me my id or null.
-export async function getCurrentUserId(): Promise<string | null> {
-  const { data, error } = await supabase.auth.getUser();
-  if (error || !data?.user?.id) return null;
-  return data.user.id;
-}
-
-// 🧰 requireUserId(): strict version (throws if not logged in)
-// Handy in the data layer when you *must* have a user.
-export async function requireUserId(): Promise<string> {
-  const { data, error } = await supabase.auth.getUser();
-  const id = data?.user?.id ?? null;
-  if (error || !id) throw new Error("Not logged in");
-  return id;
+  const { user, loading } = useAuth();
+  return { userId: user?.id ?? null, loading };
 }

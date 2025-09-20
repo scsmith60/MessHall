@@ -436,7 +436,6 @@ export default function HomeScreen() {
       setRailSponsorLogo(null);
       setRailIsHouse(USE_HOUSE_BADGE);
     } catch (e: any) {
-      console.log("[rail] error:", e?.message || e);
       setRailTitle(null);
       setRailItems([]);
       setRailIsSponsored(false);
@@ -559,7 +558,6 @@ export default function HomeScreen() {
         return next;
       });
     } catch (e: any) {
-      console.log("[saved flags] exception:", e?.message || e);
     }
   }
 
@@ -664,7 +662,6 @@ export default function HomeScreen() {
 
       return item;
     } catch (e) {
-      console.log("[inline sponsored] failed:", e);
       return null;
     }
   }, []);
