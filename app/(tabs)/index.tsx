@@ -786,6 +786,7 @@ export default function HomeScreen() {
         likes={item.likes}
         commentCount={item.commentCount ?? 0}
         createdAt={new Date(item.createdAt).getTime()} // ⬅️ timestamp like before
+        titleRightInset={96}                           //title and colorie pill prop
         ownerId={item.ownerId}                          // ⬅️ needed so self-actions hide
         isPrivate={isPrivateFlag(item.is_private)}      // ⬅️ pass privacy flag
         onOpen={(id: string) => router.push(`/recipe/${id}`)}

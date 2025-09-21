@@ -72,6 +72,7 @@ type Props = {
   isSaved?: boolean;
   onToggleSave?: () => void;
   onSave?: (id: string) => void;
+  titleRightInset?: number; // pixels of right-side gap for the calories pill
 };
 
 function RecipeCard(props: Props) {
@@ -90,6 +91,8 @@ function RecipeCard(props: Props) {
     onOpenComments,
     onEdit,
   } = props;
+  const titleRightInset = props.titleRightInset ?? 66; // default keeps your current gap
+
 
   // 👤 who am I?
   const { userId } = useUserId();
@@ -377,7 +380,7 @@ try {
             </View>
 
             {/* Title sticker on the photo */}
-            <View style={styles.titleSticker}>
+            <View style={[styles.titleSticker, { right: titleRightInset }]}>
               <Text style={styles.titleText} numberOfLines={2}>
                 {title}
               </Text>

@@ -1,5 +1,12 @@
 // app/search/index.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+// 🧸 ELI5: Search now…
+// • shows real counts + right date
+// • lights the green Save ribbon + tiny “Saved/Removed” HUD
+// • opens a comments sheet that actually SENDS to Supabase
+// • uses your schema: recipe_comments.body (not content/text)
+// • close ✕ is easy to tap
+
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   View,
   TextInput,
@@ -10,19 +17,34 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  ActivityIndicator,
+  Modal,
+  Animated,
+  Alert,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { COLORS, SPACING } from '../../lib/theme';
-import { dataAPI } from '../../lib/data';
+import { supabase } from '../../lib/supabase';
 import RecipeCard from '../../components/RecipeCard';
+import { COLORS, SPACING } from '../../lib/theme';
+import { useUserId } from '../../lib/auth';
+import { success, tap, warn } from '../../lib/haptics';
 
-type SearchRow = { id: string; title: string; image: string | null; creator: string };
+/* ╭──────────────── chips ───────────────╮ */
+type Chip =
+  | '30 Min'
+  | 'Vegan'
+  | 'Gluten-Free'
+  | 'Dairy-Free'
+  | 'Chicken'
+  | 'Beef'
+  | 'Pork'
+  | 'Seafood'
+  | 'Pasta';
 
-// ⬇️ Pills list
-const ALL_CHIPS = [
+const ALL_CHIPS: Chip[] = [
   '30 Min',
   'Vegan',
   'Gluten-Free',
@@ -32,10 +54,8 @@ const ALL_CHIPS = [
   'Pork',
   'Seafood',
   'Pasta',
-] as const;
-type Chip = typeof ALL_CHIPS[number];
+];
 
-// conflict map (vegan vs any meat/seafood)
 const CONFLICTS: Record<Chip, Chip[]> = {
   Vegan: ['Chicken', 'Beef', 'Pork', 'Seafood'],
   Chicken: ['Vegan'],
@@ -66,19 +86,236 @@ function filtersFromState(q: string, sel: Record<string, boolean>) {
   return { text: q.trim(), maxMinutes, diet, includeIngredients };
 }
 
+/* ╭──────────────── types ───────────────╮ */
+type SearchRow = {
+  id: string;
+  title: string;
+  image: string | null;
+  creator: string;
+  creatorAvatar: string | null;
+  ownerId: string;
+  knives: number;
+  cooks: number;
+  likes: number;
+  commentCount: number;
+  createdAtMs: number;
+};
+
+type CommentRow = {
+  id: string;
+  author: { username: string; avatar?: string | null };
+  text: string;
+  createdAt: string;
+};
+
+/* ╭──────────────── comments helpers ───────────────╮
+   your table is public.recipe_comments with column "body".
+   some views may expose "text". we try both. */
+async function getRecipeComments(recipeId: string): Promise<CommentRow[]> {
+  // 1) try your views (with profiles joined)
+  const viewCandidates = [
+    { table: 'recipe_comments_visible_to_with_profiles', textCol: 'body' },
+    { table: 'recipe_comments_visible_to_with_profiles', textCol: 'text' },
+    { table: 'recipe_comments_with_profiles', textCol: 'body' },
+    { table: 'recipe_comments_with_profiles', textCol: 'text' },
+  ];
+  for (const v of viewCandidates) {
+    try {
+      const { data, error } = await supabase
+        .from(v.table)
+        .select(`id, created_at, ${v.textCol}, author:profiles(username, avatar_url)`)
+        .eq('recipe_id', recipeId)
+        .order('created_at', { ascending: true });
+      if (!error && data) {
+        return (data as any[]).map((r) => ({
+          id: String(r.id),
+          text: (r as any)[v.textCol] ?? '',
+          createdAt: r.created_at ?? new Date().toISOString(),
+          author: { username: r.author?.username ?? 'user', avatar: r.author?.avatar_url ?? null },
+        }));
+      }
+    } catch {
+      // try next
+    }
+  }
+
+  // 2) fallback: base table (body)
+  try {
+    const { data, error } = await supabase
+      .from('recipe_comments')
+      .select('id, body, created_at, author:profiles(username, avatar_url)')
+      .eq('recipe_id', recipeId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map((r: any) => ({
+      id: String(r.id),
+      text: r.body ?? '',
+      createdAt: r.created_at ?? new Date().toISOString(),
+      author: { username: r.author?.username ?? 'user', avatar: r.author?.avatar_url ?? null },
+    }));
+  } catch (e) {
+    // 3) last fallback: base table (text column name)
+    const { data, error } = await supabase
+      .from('recipe_comments')
+      .select('id, text, created_at, author:profiles(username, avatar_url)')
+      .eq('recipe_id', recipeId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map((r: any) => ({
+      id: String(r.id),
+      text: r.text ?? '',
+      createdAt: r.created_at ?? new Date().toISOString(),
+      author: { username: r.author?.username ?? 'user', avatar: r.author?.avatar_url ?? null },
+    }));
+  }
+}
+
+// Insert comment → your schema uses "body"
+async function addComment(recipeId: string, message: string): Promise<void> {
+  const { data: auth } = await supabase.auth.getUser();
+  const uid = auth.user?.id;
+  if (!uid) throw new Error('Please sign in to comment.');
+
+  // try body first, then text/comment just in case
+  const payloads = [
+    { recipe_id: recipeId, user_id: uid, body: message },
+    { recipe_id: recipeId, user_id: uid, text: message },
+    { recipe_id: recipeId, user_id: uid, comment: message },
+  ];
+  let lastErr: any = null;
+  for (const p of payloads) {
+    const { error } = await supabase.from('recipe_comments').insert(p as any);
+    if (!error) return;
+    lastErr = error;
+  }
+  throw new Error(lastErr?.message || 'Could not save comment.');
+}
+
+/* ╭──────────────── counts helper ───────────────╮
+   look for recipe_stats/recipe_totals; else count base tables */
+async function fetchLiveCounts(recipeIds: string[]) {
+  type C = { knives: number; cooks: number; likes: number; comments: number };
+  const zero: C = { knives: 0, cooks: 0, likes: 0, comments: 0 };
+  const out = new Map<string, C>();
+  const put = (id: string, patch: Partial<C>) => {
+    const prev = out.get(id) ?? zero;
+    out.set(id, { ...prev, ...Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, Number(v ?? 0)])) } as C);
+  };
+  if (!recipeIds.length) return out;
+
+  // 1) recipe_stats
+  try {
+    const { data, error } = await supabase
+      .from('recipe_stats')
+      .select('recipe_id, knives, cooks, likes, comments')
+      .in('recipe_id', recipeIds);
+    if (!error && data) {
+      for (const r of data as any[]) {
+        put(String(r.recipe_id), { knives: r.knives, cooks: r.cooks, likes: r.likes, comments: r.comments });
+      }
+      return out;
+    }
+  } catch {}
+
+  // 2) recipe_totals
+  try {
+    const { data, error } = await supabase
+      .from('recipe_totals')
+      .select('recipe_id, knife_count, cook_count, like_count, comment_count')
+      .in('recipe_id', recipeIds);
+    if (!error && data) {
+      for (const r of data as any[]) {
+        put(String(r.recipe_id), {
+          knives: r.knife_count,
+          cooks: r.cook_count,
+          likes: r.like_count,
+          comments: r.comment_count,
+        });
+      }
+      return out;
+    }
+  } catch {}
+
+  // 3) base tables
+  async function countGrouped(table: string) {
+    try {
+      const { data } = await supabase.from(table).select('recipe_id').in('recipe_id', recipeIds);
+      const m = new Map<string, number>();
+      for (const row of (data ?? []) as any[]) {
+        const id = String(row.recipe_id);
+        m.set(id, (m.get(id) ?? 0) + 1);
+      }
+      return m;
+    } catch {
+      return new Map<string, number>();
+    }
+  }
+  const [knivesMap, cooksMap, commentsMap] = await Promise.all([
+    countGrouped('recipe_knives'),
+    countGrouped('recipe_cooks'),
+    countGrouped('recipe_comments'),
+  ]);
+  const likeTables = ['recipe_likes', 'recipe_like', 'recipe_hearts'];
+  let likesMap = new Map<string, number>();
+  for (const t of likeTables) {
+    likesMap = await countGrouped(t);
+    if (likesMap.size) break;
+  }
+
+  for (const id of recipeIds) {
+    put(id, {
+      knives: knivesMap.get(id) ?? 0,
+      cooks: cooksMap.get(id) ?? 0,
+      likes: likesMap.get(id) ?? 0,
+      comments: commentsMap.get(id) ?? 0,
+    });
+  }
+  return out;
+}
+
+/* ╭──────────────── saved flags + tiny HUD ───────────────╮ */
+async function getSavedSet(viewerId: string | null, ids: string[]) {
+  if (!viewerId || !ids.length) return new Set<string>();
+  const { data } = await supabase
+    .from('recipe_saves')
+    .select('recipe_id')
+    .eq('user_id', viewerId)
+    .in('recipe_id', ids);
+  return new Set<string>((data ?? []).map((r: any) => String(r.recipe_id)));
+}
+
+/* ╭──────────────── the Search screen ───────────────╮ */
 export default function SearchScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ q?: string }>();
   const initialPrefill = (params?.q as string) || '';
 
+  const { userId: userIdFromHook } = useUserId();
+  const [viewerId, setViewerId] = useState<string | null>(userIdFromHook ?? null);
+  useEffect(() => {
+    if (!viewerId) supabase.auth.getUser().then(({ data }) => setViewerId(data.user?.id ?? null));
+  }, [viewerId]);
+
   const [q, setQ] = useState(initialPrefill);
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [sel, setSel] = useState<Record<string, boolean>>(() =>
+  const [sel, setSel] = useState<Record<string, boolean>>(
     Object.fromEntries(ALL_CHIPS.map((c) => [c, initialPrefill.toLowerCase().includes(c.toLowerCase())]))
   );
-  const inputRef = useRef<TextInput>(null);
+  const [savedSet, setSavedSet] = useState<Set<string>>(new Set());
 
+  const [hudText, setHudText] = useState<string | null>(null);
+  const hudAnim = useRef(new Animated.Value(0)).current;
+  const showHud = (msg: string) => {
+    setHudText(msg);
+    Animated.sequence([
+      Animated.timing(hudAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
+      Animated.timing(hudAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
+      Animated.timing(hudAnim, { toValue: 0, duration: 220, useNativeDriver: true }),
+    ]).start();
+  };
+
+  const inputRef = useRef<TextInput>(null);
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 150);
     return () => clearTimeout(t);
@@ -86,16 +323,103 @@ export default function SearchScreen() {
 
   const args = useMemo(() => filtersFromState(q, sel), [q, sel]);
 
-  async function runSearch() {
+  const runSearch = useCallback(async () => {
     setLoading(true);
     try {
-      // 🔁 Always search. With no filters AND no text, API returns latest recipes.
-      const out = await dataAPI.searchRecipesAdvanced(args);
-      setRows(out);
+      // A) public recipes + owner profile
+      let query = supabase
+        .from('recipes')
+        .select(
+          `
+          id,
+          title,
+          image_url,
+          minutes,
+          diet_tags,
+          main_ingredients,
+          user_id,
+          created_at,
+          profiles!recipes_user_id_fkey ( username, avatar_url )
+        `
+        )
+        .eq('is_private', false)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (args.text) query = query.ilike('title', `%${args.text}%`);
+      if (typeof args.maxMinutes === 'number') query = query.lte('minutes', args.maxMinutes);
+      if (args.diet.length) query = query.overlaps('diet_tags', args.diet);
+      if (args.includeIngredients.length)
+        query = query.overlaps('main_ingredients', args.includeIngredients.map((x) => x.toLowerCase()));
+
+      const { data: recipeRows, error } = await query;
+      if (error) throw error;
+
+      let result = recipeRows ?? [];
+
+      // B) ingredient text fallback
+      if (!result.length && args.text) {
+        const { data: ingMatches } = await supabase
+          .from('recipe_ingredients')
+          .select('recipe_id')
+          .ilike('text', `%${args.text}%`)
+          .limit(50);
+
+        const ids = Array.from(new Set((ingMatches ?? []).map((r: any) => r.recipe_id))).filter(Boolean);
+        if (ids.length) {
+          const { data: byIng } = await supabase
+            .from('recipes')
+            .select(
+              `
+              id,
+              title,
+              image_url,
+              user_id,
+              created_at,
+              profiles!recipes_user_id_fkey ( username, avatar_url )
+            `
+            )
+            .in('id', ids)
+            .eq('is_private', false)
+            .order('created_at', { ascending: false })
+            .limit(50);
+          result = byIng ?? [];
+        }
+      }
+
+      // C) counts + saved flags
+      const ids = Array.from(new Set(result.map((r: any) => String(r.id))));
+      const [countMap, saved] = await Promise.all([fetchLiveCounts(ids), getSavedSet(viewerId, ids)]);
+      setSavedSet(saved);
+
+      // D) map rows for the card
+      const mapped: SearchRow[] = (result ?? []).map((r: any) => {
+        const id = String(r.id);
+        const c = countMap.get(id) ?? { knives: 0, cooks: 0, likes: 0, comments: 0 };
+        return {
+          id,
+          title: r.title ?? '',
+          image: r.image_url ?? null,
+          creator: r.profiles?.username ?? 'someone',
+          creatorAvatar: r.profiles?.avatar_url ?? null,
+          ownerId: r.user_id as string,
+          knives: c.knives,
+          cooks: c.cooks,
+          likes: c.likes,
+          commentCount: c.comments,
+          createdAtMs: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
+        };
+      });
+
+      setRows(mapped);
     } finally {
       setLoading(false);
     }
-  }
+  }, [args.text, args.maxMinutes, JSON.stringify(args.diet), JSON.stringify(args.includeIngredients), viewerId]);
+
+  useEffect(() => {
+    runSearch();
+  }, [runSearch]);
 
   function toggleChip(label: Chip) {
     setSel((prev) => {
@@ -105,40 +429,170 @@ export default function SearchScreen() {
     });
   }
 
-  // whenever filters change, search
-  useEffect(() => {
-    runSearch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.text, args.maxMinutes, JSON.stringify(args.diet), JSON.stringify(args.includeIngredients)]);
-
   function onClear() {
     setQ('');
     setSel(Object.fromEntries(ALL_CHIPS.map((c) => [c, false])));
-    runSearch(); // ⬅️ immediately refresh to "latest"
+    runSearch();
     inputRef.current?.focus();
   }
 
-  const renderCard = ({ item }: { item: SearchRow }) => (
+  /* ╭──────────────── comments sheet ───────────────╮ */
+  const [commentsVisible, setCommentsVisible] = useState(false);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [comments, setComments] = useState<CommentRow[]>([]);
+  const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
+  const [newText, setNewText] = useState('');
+  const [sendingComment, setSendingComment] = useState(false);
+
+  const openComments = useCallback(async (recipeId: string) => {
+    setActiveRecipeId(recipeId);
+    setCommentsVisible(true);
+    setCommentsLoading(true);
+    try {
+      const rows = await getRecipeComments(recipeId);
+      setComments(rows);
+    } catch (e: any) {
+      console.warn('comments load error', e);
+      Alert.alert('Comments', e?.message ?? 'Could not load comments.');
+    } finally {
+      setCommentsLoading(false);
+    }
+  }, []);
+
+  const closeComments = useCallback(() => {
+    setCommentsVisible(false);
+    setNewText('');
+  }, []);
+
+  const refreshComments = useCallback(async () => {
+    if (!activeRecipeId) return;
+    setCommentsLoading(true);
+    try {
+      const rows = await getRecipeComments(activeRecipeId);
+      setComments(rows);
+    } finally {
+      setCommentsLoading(false);
+    }
+  }, [activeRecipeId]);
+
+  const sendComment = useCallback(async () => {
+    const text = newText.trim();
+    if (!text || !activeRecipeId) return;
+    try {
+      setSendingComment(true);
+      await addComment(activeRecipeId, text);
+
+      setNewText('');
+      await refreshComments();
+
+      setRows((prev) =>
+        prev.map((r) => (r.id === activeRecipeId ? { ...r, commentCount: (r.commentCount ?? 0) + 1 } : r))
+      );
+
+      await success();
+      showHud('Comment posted');
+    } catch (e: any) {
+      console.warn('comment send error', e);
+      await warn();
+      Alert.alert('Could not post comment', e?.message ?? 'Please try again.');
+    } finally {
+      setSendingComment(false);
+    }
+  }, [newText, activeRecipeId, refreshComments]);
+
+  /* ╭──────────────── save toggle + HUD ───────────────╮ */
+  const toggleSave = useCallback(
+    async (recipeId: string) => {
+      if (!viewerId) {
+        await warn();
+        showHud('Sign in to save');
+        return;
+      }
+      const hasIt = savedSet.has(recipeId);
+
+      // optimistic
+      setSavedSet((prev) => {
+        const next = new Set(prev);
+        if (hasIt) next.delete(recipeId);
+        else next.add(recipeId);
+        return next;
+      });
+
+      try {
+        if (hasIt) {
+          const { error } = await supabase
+            .from('recipe_saves')
+            .delete()
+            .eq('user_id', viewerId)
+            .eq('recipe_id', recipeId);
+          if (error) throw error;
+          await tap();
+          showHud('Removed');
+        } else {
+          const { error } = await supabase
+            .from('recipe_saves')
+            .upsert({ user_id: viewerId, recipe_id: recipeId }, { onConflict: 'user_id,recipe_id' });
+          if (error) throw error;
+          await success();
+          showHud('Saved');
+        }
+      } catch (e: any) {
+        // revert if failed
+        setSavedSet((prev) => {
+          const next = new Set(prev);
+          if (hasIt) next.add(recipeId);
+          else next.delete(recipeId);
+          return next;
+        });
+        await warn();
+        showHud('Save failed');
+        console.warn('save toggle error', e);
+      }
+    },
+    [viewerId, savedSet]
+  );
+
+  /* ╭──────────────── render ───────────────╮ */
+  const renderCard = ({ item }: { item: SearchRow }) => {
+  const isSaved = savedSet.has(item.id);
+
+  return (
     <RecipeCard
+      // 👇 same stuff you already pass
       id={item.id}
       title={item.title}
       image={item.image ?? ''}
       creator={item.creator}
-      creatorAvatar={undefined}
-      knives={0}
-      cooks={0}
-      likes={0}
-      createdAt={new Date().toISOString()}
-      ownerId={''}
+      creatorAvatar={item.creatorAvatar ?? ''}
+      knives={item.knives}
+      cooks={item.cooks}
+      likes={item.likes}
+      commentCount={item.commentCount}
+      createdAt={item.createdAtMs}
+      ownerId={item.ownerId}
+      viewerId={viewerId ?? ''}
+      isSaved={isSaved}
+      onToggleSave={() => toggleSave(item.id)}
+      onSave={() => toggleSave(item.id)}
       onOpen={() => router.push(`/recipe/${item.id}`)}
-      onSave={() => {}}
       onOpenCreator={(username: string) => router.push(`/u/${username}`)}
+      onOpenComments={(id: string) => openComments(id)}
+
+      // 🟩 NEW: make room for the calories pill so it doesn’t cover the title
+      // If your RecipeCard supports a boolean:
+      reserveCalorieBadgeSpace
+      // If your RecipeCard supports a numeric inset (pixels):
+      titleRightInset={96} // ~width of the pill; tweak to 88–112 if needed
     />
   );
+};
 
   return (
-    <KeyboardAvoidingView behavior={Platform.select({ ios: 'padding', android: undefined })} style={{ flex: 1, backgroundColor: COLORS.bg }}>
-      {/* Safe header */}
+    <KeyboardAvoidingView
+      behavior={Platform.select({ ios: 'padding', android: undefined })}
+      style={{ flex: 1, backgroundColor: COLORS.bg }}
+    >
+      {/* header */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} accessibilityLabel="Go back">
           <Ionicons name="chevron-back" size={24} color="#fff" />
@@ -168,7 +622,7 @@ export default function SearchScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Pills (horizontally scrollable) */}
+      {/* chips */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -188,12 +642,17 @@ export default function SearchScreen() {
         })}
       </ScrollView>
 
-      {/* Big Feed-style Cards */}
+      {/* results */}
+      {loading && (
+        <View style={{ paddingTop: 24 }}>
+          <ActivityIndicator />
+        </View>
+      )}
       <FlatList
         data={rows}
         keyExtractor={(r) => r.id}
         renderItem={renderCard}
-        contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: 120 }}
+        contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: 160 }}
         ItemSeparatorComponent={() => <View style={{ height: SPACING.lg }} />}
         ListEmptyComponent={
           !loading && (
@@ -203,10 +662,130 @@ export default function SearchScreen() {
           )
         }
       />
+
+      {/* comments sheet */}
+      <Modal visible={commentsVisible} animationType="slide" transparent onRequestClose={closeComments}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={{
+              backgroundColor: COLORS.bg,
+              borderTopLeftRadius: 20,
+              borderTopRightRadius: 20,
+              paddingTop: 12,
+              paddingBottom: 8,
+              paddingHorizontal: 16,
+              maxHeight: '80%',
+            }}
+          >
+            <View style={{ alignItems: 'center', justifyContent: 'center', paddingBottom: 8 }}>
+              <View style={{ width: 44, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.2)' }} />
+              <TouchableOpacity
+                onPress={closeComments}
+                hitSlop={{ top: 16, right: 16, bottom: 16, left: 16 }}
+                style={{ position: 'absolute', right: 6, top: 0, padding: 8, zIndex: 10 }}
+              >
+                <Text style={{ color: '#fff', fontWeight: '900', fontSize: 18 }}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={{ color: '#fff', fontWeight: '900', fontSize: 16, marginBottom: 8 }}>Comments</Text>
+
+            {commentsLoading ? (
+              <ActivityIndicator />
+            ) : (
+              <ScrollView style={{ flexGrow: 0 }} contentContainerStyle={{ paddingBottom: 12 }}>
+                {comments.length === 0 ? (
+                  <Text style={{ color: 'rgba(255,255,255,0.6)' }}>No comments yet. Be the first!</Text>
+                ) : (
+                  comments.map((c) => (
+                    <View
+                      key={c.id}
+                      style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' }}
+                    >
+                      <Text style={{ color: '#fff', fontWeight: '800' }}>{c.author.username}</Text>
+                      <Text style={{ color: '#cbd5e1' }}>{c.text}</Text>
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            )}
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <TextInput
+                value={newText}
+                onChangeText={setNewText}
+                placeholder="Add a comment…"
+                placeholderTextColor="rgba(255,255,255,0.5)"
+                style={{
+                  flex: 1,
+                  backgroundColor: 'rgba(255,255,255,0.06)',
+                  color: '#fff',
+                  borderRadius: 12,
+                  paddingHorizontal: 12,
+                  paddingVertical: 10,
+                }}
+              />
+              <TouchableOpacity
+                onPress={sendComment}
+                disabled={sendingComment}
+                style={{
+                  backgroundColor: sendingComment ? 'rgba(34,197,94,0.4)' : '#22c55e',
+                  borderRadius: 12,
+                  paddingHorizontal: 14,
+                  paddingVertical: 10,
+                  minWidth: 84,
+                  alignItems: 'center',
+                }}
+              >
+                {sendingComment ? <ActivityIndicator /> : <Text style={{ color: '#001018', fontWeight: '900' }}>Send</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={refreshComments}
+                disabled={sendingComment}
+                style={{
+                  backgroundColor: 'rgba(255,255,255,0.1)',
+                  borderRadius: 12,
+                  paddingHorizontal: 12,
+                  paddingVertical: 10,
+                  opacity: sendingComment ? 0.6 : 1,
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: '800' }}>↻</Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* tiny HUD */}
+      {hudText && (
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            left: SPACING.lg,
+            right: SPACING.lg,
+            bottom: 24 + insets.bottom,
+            paddingVertical: 10,
+            borderRadius: 12,
+            backgroundColor: 'rgba(34,197,94,0.95)',
+            transform: [
+              {
+                translateY: hudAnim.interpolate({ inputRange: [0, 1], outputRange: [40, 0] }),
+              },
+            ],
+            opacity: hudAnim,
+          }}
+        >
+          <Text style={{ textAlign: 'center', color: '#001018', fontWeight: '800' }}>{hudText}</Text>
+        </Animated.View>
+      )}
     </KeyboardAvoidingView>
   );
 }
 
+/* ╭──────────────── styles ───────────────╮ */
 const styles = StyleSheet.create({
   header: {
     paddingBottom: 10,
