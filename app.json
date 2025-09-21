@@ -4,41 +4,56 @@
     "slug": "messhall",
     "scheme": "messhall",
     "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+
     "plugins": [
       "expo-router",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Let MessHall use the microphone to hear simple cooking commands like 'next' and 'back'.",
+          "speechRecognitionPermission": "Let MessHall understand your voice for hands-free cooking.",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
+      ]
     ],
+
     "android": {
-      "package": "com.yourco.messhall",
-      "permissions": [],
+      "package": "app.messhall",
+      "permissions": ["RECORD_AUDIO"],
       "userInterfaceStyle": "automatic",
       "intentFilters": [
         {
           "autoVerify": true,
           "action": "VIEW",
-          "category": [
-            "BROWSABLE",
-            "DEFAULT"
-          ],
+          "category": ["BROWSABLE", "DEFAULT"],
           "data": [
-            {
-              "scheme": "https",
-              "host": "messhall.app",
-              "pathPrefix": "/r"
-            }
+            { "scheme": "https", "host": "messhall.app", "pathPrefix": "/" }
+          ]
+        },
+        {
+          "action": "VIEW",
+          "category": ["BROWSABLE", "DEFAULT"],
+          "data": [
+            { "scheme": "messhall" }
           ]
         }
       ]
     },
+
     "ios": {
-      "bundleIdentifier": "com.yourco.messhall",
+      "bundleIdentifier": "app.messhall",
       "supportsTablet": true,
       "userInterfaceStyle": "automatic",
-      "associatedDomains": [
-        "applinks:messhall.app"
-      ]
+      "associatedDomains": ["applinks:messhall.app"],
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "MessHall needs speech recognition to understand your cooking commands like 'next' and 'back'.",
+        "NSMicrophoneUsageDescription": "MessHall needs the microphone to listen for your cooking commands."
+      }
     },
+
     "extra": {
       "eas": {
         "projectId": "521a656b-0e37-4ae1-aae2-f4fd552a48b7"
