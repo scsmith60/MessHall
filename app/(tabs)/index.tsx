@@ -32,6 +32,7 @@ import {
   Image,
   Pressable,
   Linking,
+  PanResponder, // 👈 added: for swipe-to-close on the header
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -240,6 +241,17 @@ export default function HomeScreen() {
   const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
   const [newText, setNewText] = useState("");
   const [sheetRefreshing, setSheetRefreshing] = useState(false);
+
+  // 👇 NEW: simple swipe-down-to-close (header only)
+  const pan = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) => g.dy > 6, // finger moves down a bit
+      onPanResponderMove: () => {},                    // no visual drag; just detect
+      onPanResponderRelease: (_, g) => {
+        if (g.dy > 120 || g.vy > 1.0) closeComments(); // pull far or fling fast → close
+      },
+    })
+  ).current;
 
   const fetchComments = useCallback(async (recipeId: string) => {
     setCommentsLoading(true);
@@ -837,16 +849,42 @@ export default function HomeScreen() {
               maxHeight: "80%",
             }}
           >
-            <View style={{ alignItems: "center", justifyContent: "center", paddingBottom: 8 }}>
-              <View style={{ width: 44, height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.2)" }} />
-              <TouchableOpacity onPress={closeComments} style={{ position: "absolute", right: 6, top: 0, padding: 8 }}>
-                <Text style={{ color: "#fff", fontWeight: "900" }}>✕</Text>
+            {/* ✅ header row: swipe down anywhere here to close, big ✕ on the right */}
+            <View
+              {...pan.panHandlers}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingBottom: 8,
+              }}
+            >
+              {/* centered grab handle */}
+              <View style={{ flex: 1, alignItems: "center" }}>
+                <View
+                  style={{
+                    width: 44,
+                    height: 4,
+                    borderRadius: 2,
+                    backgroundColor: "rgba(255,255,255,0.2)",
+                  }}
+                />
+              </View>
+
+              {/* big, easy-to-tap close button */}
+              <TouchableOpacity
+                onPress={closeComments}
+                accessibilityRole="button"
+                accessibilityLabel="Close comments"
+                style={{ paddingHorizontal: 16, paddingVertical: 10, marginLeft: 8 }}
+                hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "900", fontSize: 22 }}>✕</Text>
               </TouchableOpacity>
             </View>
 
             <Text style={{ color: "#fff", fontWeight: "900", fontSize: 16, marginBottom: 8 }}>Comments</Text>
 
-            
             {/* 🧠 The ONE comments UI (threads, avatars, moderation, replies) */}
             {activeRecipeId ? (
               <Comments recipeId={activeRecipeId} />
@@ -855,7 +893,6 @@ export default function HomeScreen() {
                 No recipe selected.
               </Text>
             )}
-
           </KeyboardAvoidingView>
         </View>
       </Modal>

@@ -1,8 +1,7 @@
 // app/search/index.tsx
 // LIKE I'M 5 🧸
 // This screen lets you search recipes. We kept your search logic the same.
-// CHANGE: Comments modal now uses the same <Comments /> UI and the "X" close button
-// is big and in a header row (no absolute), so it never covers the Send button.
+// CHANGE: Counts fallback now matches Home — commentCount = number of PARENT comments only.
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
@@ -29,7 +28,7 @@ import RecipeCard from "../../components/RecipeCard";
 import { COLORS, SPACING } from "../../lib/theme";
 import { useUserId } from "../../lib/auth";
 import { success, tap, warn } from "../../lib/haptics";
-import Comments from "../../components/Comments"; // 👈 unified comments (threads + avatars + moderation)
+import Comments from "../../components/Comments"; // unified comments (threads + avatars + moderation)
 
 /* ───────────────── chips/filter helpers ───────────────── */
 
@@ -119,7 +118,7 @@ async function fetchLiveCounts(recipeIds: string[]) {
   };
   if (!recipeIds.length) return out;
 
-  // 1) recipe_stats view
+  // 1) recipe_stats view (fast path)
   try {
     const { data, error } = await supabase
       .from("recipe_stats")
@@ -138,7 +137,7 @@ async function fetchLiveCounts(recipeIds: string[]) {
     }
   } catch {}
 
-  // 2) recipe_totals view
+  // 2) recipe_totals view (backup fast path)
   try {
     const { data, error } = await supabase
       .from("recipe_totals")
@@ -158,24 +157,44 @@ async function fetchLiveCounts(recipeIds: string[]) {
   } catch {}
 
   // 3) fallback: base tables
-  async function countGrouped(table: string) {
+  //    ⬇️ CHANGE HERE — match Home’s logic by counting **parents only**.
+  async function countGrouped(table: string, parentOnly = false) {
     try {
-      const { data } = await supabase.from(table).select("recipe_id").in("recipe_id", recipeIds);
-      const m = new Map<string, number>();
-      for (const row of (data ?? []) as any[]) {
-        const id = String(row.recipe_id);
-        m.set(id, (m.get(id) ?? 0) + 1);
+      if (parentOnly) {
+        // parentOnly: count recipe_comments WHERE parent_id IS NULL
+        const { data } = await supabase
+          .from("recipe_comments")
+          .select("recipe_id, parent_id")
+          .is("parent_id", null)
+          .in("recipe_id", recipeIds);
+        const m = new Map<string, number>();
+        for (const row of (data ?? []) as any[]) {
+          const id = String(row.recipe_id);
+          m.set(id, (m.get(id) ?? 0) + 1);
+        }
+        return m;
+      } else {
+        const { data } = await supabase.from(table).select("recipe_id").in("recipe_id", recipeIds);
+        const m = new Map<string, number>();
+        for (const row of (data ?? []) as any[]) {
+          const id = String(row.recipe_id);
+          m.set(id, (m.get(id) ?? 0) + 1);
+        }
+        return m;
       }
-      return m;
     } catch {
       return new Map<string, number>();
     }
   }
-  const [knivesMap, cooksMap, commentsMap] = await Promise.all([
+
+  const [knivesMap, cooksMap] = await Promise.all([
     countGrouped("recipe_knives"),
     countGrouped("recipe_cooks"),
-    countGrouped("recipe_comments"),
   ]);
+
+  // 🍰 comments fallback = parents only
+  const commentsMap = await countGrouped("recipe_comments", true);
+
   const likeTables = ["recipe_likes", "recipe_like", "recipe_hearts"];
   let likesMap = new Map<string, number>();
   for (const t of likeTables) {
@@ -188,7 +207,7 @@ async function fetchLiveCounts(recipeIds: string[]) {
       knives: knivesMap.get(id) ?? 0,
       cooks: cooksMap.get(id) ?? 0,
       likes: likesMap.get(id) ?? 0,
-      comments: commentsMap.get(id) ?? 0,
+      comments: commentsMap.get(id) ?? 0, // ✅ parents-only count
     });
   }
   return out;
@@ -332,7 +351,7 @@ export default function SearchScreen() {
           knives: c.knives,
           cooks: c.cooks,
           likes: c.likes,
-          commentCount: c.comments,
+          commentCount: c.comments, // ✅ parents-only if we used fallback
           createdAtMs: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
         };
       });
@@ -550,7 +569,7 @@ export default function SearchScreen() {
               maxHeight: "80%",
             }}
           >
-            {/* ✅ header row (no absolute, no zIndex) */}
+            {/* header row (no absolute) */}
             <View
               style={{
                 flexDirection: "row",
