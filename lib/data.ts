@@ -1,11 +1,12 @@
 // lib/data.ts
 // LIKE YOU'RE 5 🧸
-// - This file talks to Supabase and gives screens clean data.
-// - NEW (smarter): getSmartSuggestionsForContext()
-//     * "Quick Dinners": real mains, ≤35 min, no cookies/drinks.
-//     * "Game Day": appetizers/snacks (wings, dips, sliders, nachos, bites...).
-//     * Grill / Thanksgiving / Christmas: themed keywords.
-// - Everything else stays the same.
+// This file is our "helper brain" that talks to Supabase.
+// Screens ask for stuff here, and we give them easy data back.
+//
+// NEW STUFF FOR YOU:
+// - getRecipeComments(): fetches comments (with avatar/name when possible) and now ALSO returns authorId
+// - addComment(): writes comments using your add_comment RPC
+// - Feed still uses a safe view for comment counts (no double counting)
 
 import { supabase } from "./supabase";
 import {
@@ -119,13 +120,33 @@ export interface DataAPI {
     Array<{ id: string; title: string; image: string | null; creator: string }>
   >;
 
-  // COMMENTS
+  // COMMENTS (existing admin-y helpers)
   hideComment(commentId: string): Promise<void>;
   unhideComment(commentId: string): Promise<void>;
   deleteComment(commentId: string): Promise<void>;
   getRecipeCounts(
     recipeId: string
   ): Promise<{ likes: number; cooks: number; comments: number }>;
+
+  // 🆕 COMMENTS (the two methods your Home modal calls)
+  getRecipeComments(
+    recipeId: string
+  ): Promise<
+    Array<{
+      id: string;
+      author: { username: string; avatar?: string | null };
+      authorId?: string | null; // 👈 added this so the UI can block/mute/delete/report
+      text: string;
+      createdAt: string;
+      parentId?: string | null;
+    }>
+  >;
+
+  addComment(
+    recipeId: string,
+    text: string,
+    parentId?: string | null
+  ): Promise<void>;
 
   // 🆕 Smarter rail suggester used by Home rail when no sponsor slot is active
   getSmartSuggestionsForContext?(
@@ -181,15 +202,21 @@ async function assertNotOwnerForCook(recipeId: string, viewerId: string): Promis
 ----------------------------------------------------------- */
 export const dataAPI: DataAPI = {
   /* -------------------------------------------------------
-     FEED LIST (unchanged)
+     FEED LIST (unchanged except safer comment count)
+     - We fetch recipes
+     - We optionally sprinkle sponsored cards
+     - We join comment counts from a small public view to avoid double-counting
   ------------------------------------------------------- */
   async getFeedPage(page, size) {
+    // figure out which rows we want (page math)
     const from = page * size;
     const to = from + size - 1;
 
+    // who is looking (used only to include their private recipes)
     const { data: auth } = await supabase.auth.getUser();
     const viewerId: string | null = auth?.user?.id ?? null;
 
+    // 1) grab recipes for the feed
     let q = supabase
       .from("recipes")
       .select(`
@@ -207,8 +234,10 @@ export const dataAPI: DataAPI = {
       .order("created_at", { ascending: false });
 
     if (viewerId) {
+      // show all public + MY private
       q = q.or(`and(is_private.eq.false),and(is_private.eq.true,user_id.eq.${viewerId})`);
     } else {
+      // signed out → only public
       q = q.eq("is_private", false);
     }
 
@@ -217,6 +246,7 @@ export const dataAPI: DataAPI = {
     const { data: recipes, error } = await q;
     if (error) throw error;
 
+    // 2) Insert sponsored slots like you already do
     const nowIso = new Date().toISOString();
     const { data: ads } = await supabase
       .from("sponsored_slots")
@@ -225,7 +255,23 @@ export const dataAPI: DataAPI = {
       .or(`starts_at.is.null,starts_at.lte.${nowIso}`)
       .or(`ends_at.is.null,ends_at.gte.${nowIso}`);
 
+    // 3) NEW: read accurate comment counts from our view (top-level only)
+    const ids = (recipes ?? []).map((r: any) => r.id).filter(Boolean);
+    let countMap = new Map<string, { top: number; total: number }>();
+    if (ids.length) {
+      const { data: counts } = await supabase
+        .from("recipe_comment_counts_public")
+        .select("recipe_id, top_level_comments, total_comments")
+        .in("recipe_id", ids);
+      (counts ?? []).forEach((c: any) => {
+        countMap.set(String(c.recipe_id), {
+          top: Number(c.top_level_comments || 0),
+          total: Number(c.total_comments || 0),
+        });
+      });
+    }
 
+    // 4) build the feed array (recipes + occasional ads)
     const out: Array<
       | {
           type: "recipe";
@@ -254,6 +300,7 @@ export const dataAPI: DataAPI = {
 
     let adIdx = 0;
     (recipes ?? []).forEach((r: any, i: number) => {
+      // sprinkle ad
       if (ads && i > 0 && i % 6 === 4 && adIdx < (ads as any).length) {
         const a: any = (ads as any)[adIdx++];
         out.push({
@@ -266,6 +313,13 @@ export const dataAPI: DataAPI = {
         });
       }
 
+      // pick the safe count:
+      // - prefer our new "top_level" count
+      // - otherwise fall back to recipes.comment_count (old column)
+      const m = countMap.get(String(r.id));
+      const safeCommentCount =
+        typeof m?.top === "number" ? m.top : Number(r.comment_count ?? 0);
+
       out.push({
         type: "recipe",
         id: String(r.id),
@@ -276,7 +330,7 @@ export const dataAPI: DataAPI = {
         knives: Number(r.profiles?.knives ?? 0),
         cooks: Number(r.cooks_count ?? 0),
         likes: Number(r.likes_count ?? 0),
-        commentCount: Number(r.comment_count ?? 0),
+        commentCount: safeCommentCount,
         createdAt: r.created_at,
         ownerId: r.user_id,
         is_private: !!r.is_private,
@@ -663,7 +717,7 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     COMMENTS (unchanged)
+     COMMENTS — existing admin-y helpers (unchanged)
   ------------------------------------------------------- */
   async hideComment(commentId: string) {
     const { error } = await supabase
@@ -701,11 +755,104 @@ export const dataAPI: DataAPI = {
   },
 
   /* -------------------------------------------------------
-     🆕 SMART SEASONAL PICKER for the rail
-     * Quick Dinners: mains (≤35m), exclude sweets/drinks.
-     * Game Day: appetizers/snacks keywords.
-     * Others: themed keywords.
-     * Two-phase for Quick Dinners so we never fall back to random sweets.
+     🆕 COMMENTS — the two methods your Home modal expects
+     - getRecipeComments() : reads "body" text; tries 3 sources (A,B,C)
+     - addComment()        : calls your add_comment() RPC
+     NOTE: we return authorId so UI can moderate (block/mute/delete/report)
+  ------------------------------------------------------- */
+  async getRecipeComments(recipeId: string) {
+    // helper to run the same query on different sources
+    async function readFrom(source: "A" | "B" | "C") {
+      let q;
+      if (source === "A") {
+        // A) best: visibility + profiles (username, avatar)
+        q = supabase
+          .from("recipe_comments_visible_to_with_profiles")
+          .select(
+            "id, recipe_id, user_id, parent_id, body, created_at, is_hidden, is_flagged, username, avatar_url"
+          );
+      } else if (source === "B") {
+        // B) profiles only (looser visibility)
+        q = supabase
+          .from("recipe_comments_with_profiles")
+          .select(
+            "id, recipe_id, user_id, parent_id, body, created_at, is_hidden, is_flagged, username, avatar_url"
+          );
+      } else {
+        // C) raw table (no profile fields)
+        q = supabase
+          .from("recipe_comments")
+          .select("id, recipe_id, user_id, parent_id, body, created_at, is_hidden, is_flagged");
+      }
+      const { data, error } = await q
+        .eq("recipe_id", recipeId)
+        .order("created_at", { ascending: false });
+      return { data: (data ?? []) as any[], error };
+    }
+
+    // try A
+    let { data, error } = await readFrom("A");
+    if (!error && data.length) {
+      return data
+        .filter((r) => !r.is_hidden)
+        .map((r) => ({
+          id: String(r.id),
+          author: { username: r.username ?? "someone", avatar: r.avatar_url ?? null },
+          authorId: r.user_id as string, // 👈 added for moderation
+          text: r.body ?? "",
+          createdAt: r.created_at,
+          parentId: r.parent_id ?? null,
+        }));
+    }
+
+    // try B
+    ({ data, error } = await readFrom("B"));
+    if (!error && data.length) {
+      return data
+        .filter((r) => !r.is_hidden)
+        .map((r) => ({
+          id: String(r.id),
+          author: { username: r.username ?? "someone", avatar: r.avatar_url ?? null },
+          authorId: r.user_id as string, // 👈 added for moderation
+          text: r.body ?? "",
+          createdAt: r.created_at,
+          parentId: r.parent_id ?? null,
+        }));
+    }
+
+    // try C
+    ({ data, error } = await readFrom("C"));
+    if (!error && data.length) {
+      return data
+        .filter((r) => !r.is_hidden)
+        .map((r) => ({
+          id: String(r.id),
+          author: { username: r.user_id?.slice?.(0, 6) ?? "user", avatar: undefined },
+          authorId: r.user_id as string, // 👈 added for moderation
+          text: r.body ?? "",
+          createdAt: r.created_at,
+          parentId: r.parent_id ?? null,
+        }));
+    }
+
+    return []; // none found (or errors) → modal will say "No comments yet"
+  },
+
+  async addComment(recipeId: string, text: string, parentId: string | null = null) {
+    const body = (text || "").trim();
+    if (!body) return;
+
+    // uses your Postgres function writing into recipe_comments.body
+    const { error } = await supabase.rpc("add_comment", {
+      p_recipe_id: recipeId,
+      p_parent_id: parentId,
+      p_body: body,
+    });
+    if (error) throw error;
+  },
+
+  /* -------------------------------------------------------
+     🆕 SMART SEASONAL PICKER for the rail (kept)
   ------------------------------------------------------- */
   async getSmartSuggestionsForContext(context: string) {
     const topic = (context || "").toLowerCase().trim();
@@ -723,9 +870,8 @@ export const dataAPI: DataAPI = {
       }));
     }
 
-    // QUICK DINNERS → real dinners (mains), not cookies/drinks.
+    // QUICK DINNERS → real dinners (≤35m)
     if (topic.includes("quick")) {
-      // words to exclude
       const EX = [
         "cookie","brownie","cake","cupcake","pie","bar ","bars","cheesecake","pudding",
         "ice cream","fudge","donut","doughnut","muffin","scone","candy","frost","cinnamon roll",
@@ -734,7 +880,6 @@ export const dataAPI: DataAPI = {
         "sangria","wine","beer"
       ];
 
-      // Phase A: minutes + excludes + MUST match a "quick meal shape"
       let qa = supabase
         .from("recipes")
         .select("id, title, image_url, minutes, created_at")
@@ -772,7 +917,6 @@ export const dataAPI: DataAPI = {
       let phaseA = await run(qa);
       if (phaseA.length >= 12) return phaseA.slice(0, 24);
 
-      // Phase B: minutes + excludes only (broader, but still no sweets/drinks)
       let qb = supabase
         .from("recipes")
         .select("id, title, image_url, minutes, created_at")
@@ -783,13 +927,12 @@ export const dataAPI: DataAPI = {
       return phaseB.slice(0, 24);
     }
 
-    // GAMEDAY → appetizers/snacks (not big entrées)
+    // GAMEDAY → appetizers/snacks
     if (topic.includes("gameday")) {
       let q = supabase
         .from("recipes")
         .select("id, title, image_url, created_at");
 
-      // include classic game-day snack words
       q = q.or(
         [
           "title.ilike.%wing%",
@@ -824,7 +967,6 @@ export const dataAPI: DataAPI = {
         ].join(",")
       );
 
-      // gently avoid obvious entrées
       const AVOID_ENTREE = ["casserole","roast","steak","whole","sheet pan dinner","lasagna","salmon fillet"];
       AVOID_ENTREE.forEach((w) => { q = q.not("title", "ilike", `%${w}%`); });
 

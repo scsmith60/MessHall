@@ -46,6 +46,7 @@ import { logAdEvent } from "../../lib/ads";
 import SearchFab from "../../components/SearchFab";
 import { useUserId } from "../../lib/auth";
 import { supabase } from "../../lib/supabase";
+import Comments from "../../components/Comments"; // wraps RecipeComments (threads + avatars + moderation)
 
 /* ───────── helpers ───────── */
 
@@ -845,51 +846,16 @@ export default function HomeScreen() {
 
             <Text style={{ color: "#fff", fontWeight: "900", fontSize: 16, marginBottom: 8 }}>Comments</Text>
 
-            {commentsLoading ? (
-              <ActivityIndicator />
+            
+            {/* 🧠 The ONE comments UI (threads, avatars, moderation, replies) */}
+            {activeRecipeId ? (
+              <Comments recipeId={activeRecipeId} />
             ) : (
-              <ScrollView style={{ flexGrow: 0 }} contentContainerStyle={{ paddingBottom: 12 }}>
-                {comments.length === 0 ? (
-                  <Text style={{ color: "rgba(255,255,255,0.6)" }}>No comments yet. Be the first!</Text>
-                ) : (
-                  comments.map((c) => (
-                    <View key={c.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.06)" }}>
-                      <Text style={{ color: "#fff", fontWeight: "800" }}>{c.author.username}</Text>
-                      <Text style={{ color: "#cbd5e1" }}>{c.text}</Text>
-                    </View>
-                  ))
-                )}
-              </ScrollView>
+              <Text style={{ color: "#cbd5e1", textAlign: "center", paddingVertical: 24 }}>
+                No recipe selected.
+              </Text>
             )}
 
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 }}>
-              <TextInput
-                value={newText}
-                onChangeText={setNewText}
-                placeholder="Add a comment…"
-                placeholderTextColor="rgba(255,255,255,0.5)"
-                style={{
-                  flex: 1,
-                  backgroundColor: "rgba(255,255,255,0.06)",
-                  color: "#fff",
-                  borderRadius: 12,
-                  paddingHorizontal: 12,
-                  paddingVertical: 10,
-                }}
-              />
-              <TouchableOpacity
-                onPress={sendComment}
-                style={{ backgroundColor: COLORS.accent, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10 }}
-              >
-                <Text style={{ color: "#001018", fontWeight: "900" }}>Send</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={refreshSheet}
-                style={{ backgroundColor: "rgba(255,255,255,0.1)", borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 }}
-              >
-                <Text style={{ color: "#fff", fontWeight: "800" }}>↻</Text>
-              </TouchableOpacity>
-            </View>
           </KeyboardAvoidingView>
         </View>
       </Modal>

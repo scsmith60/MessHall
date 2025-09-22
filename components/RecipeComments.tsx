@@ -1,12 +1,23 @@
 // components/RecipeComments.tsx
-// LIKE I'M 5: this is the chat under a recipe.
-// WHAT CHANGED:
-// - We REMOVED white Alert menus for long-press.
-// - We SHOW a dark, rounded ThemedActionSheet for options.
-// - We also use a sheet for "Report reason" and "Delete?" confirm.
-// (Errors still use Alert for now; we can theme those later if you want.)
+// LIKE I'M 5 🧸
+//
+// WHAT THIS DOES (clean + no debug):
+// - Shows comments under a recipe, with parent → reply threads
+// - Reads from the best view first (visible_to_with_profiles), then falls back
+// - If we ever fall back to the raw table, we do a quick profiles lookup so
+//   replies still show the person's avatar + callsign (username)
+// - Lets you write comments and replies
+// - Long-press any comment for moderation: Delete (yours), Block/Unblock,
+//   Report, and (if you're the recipe owner) Mute/Unmute on this recipe
+// - Realtime inserts/updates so new comments pop in
+// - Uses a FlatList so the comments are scrollable inside the modal
+//
+// NOTE: We keep all server names the same:
+// - Text comes from recipe_comments.body
+// - We try: recipe_comments_visible_to_with_profiles → recipe_comments_with_profiles → recipe_comments
+// - RPCs used: add_comment, block_user, unblock_user, mute_user_on_recipe, unmute_user_on_recipe, report_comment
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -14,13 +25,57 @@ import {
   TouchableOpacity,
   FlatList,
   ActivityIndicator,
+  Image,
   Alert,
 } from "react-native";
 import { supabase } from "../lib/supabase";
-import { tap } from "../lib/haptics";
 import ThemedActionSheet, { SheetAction } from "./ui/ThemedActionSheet";
+import { tap } from "../lib/haptics";
 
-// One comment row (matches your view/table)
+/* -----------------------------
+   "5m ago" helper (tiny clock)
+----------------------------- */
+function timeAgo(iso: string) {
+  const d = new Date(iso).getTime();
+  const s = Math.max(1, Math.floor((Date.now() - d) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d2 = Math.floor(h / 24);
+  return `${d2}d`;
+}
+
+/* -----------------------------
+   Little avatar with letter fallback
+----------------------------- */
+function Avatar({ uri, fallback }: { uri?: string | null; fallback: string }) {
+  const letter = (fallback || "U").slice(0, 1).toUpperCase();
+  if (uri && uri.trim().length > 0) {
+    return <Image source={{ uri }} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: "#0b1220" }} />;
+  }
+  return (
+    <View
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        backgroundColor: "#0b1220",
+        borderWidth: 1,
+        borderColor: "#243042",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Text style={{ color: "#e5e7eb", fontWeight: "800" }}>{letter}</Text>
+    </View>
+  );
+}
+
+/* -----------------------------
+   Row shape we render
+----------------------------- */
 type Row = {
   id: string;
   recipe_id: string;
@@ -31,36 +86,42 @@ type Row = {
   is_hidden: boolean;
   is_flagged: boolean;
   flagged_reason: string | null;
+  // profile fields (may come from views OR from our enrichment step)
   username?: string | null;
   avatar_url?: string | null;
 };
 
 export default function RecipeComments({
   recipeId,
-  isRecipeOwner = false, // 👑 if true, show Mute/Unmute
-  insideScroll = true,   // 👶 if true, no FlatList (avoid nested scroll warning)
+  isRecipeOwner = false,
+  insideScroll = true, // we leave this prop in case other screens use it
 }: {
   recipeId: string;
   isRecipeOwner?: boolean;
   insideScroll?: boolean;
 }) {
-  // WHO AM I?
+  /* -----------------------------
+     who am i?
+  ----------------------------- */
   const [myId, setMyId] = useState<string | null>(null);
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setMyId(data.user?.id ?? null));
   }, []);
 
-  // LITTLE BINS (state)
+  /* -----------------------------
+     ui buckets
+  ----------------------------- */
   const [text, setText] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+
   const lastCreatedAt = useRef<string | null>(null);
   const pageSize = 20;
 
-  // prevent dupes
+  // prevent duplicates (optimistic + realtime)
   const idsRef = useRef<Set<string>>(new Set());
   const addIfNew = (r: Row) => {
     if (idsRef.current.has(r.id)) return false;
@@ -69,14 +130,14 @@ export default function RecipeComments({
     return true;
   };
 
-  // remember Block/Mute locally so UI flips instantly
+  // local block/mute flags for instant UI
   const [blockedIds, setBlockedIds] = useState<Set<string>>(new Set());
   const isBlocked = (uid: string) => blockedIds.has(uid);
   const markBlocked = (uid: string, v: boolean) =>
     setBlockedIds((prev) => {
-      const next = new Set(prev);
-      v ? next.add(uid) : next.delete(uid);
-      return next;
+      const n = new Set(prev);
+      v ? n.add(uid) : n.delete(uid);
+      return n;
     });
 
   const [mutedIds, setMutedIds] = useState<Set<string>>(new Set());
@@ -88,7 +149,7 @@ export default function RecipeComments({
       return n;
     });
 
-  // reset on recipe change
+  // reset when recipe changes
   useEffect(() => {
     setRows([]);
     setHasMore(true);
@@ -99,42 +160,107 @@ export default function RecipeComments({
     idsRef.current = new Set();
   }, [recipeId]);
 
-  // 1) Get a page
-  const fetchPage = async () => {
+  /* -----------------------------
+     PROFILES ENRICHMENT (important fix)
+     - If we fetch from the raw base table (C), there is no username/avatar.
+     - So we collect missing user_ids and ask profiles for username+avatar,
+       then merge those into our rows so replies look correct.
+  ----------------------------- */
+  const enrichMissingProfiles = useCallback(async (list: Row[]) => {
+    // which user_ids are missing username OR avatar_url?
+    const need = Array.from(
+      new Set(
+        list
+          .filter((r) => !r.username || typeof r.avatar_url === "undefined")
+          .map((r) => r.user_id)
+      )
+    );
+    if (!need.length) return list;
+
+    const { data: profs, error } = await supabase
+      .from("profiles")
+      .select("id, username, avatar_url")
+      .in("id", need);
+
+    if (error || !profs?.length) return list;
+
+    const map = new Map<string, { username?: string | null; avatar_url?: string | null }>();
+    for (const p of profs) {
+      map.set(String(p.id), { username: p.username ?? null, avatar_url: p.avatar_url ?? null });
+    }
+
+    return list.map((r) =>
+      map.has(r.user_id)
+        ? { ...r, username: map.get(r.user_id)!.username ?? r.username, avatar_url: map.get(r.user_id)!.avatar_url ?? r.avatar_url }
+        : r
+    );
+  }, []);
+
+  /* -----------------------------
+     Fetch page with fallbacks
+     A = visible_to_with_profiles  (preferred)
+     B = with_profiles             (fallback)
+     C = base table                (last resort, then we ENRICH)
+  ----------------------------- */
+  const fetchPage = useCallback(async () => {
     if (loading || !hasMore) return;
     setLoading(true);
 
-    let q = supabase
-      .from("recipe_comments_visible_to_with_profiles")
-      .select("*")
-      .eq("recipe_id", recipeId)
-      .order("created_at", { ascending: false })
-      .limit(pageSize);
+    const run = async (from: "A" | "B" | "C") => {
+      let q;
+      if (from === "A") {
+        q = supabase.from("recipe_comments_visible_to_with_profiles").select("*").eq("recipe_id", recipeId);
+      } else if (from === "B") {
+        q = supabase.from("recipe_comments_with_profiles").select("*").eq("recipe_id", recipeId);
+      } else {
+        q = supabase.from("recipe_comments").select("*").eq("recipe_id", recipeId);
+      }
+      q = q.order("created_at", { ascending: false }).limit(pageSize);
+      if (lastCreatedAt.current) q = q.lt("created_at", lastCreatedAt.current);
+      const { data, error } = await q;
+      return { data: (data ?? []) as Row[], error, source: from };
+    };
 
-    if (lastCreatedAt.current) q = q.lt("created_at", lastCreatedAt.current);
-
-    const { data, error } = await q;
-    setLoading(false);
-
-    if (error) {
-      Alert.alert("Error", error.message);
+    // Try A
+    let { data, error, source } = await run("A");
+    if (!error && data.length > 0) {
+      await commitRows(data, source);
       return;
     }
-    const list = (data ?? []) as Row[];
-    if (list.length) {
-      const next = [...rows];
-      for (const r of list) {
-        if (!idsRef.current.has(r.id)) {
-          idsRef.current.add(r.id);
-          next.push(r);
-        }
-      }
-      setRows(next);
-      lastCreatedAt.current = list[list.length - 1].created_at;
-      if (list.length < pageSize) setHasMore(false);
-    } else {
-      setHasMore(false);
+
+    // Try B
+    ({ data, error, source } = await run("B"));
+    if (!error && data.length > 0) {
+      await commitRows(data, source);
+      return;
     }
+
+    // Try C
+    ({ data, error, source } = await run("C"));
+    if (!error && data.length > 0) {
+      // ⭐ Enrich with profiles so replies show names/avatars
+      const enriched = await enrichMissingProfiles(data);
+      await commitRows(enriched, source);
+      return;
+    }
+
+    // Nothing found
+    setHasMore(false);
+    setLoading(false);
+  }, [loading, hasMore, recipeId, enrichMissingProfiles]);
+
+  const commitRows = async (list: Row[], _source: "A" | "B" | "C") => {
+    const next = [...rows];
+    for (const r of list) {
+      if (!idsRef.current.has(r.id)) {
+        idsRef.current.add(r.id);
+        next.push(r);
+      }
+    }
+    setRows(next);
+    lastCreatedAt.current = list[list.length - 1].created_at;
+    if (list.length < pageSize) setHasMore(false);
+    setLoading(false);
   };
 
   // first load
@@ -143,17 +269,32 @@ export default function RecipeComments({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipeId]);
 
-  // 2) Realtime
+  /* -----------------------------
+     Realtime (INSERT/UPDATE)
+     - On INSERT we try to enrich with profiles
+  ----------------------------- */
   useEffect(() => {
     const chIns = supabase
       .channel(`rc_ins_${recipeId}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "recipe_comments", filter: `recipe_id=eq.${recipeId}` },
-        (payload) => {
-          const r = payload.new as Row;
-          if (idsRef.current.has(r.id)) return;
-          addIfNew({ ...r, username: undefined, avatar_url: undefined });
+        async (payload) => {
+          const fresh = payload.new as Row;
+          if (!fresh?.id || idsRef.current.has(fresh.id)) return;
+
+          // Try to read with profiles view; if not, enrich from profiles table
+          const viaView = await supabase
+            .from("recipe_comments_with_profiles")
+            .select("*")
+            .eq("id", fresh.id)
+            .maybeSingle();
+
+          const merged: Row =
+            (viaView.data as any) ||
+            (await enrichMissingProfiles([fresh]).then((arr) => arr[0]));
+
+          addIfNew(merged);
         }
       )
       .subscribe();
@@ -174,9 +315,11 @@ export default function RecipeComments({
       supabase.removeChannel(chIns);
       supabase.removeChannel(chUpd);
     };
-  }, [recipeId]);
+  }, [recipeId, enrichMissingProfiles]);
 
-  // 3) Threads
+  /* -----------------------------
+     Build threads (parents + replies)
+  ----------------------------- */
   const threads = useMemo(() => {
     const byParent: Record<string, Row[]> = {};
     const tops: Row[] = [];
@@ -187,7 +330,9 @@ export default function RecipeComments({
     return { tops, byParent };
   }, [rows]);
 
-  // 4) Send a comment
+  /* -----------------------------
+     Send a comment (reads/writes "body")
+  ----------------------------- */
   const onSend = async () => {
     const body = text.trim();
     if (!body || sending) return;
@@ -201,15 +346,8 @@ export default function RecipeComments({
         p_body: body,
       });
       if (error) throw error;
-
       setReplyTo(null);
-      if (data && (data as any).id) {
-        const row = data as Row;
-        if (!idsRef.current.has(row.id)) {
-          idsRef.current.add(row.id);
-          setRows((prev) => [row, ...prev]);
-        }
-      }
+      // optimistic add is not needed; realtime will insert it quickly
     } catch (e: any) {
       Alert.alert("Could not post", e?.message ?? "Unknown error");
     } finally {
@@ -217,9 +355,12 @@ export default function RecipeComments({
     }
   };
 
-  // 5) Helpers — Block / Unblock / Mute / Unmute / Delete / Report
+  /* -----------------------------
+     Moderation actions
+  ----------------------------- */
   const doBlock = async (uid: string) => {
-    if (!myId) return Alert.alert("Sign in required");
+    const { data } = await supabase.auth.getUser();
+    if (!data.user?.id) return Alert.alert("Sign in required");
     const { error } = await supabase.rpc("block_user", { p_blocked_id: uid });
     if (error) Alert.alert("Error", error.message);
     else {
@@ -228,7 +369,8 @@ export default function RecipeComments({
     }
   };
   const doUnblock = async (uid: string) => {
-    if (!myId) return Alert.alert("Sign in required");
+    const { data } = await supabase.auth.getUser();
+    if (!data.user?.id) return Alert.alert("Sign in required");
     const { error } = await supabase.rpc("unblock_user", { p_blocked_id: uid });
     if (error) Alert.alert("Error", error.message);
     else {
@@ -237,11 +379,9 @@ export default function RecipeComments({
     }
   };
   const doMute = async (uid: string) => {
-    if (!myId) return Alert.alert("Sign in required");
-    const { error } = await supabase.rpc("mute_user_on_recipe", {
-      p_recipe_id: recipeId,
-      p_muted_id: uid,
-    });
+    const { data } = await supabase.auth.getUser();
+    if (!data.user?.id) return Alert.alert("Sign in required");
+    const { error } = await supabase.rpc("mute_user_on_recipe", { p_recipe_id: recipeId, p_muted_id: uid });
     if (error) Alert.alert("Error", error.message);
     else {
       markMuted(uid, true);
@@ -249,57 +389,51 @@ export default function RecipeComments({
     }
   };
   const doUnmute = async (uid: string) => {
-    if (!myId) return Alert.alert("Sign in required");
-    const { error } = await supabase.rpc("unmute_user_on_recipe", {
-      p_recipe_id: recipeId,
-      p_muted_id: uid,
-    });
+    const { data } = await supabase.auth.getUser();
+    if (!data.user?.id) return Alert.alert("Sign in required");
+    const { error } = await supabase.rpc("unmute_user_on_recipe", { p_recipe_id: recipeId, p_muted_id: uid });
     if (error) Alert.alert("Error", error.message);
     else {
       markMuted(uid, false);
       Alert.alert("Unmuted", "They can comment here again.");
     }
   };
-
   const doDelete = async (commentId: string) => {
-    if (!myId) return Alert.alert("Sign in required");
-    // quick local hide (optimistic)
+    const { data } = await supabase.auth.getUser();
+    if (!data.user?.id) return Alert.alert("Sign in required");
+    // quick optimistic hide
     setRows((prev) => prev.map((r) => (r.id === commentId ? { ...r, is_hidden: true } : r)));
     const { error } = await supabase.from("recipe_comments").update({ is_hidden: true }).eq("id", commentId);
     if (error) {
-      // flip back if server said no
       setRows((prev) => prev.map((r) => (r.id === commentId ? { ...r, is_hidden: false } : r)));
       Alert.alert("Delete failed", error.message);
     }
   };
-
   const doReportWithReason = async (commentId: string, reason: string) => {
-    if (!myId) return Alert.alert("Sign in required");
+    const { data } = await supabase.auth.getUser();
+    if (!data.user?.id) return Alert.alert("Sign in required");
     const { error } = await supabase.rpc("report_comment", {
       p_comment_id: commentId,
       p_reason: reason,
-      p_notes: null, // keep it simple, no OS prompt = no white box
+      p_notes: null,
     });
     if (error) Alert.alert("Error", error.message);
     else Alert.alert("Thanks", "We’ll review this.");
   };
 
-  // 6) SHEETS (our themed menus)
+  /* -----------------------------
+     Action sheet (fancy menu on long-press)
+  ----------------------------- */
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetTitle, setSheetTitle] = useState("Options");
   const [sheetActions, setSheetActions] = useState<SheetAction[]>([]);
-
-  // open the sheet helper
   const openSheet = (title: string, actions: SheetAction[]) => {
     setSheetTitle(title);
     setSheetActions(actions);
     setSheetOpen(true);
   };
-
-  // long-press menu
   const openMenu = (r: Row, isMine: boolean) => {
     const actions: SheetAction[] = [];
-
     if (isMine) {
       actions.push({
         label: "DELETE",
@@ -311,13 +445,7 @@ export default function RecipeComments({
           ]),
       });
     }
-
-    actions.push(
-      isBlocked(r.user_id)
-        ? { label: "UNBLOCK USER", onPress: () => doUnblock(r.user_id) }
-        : { label: "BLOCK USER", onPress: () => doBlock(r.user_id) }
-    );
-
+    actions.push(isBlocked(r.user_id) ? { label: "UNBLOCK USER", onPress: () => doUnblock(r.user_id) } : { label: "BLOCK USER", onPress: () => doBlock(r.user_id) });
     actions.push({
       label: "REPORT",
       onPress: () =>
@@ -333,168 +461,142 @@ export default function RecipeComments({
           { label: "Cancel", onPress: () => {} },
         ]),
     });
-
     if (!isMine && isRecipeOwner) {
-      actions.push(
-        isMuted(r.user_id)
-          ? { label: "UNMUTE ON THIS RECIPE", onPress: () => doUnmute(r.user_id) }
-          : { label: "MUTE ON THIS RECIPE", onPress: () => doMute(r.user_id) }
-      );
+      actions.push(isMuted(r.user_id) ? { label: "UNMUTE ON THIS RECIPE", onPress: () => doUnmute(r.user_id) } : { label: "MUTE ON THIS RECIPE", onPress: () => doMute(r.user_id) });
     }
-
     openSheet("Comment options", actions);
   };
 
-  // 7) one thread (top + replies)
-  const renderThreadView = (item: Row) => {
+  /* -----------------------------
+     One comment bubble (shows body, avatar, callsign)
+  ----------------------------- */
+  function Bubble({
+    row,
+    myId,
+    onReply,
+    onMenu,
+  }: {
+    row: Row;
+    myId: string | null;
+    onReply: () => void;
+    onMenu: () => void;
+  }) {
+    const isMine = !!myId && row.user_id === myId;
+    const hidden = !!row.is_hidden;
+
+    if (hidden) {
+      return (
+        <View style={{ backgroundColor: "#0f172a", borderRadius: 12, padding: 10, opacity: 0.7 }}>
+          <Text style={{ color: "#94a3b8", fontStyle: "italic" }}>🗑️ Deleted by author</Text>
+        </View>
+      );
+    }
+
+    // clean fallback for username if somehow still missing
+    const name = row.username || (row.user_id ? row.user_id.slice(0, 6) : "user");
+
+    return (
+      <TouchableOpacity onLongPress={onMenu} delayLongPress={300} activeOpacity={0.9} style={{ backgroundColor: "#0f172a", borderRadius: 12, padding: 10 }}>
+        {/* header */}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <Avatar uri={row.avatar_url} fallback={name} />
+          <Text style={{ color: "#93c5fd", fontWeight: "800" }}>{name}</Text>
+          <Text style={{ color: "#94a3b8" }}>• {timeAgo(row.created_at)}</Text>
+        </View>
+
+        {/* body */}
+        {row.is_flagged && <Text style={{ color: "#f59e0b", marginBottom: 4 }}>Marked for review</Text>}
+        <Text style={{ color: "#f1f5f9" }}>{row.body}</Text>
+
+        {/* quick reply */}
+        <View style={{ flexDirection: "row", gap: 14, marginTop: 6 }}>
+          <TouchableOpacity onPress={onReply}>
+            <Text style={{ color: "#38bdf8" }}>Reply</Text>
+          </TouchableOpacity>
+          {isMine ? <Text style={{ color: "#94a3b8" }}>(long-press for more)</Text> : null}
+        </View>
+      </TouchableOpacity>
+    );
+  }
+
+  /* -----------------------------
+     Thread renderer (parent + its replies)
+  ----------------------------- */
+  const renderThreadView = ({ item }: { item: Row }) => {
     const children = threads.byParent[item.id] ?? [];
     return (
-      <View key={item.id} style={{ paddingVertical: 8 }}>
-        <Bubble
-          row={item}
-          myId={myId}
-          onReply={() => setReplyTo(item.id)}
-          onMenu={() => openMenu(item, !!myId && item.user_id === myId)}
-        />
+      <View key={item.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.06)" }}>
+        <Bubble row={item} myId={myId} onReply={() => setReplyTo(item.id)} onMenu={() => openMenu(item, !!myId && item.user_id === myId)} />
         {children.map((c) => (
           <View key={c.id} style={{ marginLeft: 16, marginTop: 6 }}>
-            <Bubble
-              row={c}
-              myId={myId}
-              onReply={() => setReplyTo(c.id)}
-              onMenu={() => openMenu(c, !!myId && c.user_id === myId)}
-            />
+            <Bubble row={c} myId={myId} onReply={() => setReplyTo(c.id)} onMenu={() => openMenu(c, !!myId && c.user_id === myId)} />
           </View>
         ))}
       </View>
     );
   };
 
-  // 8) list modes
-  const ListWhenEmbedded = () => (
-    <View>
-      {threads.tops.map(renderThreadView)}
-      {loading ? (
-        <ActivityIndicator />
-      ) : hasMore ? (
-        <TouchableOpacity onPress={fetchPage} style={{ alignSelf: "center", padding: 10 }}>
-          <Text style={{ color: "#94a3b8" }}>Load more</Text>
-        </TouchableOpacity>
-      ) : (
-        <Text style={{ color: "#94a3b8", textAlign: "center", padding: 6 }}>No more comments</Text>
-      )}
-    </View>
-  );
+  /* -----------------------------
+     List (always FlatList → scrollable inside modal)
+  ----------------------------- */
+  const listData = threads.tops;
+  const keyExtractor = (i: Row) => i.id;
+  const onEndReached = () => {
+    if (!loading) fetchPage();
+  };
 
-  const ListWhenStandalone = () => (
-    <FlatList
-      data={threads.tops}
-      keyExtractor={(i) => i.id}
-      renderItem={({ item }) => renderThreadView(item)}
-      ListFooterComponent={
-        loading ? (
-          <ActivityIndicator />
-        ) : hasMore ? (
-          <TouchableOpacity onPress={fetchPage} style={{ alignSelf: "center", padding: 10 }}>
-            <Text style={{ color: "#94a3b8" }}>Load more</Text>
-          </TouchableOpacity>
-        ) : (
-          <Text style={{ color: "#94a3b8", textAlign: "center", padding: 6 }}>No more comments</Text>
-        )
-      }
-      onEndReachedThreshold={0.2}
-      onEndReached={() => {
-        if (!loading) fetchPage();
-      }}
-    />
-  );
-
-  // 9) the widget
+  /* -----------------------------
+     UI
+  ----------------------------- */
   return (
     <View style={{ gap: 12 }}>
-      {/* type box + send */}
+      {/* ✍️ composer */}
       <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
         <TextInput
           placeholder={replyTo ? "Reply…" : "Write a comment…"}
           placeholderTextColor="#94a3b8"
           value={text}
           onChangeText={setText}
-          style={{
-            flex: 1,
-            backgroundColor: "#1e293b",
-            color: "#f1f5f9",
-            borderRadius: 12,
-            paddingHorizontal: 12,
-            paddingVertical: 10,
-          }}
+          style={{ flex: 1, backgroundColor: "#1e293b", color: "#f1f5f9", borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 }}
           multiline
         />
-        <TouchableOpacity
-          onPress={onSend}
-          disabled={sending || text.trim().length === 0}
-          style={{
-            backgroundColor: sending ? "#94a3b8" : "#38bdf8",
-            paddingHorizontal: 14,
-            paddingVertical: 10,
-            borderRadius: 10,
-            opacity: sending ? 0.7 : 1,
-          }}
-        >
-          <Text style={{ color: "#031724", fontWeight: "700" }}>
-            {sending ? "Sending…" : "Send"}
-          </Text>
+        <TouchableOpacity onPress={onSend} disabled={sending || text.trim().length === 0} style={{ backgroundColor: sending ? "#94a3b8" : "#38bdf8", paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, opacity: sending ? 0.7 : 1 }}>
+          <Text style={{ color: "#031724", fontWeight: "700" }}>{sending ? "Sending…" : "Send"}</Text>
         </TouchableOpacity>
       </View>
 
-      {/* list */}
-      {insideScroll ? <ListWhenEmbedded /> : <ListWhenStandalone />}
+      {/* 📜 scrollable list */}
+      {loading && listData.length === 0 ? (
+        <ActivityIndicator />
+      ) : listData.length === 0 ? (
+        <Text style={{ color: "#94a3b8", textAlign: "center", padding: 6 }}>No comments yet — be the first!</Text>
+      ) : (
+        <FlatList
+          data={listData}
+          keyExtractor={keyExtractor}
+          renderItem={renderThreadView}
+          onEndReachedThreshold={0.2}
+          onEndReached={onEndReached}
+          ListFooterComponent={
+            loading ? (
+              <ActivityIndicator style={{ marginVertical: 10 }} />
+            ) : hasMore ? (
+              <TouchableOpacity onPress={fetchPage} style={{ alignSelf: "center", padding: 10 }}>
+                <Text style={{ color: "#94a3b8" }}>Load more</Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={{ color: "#94a3b8", textAlign: "center", padding: 6 }}>No more comments</Text>
+            )
+          }
+          // Make sure it plays nice inside a modal/sheet
+          style={{ maxHeight: 360 }}
+          contentContainerStyle={{ paddingBottom: 12 }}
+          showsVerticalScrollIndicator
+        />
+      )}
 
-      {/* our dark sheet */}
-      <ThemedActionSheet
-        visible={sheetOpen}
-        title={sheetTitle}
-        actions={sheetActions}
-        onClose={() => setSheetOpen(false)}
-      />
+      {/* ⚙️ action sheet */}
+      <ThemedActionSheet visible={sheetOpen} title={sheetTitle} actions={sheetActions} onClose={() => setSheetOpen(false)} />
     </View>
-  );
-}
-
-function Bubble({
-  row,
-  myId,
-  onReply,
-  onMenu,
-}: {
-  row: Row;
-  myId: string | null;
-  onReply: () => void;
-  onMenu: () => void;
-}) {
-  const isMine = !!myId && row.user_id === myId;
-  const hidden = !!row.is_hidden;
-
-  if (hidden) {
-    // gentle gray pillow for deleted
-    return (
-      <View style={{ backgroundColor: "#0f172a", borderRadius: 12, padding: 10, opacity: 0.7 }}>
-        <Text style={{ color: "#94a3b8", fontStyle: "italic" }}>🗑️ Deleted by author</Text>
-      </View>
-    );
-  }
-
-  return (
-    <TouchableOpacity onLongPress={onMenu} delayLongPress={300} activeOpacity={0.9} style={{ backgroundColor: "#0f172a", borderRadius: 12, padding: 10 }}>
-      {row.is_flagged && <Text style={{ color: "#f59e0b", marginBottom: 4 }}>Marked for review</Text>}
-      <Text style={{ color: "#f1f5f9" }}>{row.body}</Text>
-
-      {/* quick reply */}
-      <View style={{ flexDirection: "row", gap: 14, marginTop: 6 }}>
-        <TouchableOpacity onPress={onReply}>
-          <Text style={{ color: "#38bdf8" }}>Reply</Text>
-        </TouchableOpacity>
-        {isMine ? <Text style={{ color: "#94a3b8" }}>(long-press for more)</Text> : null}
-      </View>
-    </TouchableOpacity>
   );
 }
