@@ -1205,3 +1205,116 @@ export async function toggleFollow(otherUserId: string): Promise<boolean> {
 
   return true;
 }
+// ===============================
+// 🔔 NOTIFICATIONS HELPERS
+// (DROP-IN: paste at bottom of data.ts)
+// NOTE: Do NOT import supabase again here — data.ts already has it.
+// ===============================
+
+/**
+ * getUnreadNotificationCount()
+ * - Ask the DB: "how many are unread?"
+ * - We use head:true so it returns only the count (fast).
+ */
+export async function getUnreadNotificationCount() {
+  const { count, error } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("is_read", false);
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/**
+ * listNotifications(limit, unreadOnly)
+ * - Gets cards for the slide-up notifications sheet.
+ * - Also pulls the actor's profile via the actor_id foreign key.
+ * - The embed name 'profiles!notifications_actor_id_fkey' matches the FK
+ *   we created in SQL Step 1 (fresh table build).
+ */
+export async function listNotifications(limit = 50, unreadOnly = false) {
+  let q = supabase
+    .from("notifications")
+    .select(
+      `
+        id,
+        type,             -- 'comment' | 'reply'
+        recipe_id,
+        comment_id,
+        is_read,
+        created_at,
+        message,
+        recipe_title,
+        actor:profiles!notifications_actor_id_fkey ( id, username, avatar_url )
+      `
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (unreadOnly) q = q.eq("is_read", false);
+
+  const { data, error } = await q;
+  if (error) throw error;
+
+  // 🧽 Make a friendly shape for UI
+  return (data ?? []).map((n: any) => ({
+    id: n.id,
+    type: (n.type ?? "comment").toLowerCase() as "comment" | "reply",
+    recipe_id: n.recipe_id,
+    comment_id: n.comment_id,
+    is_read: n.is_read,
+    created_at: n.created_at,
+    message: n.message ?? "",
+    recipe_title: n.recipe_title ?? "",
+    actor: n.actor
+      ? {
+          id: n.actor.id,
+          username: n.actor.username ?? "Someone",
+          avatar_url: n.actor.avatar_url ?? null,
+        }
+      : null,
+  }));
+}
+
+/**
+ * markNotificationRead(id)
+ * - When you tap a card, we flip the "is_read" switch.
+ */
+export async function markNotificationRead(id: string) {
+  const { error } = await supabase
+    .from("notifications")
+    .update({ is_read: true, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+/**
+ * markAllNotificationsRead()
+ * - Big "Mark all read" button at the top of the sheet.
+ */
+export async function markAllNotificationsRead() {
+  const { error } = await supabase
+    .from("notifications")
+    .update({ is_read: true, updated_at: new Date().toISOString() })
+    .eq("is_read", false);
+  if (error) throw error;
+}
+
+/**
+ * subscribeToNotifications(onNew)
+ * - Realtime listener to bump the bell badge.
+ * - Returns an unsubscribe function. Call it on unmount.
+ */
+export function subscribeToNotifications(onNew: (row: any) => void) {
+  const channel = supabase
+    .channel("notifications-stream")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "notifications" },
+      (payload) => onNew(payload.new)
+    )
+    .subscribe();
+
+  return () => supabase.removeChannel(channel);
+}
