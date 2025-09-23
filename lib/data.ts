@@ -1105,19 +1105,25 @@ export async function getUserIdByUsername(username: string): Promise<string | nu
 }
 
 export async function listFollowers(targetUserId: string) {
+  // 🧸 If no target, give an empty list
   if (!targetUserId) return [];
+
+  // 🧷 IMPORTANT PART:
+  // profiles!follows_follower_id_fkey(...) disambiguates the join
   const { data, error } = await supabase
     .from("follows")
     .select(`
       follower_id,
-      profiles:follower_id ( id, username, avatar_url, bio )
+      follower:profiles!follows_follower_id_fkey ( id, username, avatar_url, bio )
     `)
     .eq("following_id", targetUserId)
     .order("created_at", { ascending: false });
+
   if (error) throw error;
 
+  // 🎁 Return just the profile bits, like before
   return (data ?? [])
-    .map((r: any) => r.profiles)
+    .map((r: any) => r.follower)
     .filter(Boolean)
     .map((p: any) => ({
       id: p.id,
@@ -1129,18 +1135,20 @@ export async function listFollowers(targetUserId: string) {
 
 export async function listFollowing(targetUserId: string) {
   if (!targetUserId) return [];
+
   const { data, error } = await supabase
     .from("follows")
     .select(`
       following_id,
-      profiles:following_id ( id, username, avatar_url, bio )
+      following:profiles!follows_following_id_fkey ( id, username, avatar_url, bio )
     `)
     .eq("follower_id", targetUserId)
     .order("created_at", { ascending: false });
+
   if (error) throw error;
 
   return (data ?? [])
-    .map((r: any) => r.profiles)
+    .map((r: any) => r.following)
     .filter(Boolean)
     .map((p: any) => ({
       id: p.id,

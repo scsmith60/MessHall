@@ -869,14 +869,23 @@ export default function Profile() {
             </TouchableOpacity>
           )}
 
-          {/* Tabs */}
-          <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
+          {/* Tabs — now HORIZONTALLY SCROLLABLE so extra pills never get cut off */}
+          <ScrollView
+            horizontal                // <-- makes it scroll sideways
+            showsHorizontalScrollIndicator={false} // <-- hide the ugly bar
+            contentContainerStyle={{
+              gap: 10,                // <-- space between pills
+              paddingHorizontal: 16,  // <-- comfy side padding
+            }}
+            style={{ marginTop: 16 }} // <-- spacing above the pills
+          >
             {(["recipes", "remixes", "cooked", "saved"] as const).map((t) => {
               const active = tab === t;
               return (
                 <TouchableOpacity
                   key={t}
                   onPress={() => setTab(t)}
+                  // 🍪 the pill itself — same look you had, just inside a scroll now
                   style={{
                     paddingHorizontal: 16,
                     paddingVertical: 10,
@@ -884,7 +893,12 @@ export default function Profile() {
                     backgroundColor: active ? COLORS.accent : "transparent",
                     borderWidth: 1,
                     borderColor: COLORS.accent,
+
+                    // ✅ makes each pill big enough for fingers and prevents squish
+                    minWidth: 96,
+                    alignItems: "center",
                   }}
+                  activeOpacity={0.85}
                 >
                   <Text style={{ color: active ? "#041016" : COLORS.text, fontWeight: "900" }}>
                     {t === "recipes" ? "Recipes" : t === "remixes" ? "Remixes" : t === "cooked" ? "Cooked" : "Saved"}
@@ -892,7 +906,8 @@ export default function Profile() {
                 </TouchableOpacity>
               );
             })}
-          </View>
+          </ScrollView>
+
         </View>
 
         {/* Grids per tab */}
