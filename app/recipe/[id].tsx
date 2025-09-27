@@ -3,7 +3,7 @@
 // (…original header comments preserved…)
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Alert, ScrollView, Share, Text, View, TouchableOpacity } from 'react-native';
+import { Alert, Share, Text, View, TouchableOpacity, FlatList } from 'react-native'; // 👈 added FlatList, removed ScrollView
 import { useLocalSearchParams, router } from 'expo-router';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
@@ -580,8 +580,9 @@ export default function RecipeDetail() {
       </View>
     );
 
-  return (
-    <ScrollView style={{ flex: 1, backgroundColor: COLORS.bg }} contentContainerStyle={{ paddingBottom: 32 }}>
+  // ===== Move everything that used to be inside <ScrollView> into header/footer of a FlatList =====
+  const Header = (
+    <View>
       {/* HERO IMAGE + ✏️ edit + ✅ calories pill (bottom-right) */}
       <View style={{ position: 'relative' }}>
         <Image
@@ -790,13 +791,28 @@ export default function RecipeDetail() {
         )}
       </View>
 
-      {/* COMMENTS */}
-      <View style={{ paddingHorizontal: SPACING.lg, marginTop: 24 }}>
-        <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 10 }}>Comments</Text>
-        {id ? <RecipeComments recipeId={String(id)} isRecipeOwner={isOwner} insideScroll /> : null}
-      </View>
+      {/* add a little space before comments footer */}
+      <View style={{ height: 8 }} />
+    </View>
+  );
 
-      <View style={{ height: 32 }} />
-    </ScrollView>
+  const Footer = (
+    <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: 32, marginTop: 24 }}>
+      <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 10 }}>Comments</Text>
+      {/* Keep your prop; if RecipeComments renders a VirtualizedList, that's OK now because the OUTER is also virtualized */}
+      {id ? <RecipeComments recipeId={String(id)} isRecipeOwner={isOwner} /> : null}
+    </View>
+  );
+
+  // Single-item FlatList just to host header/footer content in a Virtualized container
+  return (
+    <FlatList
+      style={{ flex: 1, backgroundColor: COLORS.bg }}
+      data={[{ key: 'content' }]}
+      keyExtractor={(item) => item.key}
+      renderItem={() => null}
+      ListHeaderComponent={Header}
+      ListFooterComponent={Footer}
+    />
   );
 }

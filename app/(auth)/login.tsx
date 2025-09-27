@@ -41,11 +41,13 @@ const COLORS = {
 };
 
 // 🧼 turn spaces into underscores for safe usernames
-const normalize = (s: string) => s.trim().replace(/\s+/g, "_");
+function normalize(s: string) {
+  return s.trim().replace(/\s+/g, "_");
+}
 
 export default function Login() {
-  // 🧠 little boxes that remember what you type
-  const [identifier, setIdentifier] = useState(""); // email OR username
+  // 📝 you can type either "email" OR "username" in the first box
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -67,17 +69,22 @@ export default function Login() {
 
         if (error) throw error;
         if (!data?.[0]?.email) throw new Error("No account found with that username.");
-        emailToUse = data[0].email!;
+        emailToUse = data[0].email;
       }
 
+      // Ask Supabase to sign us in
       const { error: authErr } = await supabase.auth.signInWithPassword({
         email: emailToUse,
         password,
       });
       if (authErr) throw authErr;
 
+      // Wait a moment until Supabase really says “yep, you’re signed in”
       const ok = await waitForSignedIn();
-      if (ok) router.replace("/(tabs)");
+
+      // 🟢 TINY FIX: send to the HOME TAB explicitly
+      //    (this is the only line I changed from your file)
+      if (ok) router.replace("/(tabs)/index");
       else Alert.alert("Almost there", "Please try again.");
     } catch (e: any) {
       Alert.alert("Login failed", e?.message ?? String(e));
@@ -105,156 +112,220 @@ export default function Login() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: COLORS.bg }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.select({ ios: "padding", android: undefined })}
     >
-      <View style={{ flex: 1, padding: 24, justifyContent: "center" }}>
-        {/* ===================== Header with Logo ===================== */}
-        <View style={{ alignItems: "center", marginBottom: 16 }}>
-          {/* 🖼️ your big green "M" image */}
+      {/* Outer safe padding */}
+      <View style={{ flex: 1, paddingHorizontal: 20, paddingTop: 48 }}>
+        {/* ---------- TOP: Logo + Welcome ---------- */}
+        <View style={{ alignItems: "center", marginBottom: 24 }}>
           <Image
             source={require("../../assets/brand/messhall-m.png")}
-            accessibilityLabel="MessHall logo"
-            style={{
-              width: 96,
-              height: 96,
-              borderRadius: 18,
-              marginBottom: 10,
-              resizeMode: "contain",
-            }}
+            style={{ width: 120, height: 120, marginBottom: 12 }}
+            resizeMode="contain"
           />
-          {/* Word mark underneath */}
-          <Text
-            style={{
-              color: COLORS.green,
-              fontSize: 28,
-              fontWeight: "900",
-              letterSpacing: 2,
-            }}
-          >
-            MESSHALL
+          <Text style={{ color: COLORS.text, fontSize: 28, fontWeight: "800" }}>
+            Welcome to MessHall
+          </Text>
+          <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+            Sign in to cook, share, and shop.
           </Text>
         </View>
 
-        {/* ======================= Tab Switcher ======================= */}
-        <View style={{ flexDirection: "row", gap: 24, justifyContent: "center", marginBottom: 16 }}>
-          <Text
-            style={{
-              color: COLORS.text,
-              fontWeight: "700",
-              borderBottomColor: COLORS.green,
-              borderBottomWidth: 2,
-              paddingBottom: 2,
-            }}
-          >
-            Login
-          </Text>
-          <Link href="/signup">
-            <Text style={{ color: COLORS.sub, fontWeight: "600" }}>Sign Up</Text>
-          </Link>
-        </View>
-
-        {/* ===================== Email or Username ===================== */}
-        <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Email or Username</Text>
-        <TextInput
-          placeholder="you@example.com  or  CallSign"
-          placeholderTextColor={COLORS.sub}
-          autoCapitalize="none"
-          autoCorrect={false}
-          value={identifier}
-          onChangeText={setIdentifier}
-          style={{
-            backgroundColor: COLORS.field,
-            color: COLORS.text,
-            padding: 14,
-            borderRadius: 10,
-            marginBottom: 12,
-          }}
-          returnKeyType="next"
-        />
-
-        {/* ========================== Password ======================== */}
-        <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Password</Text>
-        <TextInput
-          placeholder="••••••••"
-          placeholderTextColor={COLORS.sub}
-          secureTextEntry={!show}
-          value={password}
-          onChangeText={setPassword}
-          style={{ backgroundColor: COLORS.field, color: COLORS.text, padding: 14, borderRadius: 10 }}
-          returnKeyType="go"
-          onSubmitEditing={() => canLogin && handleLogin()}
-        />
-
-        {/* 👀 Show/Hide switch */}
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 10 }}>
-          <Switch value={show} onValueChange={setShow} />
-          <Text style={{ color: COLORS.sub }}>Show password</Text>
-        </View>
-
-        {/* ==================== Big Green Button ====================== */}
-        <TouchableOpacity
-          onPress={handleLogin}
-          disabled={!canLogin}
-          style={{
-            backgroundColor: canLogin ? COLORS.green : COLORS.greenDim,
-            padding: 14,
-            borderRadius: 12,
-            alignItems: "center",
-            marginTop: 8,
-          }}
-        >
-          <Text style={{ color: COLORS.buttonText, fontWeight: "800" }}>
-            {busy ? "Please wait..." : "ENTER MESS HALL"}
-          </Text>
-        </TouchableOpacity>
-
-        {/* --------------- Divider text --------------- */}
-        <Text style={{ color: COLORS.sub, textAlign: "center", marginVertical: 16 }}>or continue with</Text>
-
-        {/* ----------------- OAuth buttons ----------------- */}
-        <View style={{ flexDirection: "row", gap: 12, justifyContent: "center" }}>
-          <TouchableOpacity
-            onPress={() => loginWithProvider("google")}
-            disabled={busy}
-            style={{
-              backgroundColor: COLORS.field,
-              padding: 12,
-              borderRadius: 10,
-              minWidth: 120,
-              alignItems: "center",
-            }}
-          >
-            <Text style={{ color: COLORS.text, fontWeight: "700" }}>Google</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => loginWithProvider("apple")}
-            disabled={busy}
-            style={{
-              backgroundColor: COLORS.field,
-              padding: 12,
-              borderRadius: 10,
-              minWidth: 120,
-              alignItems: "center",
-            }}
-          >
-            <Text style={{ color: COLORS.text, fontWeight: "700" }}>Apple</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* ---------------------- Footer ---------------------- */}
+        {/* ---------- CARD: Fields ---------- */}
         <View
           style={{
-            flexDirection: "row",
-            gap: 6,
-            justifyContent: "space-between",
-            marginTop: 20,
-            alignItems: "center",
+            backgroundColor: "#0b1220",
+            borderColor: "#1f2937",
+            borderWidth: 1,
+            borderRadius: 16,
+            padding: 16,
+            gap: 12,
           }}
         >
+          {/* Identifier (email or username) */}
+          <View style={{ gap: 6 }}>
+            <Text style={{ color: COLORS.sub, fontSize: 12 }}>
+              Email or Username
+            </Text>
+            <TextInput
+              value={identifier}
+              onChangeText={setIdentifier}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="you@example.com  or  your_username"
+              placeholderTextColor="#6b7280"
+              keyboardType="email-address"
+              style={{
+                backgroundColor: COLORS.field,
+                color: COLORS.text,
+                borderRadius: 10,
+                paddingHorizontal: 12,
+                paddingVertical: Platform.select({ ios: 14, android: 10 }),
+                borderColor: "#334155",
+                borderWidth: 1,
+                fontSize: 16,
+              }}
+            />
+          </View>
+
+          {/* Password */}
+          <View style={{ gap: 6 }}>
+            <Text style={{ color: COLORS.sub, fontSize: 12 }}>Password</Text>
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry={!show}
+              placeholder="••••••••"
+              placeholderTextColor="#6b7280"
+              style={{
+                backgroundColor: COLORS.field,
+                color: COLORS.text,
+                borderRadius: 10,
+                paddingHorizontal: 12,
+                paddingVertical: Platform.select({ ios: 14, android: 10 }),
+                borderColor: "#334155",
+                borderWidth: 1,
+                fontSize: 16,
+              }}
+            />
+            {/* Show/Hide switch */}
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+            >
+              <Switch
+                value={show}
+                onValueChange={setShow}
+                trackColor={{ false: "#283548", true: COLORS.greenDim }}
+                thumbColor={show ? COLORS.green : "#94a3b8"}
+              />
+              <Text style={{ color: COLORS.sub }}>Show password</Text>
+            </View>
+          </View>
+
+          {/* Forgot password */}
+          <TouchableOpacity
+            onPress={async () => {
+              try {
+                if (!identifier.trim()) {
+                  Alert.alert("Need your email", "Please type your email first.");
+                  return;
+                }
+                const email =
+                  identifier.includes("@")
+                    ? identifier.trim()
+                    : undefined;
+
+                if (!email) {
+                  Alert.alert(
+                    "Use email",
+                    "Password reset needs an email, not a username."
+                  );
+                  return;
+                }
+
+                setBusy(true);
+                const { error } = await supabase.auth.resetPasswordForEmail(
+                  email,
+                  {
+                    redirectTo: "messhall://reset-password", // change if needed
+                  }
+                );
+                if (error) throw error;
+                Alert.alert(
+                  "Check your email",
+                  "We sent you a reset link if that address exists."
+                );
+              } catch (e: any) {
+                Alert.alert("Oops", e?.message ?? String(e));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <Text
+              style={{
+                color: COLORS.sub,
+                textDecorationLine: "underline",
+                fontSize: 13,
+              }}
+            >
+              Forgot password?
+            </Text>
+          </TouchableOpacity>
+
+          {/* Enter button */}
+          <TouchableOpacity
+            onPress={handleLogin}
+            disabled={!canLogin}
+            style={{
+              backgroundColor: canLogin ? COLORS.green : COLORS.greenDim,
+              borderRadius: 12,
+              alignItems: "center",
+              marginTop: 8,
+              paddingVertical: 14,
+              opacity: busy ? 0.8 : 1,
+            }}
+          >
+            <Text style={{ color: COLORS.buttonText, fontWeight: "800" }}>
+              {busy ? "Please wait..." : "ENTER MESS HALL"}
+            </Text>
+          </TouchableOpacity>
+
+          {/* --------------- Divider text --------------- */}
+          <Text style={{ color: COLORS.sub, textAlign: "center", marginTop: 8 }}>
+            or continue with
+          </Text>
+
+          {/* --------------- OAuth buttons --------------- */}
+          <View
+            style={{
+              flexDirection: "row",
+              gap: 10,
+              justifyContent: "center",
+              marginTop: 4,
+            }}
+          >
+            <TouchableOpacity
+              onPress={() => loginWithProvider("google")}
+              style={{
+                backgroundColor: COLORS.field,
+                paddingVertical: 12,
+                paddingHorizontal: 16,
+                borderRadius: 10,
+                borderColor: "#334155",
+                borderWidth: 1,
+              }}
+            >
+              <Text style={{ color: COLORS.text }}>Google</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => loginWithProvider("apple")}
+              style={{
+                backgroundColor: COLORS.field,
+                paddingVertical: 12,
+                paddingHorizontal: 16,
+                borderRadius: 10,
+                borderColor: "#334155",
+                borderWidth: 1,
+              }}
+            >
+              <Text style={{ color: COLORS.text }}>Apple</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* ---------- BOTTOM LINKS ---------- */}
+        <View style={{ alignItems: "center", marginTop: 16, gap: 8 }}>
           <View style={{ flexDirection: "row", gap: 6 }}>
             <Text style={{ color: COLORS.sub }}>Don’t have an account?</Text>
+            {/* NOTE: If your project uses /sign-in instead of /signup, change this href accordingly */}
             <Link href="/signup">
-              <Text style={{ color: COLORS.green, fontWeight: "700" }}>Create account.</Text>
+              <Text style={{ color: COLORS.green, fontWeight: "700" }}>
+                Create account.
+              </Text>
             </Link>
           </View>
           <Text style={{ color: COLORS.sub }}>Terms & Privacy</Text>

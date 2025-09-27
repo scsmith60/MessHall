@@ -1,15 +1,20 @@
 // app/_layout.tsx
 //
 // LIKE I'M 5:
-// - This is the big box that wraps the whole app.
-// - If the "login light" is waking up, we show a tiny spinner.
-// - If you are logged in, we show the tutorial; if not, we just show screens.
-// - NEW: if Supabase says "SIGNED_OUT", we jump to /logout right away.
+// This is the boss wrapper. It watches the "login light" from Supabase.
+// We do 3 baby-simple rules:
+//   A) When the app wakes up, if there is NO session -> go to /login
+//   B) If Supabase yells "SIGNED_OUT" -> go to /logout
+//   C) If Supabase yells "SIGNED_IN" and we're on auth screens -> go to /(tabs)
+//
+// SUPER IMPORTANT CHANGE:
+// - We do NOT cover the whole app with a big spinner anymore.
+// - We always render <Slot/> so children can redirect right away.
+// - If we are loading, we show a tiny spinner *overlay* instead.
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { View, ActivityIndicator } from "react-native";
-import { useEffect } from "react";
-import { Slot, useRouter } from "expo-router";
+import { Slot, usePathname, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { supabase } from "../lib/supabase";
@@ -24,65 +29,120 @@ const Gate =
     (TutorialOverlay as any).default ??
     (({ children }: any) => <>{children}</>)) as React.ComponentType<any>;
 
-// ✅ theme (try to use your constants; fallback keeps old green)
-let THEME_GREEN = "#22c55e";
-try {
-  // if you have constants/theme.ts exporting { colors: { green: string } }
-  // @ts-ignore
-  const theme = require("../constants/theme");
-  if (theme?.colors?.green) THEME_GREEN = theme.colors.green;
-} catch {}
+// 🎨 quick colors
+const COLORS = { bg: "#0b1220" };
 
-const COLORS = { bg: "#0b1220", green: THEME_GREEN };
+// 🧸 helper: am I at an auth route?
+function useInAuthFlow() {
+  const pathname = usePathname() || "";
+  return useMemo(
+    () =>
+      pathname.startsWith("/login") ||
+      pathname.startsWith("/sign-in") ||
+      pathname.startsWith("/signup") ||
+      pathname.startsWith("/(auth)") ||
+      pathname === "/logout" ||
+      pathname === "/logout-complete",
+    [pathname]
+  );
+}
 
-function Inner() {
-  // read auth state provided by <AuthProvider/>
+function InnerApp() {
+  // 🔌 read global auth lights
   const { loading, isLoggedIn } = useAuth();
 
-  // ⏳ show a tiny spinner while auth wakes up
-  if (loading) {
-    return (
-      <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator />
-        <StatusBar style="light" />
-      </View>
-    );
-  }
-
-  // ⬇️ tutorial gate only after login so it never covers the auth screens
+  // ✅ ALWAYS render the app tree so children can redirect.
+  //    (We only add a tiny spinner overlay if loading.)
   const content = (
     <>
       <StatusBar style="light" />
       <Slot />
+      {loading && (
+        // 🌟 teeny overlay spinner so you see "thinking", but it doesn't block navigation
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <ActivityIndicator />
+        </View>
+      )}
     </>
   );
 
+  // 🧱 Only show the tutorial gate AFTER login so it never covers auth screens
   return isLoggedIn ? <Gate>{content}</Gate> : content;
 }
 
 export default function RootLayout() {
   const router = useRouter();
+  const inAuthFlow = useInAuthFlow();
+  const [checkedOnce, setCheckedOnce] = useState(false);
 
-  // 🚨 NEW: global auth watcher at the ROOT of the app.
-  // If Supabase tells us "SIGNED_OUT", we immediately leave to /logout.
-  // This runs above Tabs, so Tabs' spinner can’t trap us.
+  // 🚀 On first mount, peek session.
+  // If there is NO session and we are NOT already on an auth screen -> go to /login
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const hasSession = !!data?.session;
+        if (!hasSession && !inAuthFlow) {
+          // go straight to login so we don't sit on any spinners
+          router.replace("/login");
+        }
+      } finally {
+        if (alive) setCheckedOnce(true);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [router, inAuthFlow]);
+
+  // 📡 Watch live auth state changes.
+  // - SIGNED_OUT  -> go to /logout (cleans up + then /logout-complete)
+  // - SIGNED_IN   -> if you’re staring at auth screens, push you into the app
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") {
-        // wait 1 frame so any closing animations start, then hard replace
-        requestAnimationFrame(() => router.replace("/logout")); // NOTE: (auth) is a group; the route is /logout
+        requestAnimationFrame(() => router.replace("/logout"));
       }
-      // If you want to force-home after login, you can uncomment this:
-      // if (event === "SIGNED_IN") requestAnimationFrame(() => router.replace("/"));
+      if (event === "SIGNED_IN") {
+        // if we are on login/signup screens, hop into the app
+        if (inAuthFlow) {
+          requestAnimationFrame(() => router.replace("/(tabs)"));
+        }
+      }
     });
     return () => data.subscription?.unsubscribe();
-  }, [router]);
+  }, [router, inAuthFlow]);
 
+  // 🧯 Safety valve:
+  // If we haven't done our first check yet, show a very small neutral shell.
+  // (This renders only for a blink; we still don't block redirects.)
+  if (!checkedOnce) {
+    return (
+      <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
+        <AuthProvider>
+          <View style={{ flex: 1 }} />
+        </AuthProvider>
+      </GestureHandlerRootView>
+    );
+  }
+
+  // ✅ Normal path
   return (
-    // 👇 keeps gesture handlers happy app-wide
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
-        <Inner />
+        <InnerApp />
       </AuthProvider>
     </GestureHandlerRootView>
   );

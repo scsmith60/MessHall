@@ -843,11 +843,12 @@ export const dataAPI: DataAPI = {
     if (!body) return;
 
     // uses your Postgres function writing into recipe_comments.body
-    const { error } = await supabase.rpc("add_comment", {
-      p_recipe_id: recipeId,
-      p_parent_id: parentId,
-      p_body: body,
+    await supabase.rpc("add_comment", {
+      p_recipe_id: recipeId,          // required
+      p_body: body,                   // required
+      p_parent_id: parentId ?? null,  // optional (reply) or null (top-level)
     });
+
     if (error) throw error;
   },
 
