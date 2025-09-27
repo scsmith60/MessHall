@@ -17,28 +17,27 @@
           "speechRecognitionPermission": "Let MessHall understand your voice for hands-free cooking.",
           "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
         }
-      ]
+      ],
+      "expo-share-intent" 
+      /* 🆕 correct share-target plugin so MessHall shows in Share sheets */
     ],
 
     "android": {
       "package": "app.messhall",
       "permissions": ["RECORD_AUDIO"],
       "userInterfaceStyle": "automatic",
+
       "intentFilters": [
         {
           "autoVerify": true,
           "action": "VIEW",
           "category": ["BROWSABLE", "DEFAULT"],
-          "data": [
-            { "scheme": "https", "host": "messhall.app", "pathPrefix": "/" }
-          ]
+          "data": [{ "scheme": "https", "host": "messhall.app", "pathPrefix": "/" }]
         },
         {
           "action": "VIEW",
           "category": ["BROWSABLE", "DEFAULT"],
-          "data": [
-            { "scheme": "messhall" }
-          ]
+          "data": [{ "scheme": "messhall" }]
         }
       ]
     },

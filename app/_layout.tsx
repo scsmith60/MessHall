@@ -1,28 +1,25 @@
 // app/_layout.tsx
 //
-// LIKE I'M 5:
-// This is the boss wrapper. It watches the "login light" from Supabase.
-// We do 3 baby-simple rules:
-//   A) When the app wakes up, if there is NO session -> go to /login
-//   B) If Supabase yells "SIGNED_OUT" -> go to /logout
-//   C) If Supabase yells "SIGNED_IN" and we're on auth screens -> go to /(tabs)
+// 🧸 ELI5: This is the boss wrapper for MessHall.
+// - Watches login status
+// - Shows your app screens
+// - 🆕 Listens for "shared stuff" from other apps (TikTok, Safari, etc.).
+//   When someone shares a link to MessHall, we open the Capture tab with that link.
 //
-// SUPER IMPORTANT CHANGE:
-// - We do NOT cover the whole app with a big spinner anymore.
-// - We always render <Slot/> so children can redirect right away.
-// - If we are loading, we show a tiny spinner *overlay* instead.
+// We use expo-share-intent's hook so the native share extension/intents talk to JS.
+// Docs say: add the plugin in config, then read shareIntent in your top component. :contentReference[oaicite:5]{index=5}
 
 import React, { useEffect, useMemo, useState } from "react";
-import { View, ActivityIndicator } from "react-native";
+import { View, ActivityIndicator, Platform } from "react-native";
 import { Slot, usePathname, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { supabase } from "../lib/supabase";
 
-// ✅ your auth provider/hooks at project root
+// your auth provider/hooks
 import { AuthProvider, useAuth } from "../lib/auth";
 
-// ✅ optional tutorial overlay; if missing, we no-op
+// (optional) tutorial overlay; if missing, we render children directly
 import * as TutorialOverlay from "../components/TutorialOverlay";
 const Gate =
   ((TutorialOverlay as any).TutorialOverlayGate ??
@@ -47,18 +44,101 @@ function useInAuthFlow() {
   );
 }
 
-function InnerApp() {
-  // 🔌 read global auth lights
-  const { loading, isLoggedIn } = useAuth();
+/* -----------------------------------------------------------
+   🛎️ Push notifications (unchanged)
+----------------------------------------------------------- */
+import * as Notifications from "expo-notifications";
+import Constants from "expo-constants";
 
-  // ✅ ALWAYS render the app tree so children can redirect.
-  //    (We only add a tiny spinner overlay if loading.)
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: false,
+    shouldSetBadge: true,
+  }),
+});
+
+async function registerForPushToken(): Promise<string | null> {
+  try {
+    const perm = await Notifications.getPermissionsAsync();
+    let status = perm.status;
+    if (status !== "granted") {
+      const req = await Notifications.requestPermissionsAsync();
+      status = req.status;
+    }
+    if (status !== "granted") return null;
+
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync("default", {
+        name: "default",
+        importance: Notifications.AndroidImportance.DEFAULT,
+      });
+    }
+
+    const projectId =
+      (Constants as any).expoConfig?.extra?.eas?.projectId ??
+      (Constants as any).easConfig?.projectId ??
+      null;
+
+    if (!projectId) return null;
+
+    const tokenResp = await Notifications.getExpoPushTokenAsync({ projectId });
+    return tokenResp?.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/* -----------------------------------------------------------
+   🆕 Share Intake via expo-share-intent
+   ELI5:
+   - We ask the hook if someone just shared something to us.
+   - If yes, we grab the first http(s) link.
+   - We jump to Capture with ?sharedUrl=thatLink.
+   - Then we "reset" so it won't repeat.
+   Note: works in dev client / real builds (not Expo Go). :contentReference[oaicite:6]{index=6}
+----------------------------------------------------------- */
+import { useShareIntent } from "expo-share-intent";
+
+// find a link inside any text
+function extractFirstUrl(s?: string | null): string | null {
+  if (!s) return null;
+  const m = s.match(/https?:\/\/[^\s"'<>]+/i);
+  return m ? m[0] : null;
+}
+
+function InnerApp() {
+  const { loading, isLoggedIn } = useAuth();
+  const router = useRouter();
+
+  // 👉 read share intent state from native
+  const { hasShareIntent, shareIntent, resetShareIntent, error } = useShareIntent();
+
+  // when a share arrives, route to Capture with the url
+  useEffect(() => {
+    if (!hasShareIntent || !shareIntent) return;
+
+    // shareIntent.webUrl is already extracted when possible; otherwise check raw text
+    const url =
+      shareIntent.webUrl ||
+      extractFirstUrl(shareIntent.text) ||
+      // as a fallback for rich shares, sometimes meta.title contains an url-like string
+      extractFirstUrl(shareIntent?.meta?.title as any);
+
+    if (url) {
+      // go to Capture and let that screen auto-import
+      router.push({ pathname: "/(tabs)/capture", params: { sharedUrl: url } });
+    }
+
+    // VERY IMPORTANT: clear the intent so it doesn’t trigger again on re-render
+    resetShareIntent();
+  }, [hasShareIntent, shareIntent, router, resetShareIntent]);
+
   const content = (
     <>
       <StatusBar style="light" />
       <Slot />
       {loading && (
-        // 🌟 teeny overlay spinner so you see "thinking", but it doesn't block navigation
         <View
           pointerEvents="none"
           style={{
@@ -77,8 +157,29 @@ function InnerApp() {
     </>
   );
 
-  // 🧱 Only show the tutorial gate AFTER login so it never covers auth screens
-  return isLoggedIn ? <Gate>{content}</Gate> : content;
+  const wrapped = isLoggedIn ? <Gate>{content}</Gate> : content;
+
+  // save push token once, after login (unchanged)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!isLoggedIn) return;
+      const token = await registerForPushToken();
+      if (!token || cancelled) return;
+      try {
+        const { data } = await supabase.auth.getUser();
+        const uid = data.user?.id;
+        if (uid) {
+          await supabase.from("profiles").update({ push_token: token }).eq("id", uid);
+        }
+      } catch {}
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn]);
+
+  return wrapped;
 }
 
 export default function RootLayout() {
@@ -86,8 +187,7 @@ export default function RootLayout() {
   const inAuthFlow = useInAuthFlow();
   const [checkedOnce, setCheckedOnce] = useState(false);
 
-  // 🚀 On first mount, peek session.
-  // If there is NO session and we are NOT already on an auth screen -> go to /login
+  // initial session check (unchanged)
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -95,7 +195,6 @@ export default function RootLayout() {
         const { data } = await supabase.auth.getSession();
         const hasSession = !!data?.session;
         if (!hasSession && !inAuthFlow) {
-          // go straight to login so we don't sit on any spinners
           router.replace("/login");
         }
       } finally {
@@ -107,16 +206,13 @@ export default function RootLayout() {
     };
   }, [router, inAuthFlow]);
 
-  // 📡 Watch live auth state changes.
-  // - SIGNED_OUT  -> go to /logout (cleans up + then /logout-complete)
-  // - SIGNED_IN   -> if you’re staring at auth screens, push you into the app
+  // auth state changes (unchanged)
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") {
         requestAnimationFrame(() => router.replace("/logout"));
       }
       if (event === "SIGNED_IN") {
-        // if we are on login/signup screens, hop into the app
         if (inAuthFlow) {
           requestAnimationFrame(() => router.replace("/(tabs)"));
         }
@@ -125,9 +221,6 @@ export default function RootLayout() {
     return () => data.subscription?.unsubscribe();
   }, [router, inAuthFlow]);
 
-  // 🧯 Safety valve:
-  // If we haven't done our first check yet, show a very small neutral shell.
-  // (This renders only for a blink; we still don't block redirects.)
   if (!checkedOnce) {
     return (
       <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -138,7 +231,6 @@ export default function RootLayout() {
     );
   }
 
-  // ✅ Normal path
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>

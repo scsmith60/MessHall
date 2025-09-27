@@ -1,14 +1,15 @@
 // app.config.ts
 // 🧸 like I’m 5:
-// This file tells Expo everything about your app.
-// We add a custom URL scheme (messhall://), the mic/speech plugin,
-// Android/iOS permissions, and keep your Supabase + projectId.
+// This tells Expo how our app behaves.
+// We REMOVED the old 'react-native-share-menu' (bad plugin for Expo)
+// and ADDED 'expo-share-intent' (good plugin) so MessHall shows up
+// in the system Share sheet. Android/iOS know how to hand us links now.
 
 import { ExpoConfig, ConfigContext } from 'expo/config';
 
-const APP_NAME = 'MessHall';           // pretty name
-const ANDROID_PACKAGE = 'app.messhall';// reverse-DNS id (keep consistent)
-const IOS_BUNDLE = 'app.messhall';     // iOS bundle id (match Android)
+const APP_NAME = 'MessHall';            // pretty name
+const ANDROID_PACKAGE = 'app.messhall'; // Android app id
+const IOS_BUNDLE = 'app.messhall';      // iOS bundle id
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   // 🔹 basics
@@ -17,7 +18,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   slug: 'messhall',
   version: '1.0.0',
 
-  // 🔹 URL scheme so Linking uses messhall://...
+  // 🔹 deep-link scheme like messhall://
   scheme: 'messhall',
 
   // 🔹 nice to have
@@ -25,7 +26,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   userInterfaceStyle: 'automatic',
   newArchEnabled: true,
 
-  // 🔹 icons/splash (keeping yours)
+  // 🔹 icons/splash (kept yours)
   icon: './assets/icon.png',
   splash: {
     image: './assets/splash.png',
@@ -40,7 +41,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     eas: { projectId: '521a656b-0e37-4ae1-aae2-f4fd552a48b7' },
   },
 
-  // 🔹 plugins we actually use
+  // 🔌 PLUGINS WE USE
+  // ✅ 'expo-share-intent' is the correct share-target plugin for Expo
+  // ❌ 'react-native-share-menu' was removed (it caused your PluginError)
   plugins: [
     'expo-router',
     'expo-web-browser',
@@ -54,6 +57,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         androidSpeechServicePackages: ['com.google.android.googlequicksearchbox'],
       },
     ],
+    'expo-share-intent', // 🆕 correct plugin so MessHall appears in Share sheet
   ],
 
   // 🔹 Android settings
@@ -66,19 +70,22 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       foregroundImage: './assets/adaptive-icon.png',
       backgroundColor: '#0D1F16',
     },
-    // deep links for https://messhall.app/... and messhall://...
+
+    // deep links (VIEW). The share-intent plugin will add its own SEND handlers.
     intentFilters: [
+      // ✅ Universal links like https://messhall.app/...
       {
         autoVerify: true,
         action: 'VIEW',
         category: ['BROWSABLE', 'DEFAULT'],
         data: [{ scheme: 'https', host: 'messhall.app', pathPrefix: '/' }],
       },
+      // ✅ Custom scheme like messhall://...
       {
         action: 'VIEW',
         category: ['BROWSABLE', 'DEFAULT'],
         data: [{ scheme: 'messhall' }],
-      },
+      }
     ],
   },
 

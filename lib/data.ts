@@ -843,7 +843,7 @@ export const dataAPI: DataAPI = {
     if (!body) return;
 
     // uses your Postgres function writing into recipe_comments.body
-    await supabase.rpc("add_comment", {
+    const { error } = await supabase.rpc("add_comment", {
       p_recipe_id: recipeId,          // required
       p_body: body,                   // required
       p_parent_id: parentId ?? null,  // optional (reply) or null (top-level)
@@ -1206,50 +1206,75 @@ export async function toggleFollow(otherUserId: string): Promise<boolean> {
 
   return true;
 }
+
 // ===============================
-// 🔔 NOTIFICATIONS HELPERS
-// (DROP-IN: paste at bottom of data.ts)
-// NOTE: Do NOT import supabase again here — data.ts already has it.
+// 🔔 NOTIFICATIONS HELPERS (updated for your schema)
+// Table columns you showed: id, recipient_id, user_id (actor), notif_type, title, body, is_read, created_at, updated_at
 // ===============================
 
 /**
  * getUnreadNotificationCount()
- * - Ask the DB: "how many are unread?"
- * - We use head:true so it returns only the count (fast).
+ * - fast count of *my* unread notifs (recipient_id = me)
  */
-export async function getUnreadNotificationCount() {
-  const { count, error } = await supabase
-    .from("notifications")
-    .select("id", { count: "exact", head: true })
-    .eq("is_read", false);
+export async function getUnreadNotificationCount(): Promise<number> {
+  // like I'm 5: we ask "who am I?", then count rows where
+  // recipient_id = me AND is_read = false
+  const me = (await supabase.auth.getUser()).data.user?.id;
+  if (!me) return 0;
 
-  if (error) throw error;
+  // Some PostgREST/RLS combos return 0 when we use head:true.
+  // So we ask for count WITHOUT head:true and read .count.
+  const { data, count, error } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact" })   // <- note: no head:true
+    .eq("recipient_id", me)
+    .eq("is_read", false)
+    .limit(1);                          // fetch almost nothing, but still get count
+
+  if (error) {
+    // as a fallback, if we ever hit a weird error, try a tiny fetch and count locally
+    const { data: rows } = await supabase
+      .from("notifications")
+      .select("id")
+      .eq("recipient_id", me)
+      .eq("is_read", false)
+      .limit(500);
+    return rows?.length ?? 0;
+  }
+
   return count ?? 0;
 }
 
 /**
  * listNotifications(limit, unreadOnly)
- * - Gets cards for the slide-up notifications sheet.
- * - Also pulls the actor's profile via the actor_id foreign key.
- * - The embed name 'profiles!notifications_actor_id_fkey' matches the FK
- *   we created in SQL Step 1 (fresh table build).
+ * - shape matches what your Profile screen expects:
+ *   { id, type, recipeId, commentId, title, body, actorUsername, actorAvatar, createdAt, isRead }
+ * - joins actor via user_id -> profiles
+ * - if PostgREST says “use fknames”, replace the embed line with your exact FK:
+ *   actor:profiles!notifications_user_id_fkey ( id, username, avatar_url )
  */
-export async function listNotifications(limit = 50, unreadOnly = false) {
+export async function listNotifications(limit = 50, unreadOnly = true) {
+  const me = (await supabase.auth.getUser()).data.user?.id;
+  if (!me) return [];
+
   let q = supabase
     .from("notifications")
-    .select(
-      `
+    .select(`
+      id,
+      recipient_id,
+      user_id,
+      notif_type,
+      title,
+      body,
+      is_read,
+      created_at,
+      actor:user_id (
         id,
-        type,             -- 'comment' | 'reply'
-        recipe_id,
-        comment_id,
-        is_read,
-        created_at,
-        message,
-        recipe_title,
-        actor:profiles!notifications_actor_id_fkey ( id, username, avatar_url )
-      `
-    )
+        username,
+        avatar_url
+      )
+    `)
+    .eq("recipient_id", me)
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -1258,54 +1283,55 @@ export async function listNotifications(limit = 50, unreadOnly = false) {
   const { data, error } = await q;
   if (error) throw error;
 
-  // 🧽 Make a friendly shape for UI
-  return (data ?? []).map((n: any) => ({
-    id: n.id,
-    type: (n.type ?? "comment").toLowerCase() as "comment" | "reply",
-    recipe_id: n.recipe_id,
-    comment_id: n.comment_id,
-    is_read: n.is_read,
-    created_at: n.created_at,
-    message: n.message ?? "",
-    recipe_title: n.recipe_title ?? "",
-    actor: n.actor
-      ? {
-          id: n.actor.id,
-          username: n.actor.username ?? "Someone",
-          avatar_url: n.actor.avatar_url ?? null,
-        }
-      : null,
+  return (data ?? []).map((r: any) => ({
+    id: r.id as string,
+    type: (r.notif_type ?? "comment") as string,
+    recipeId: r.recipe_id ?? null,   // ok if your table doesn't store it yet
+    commentId: r.comment_id ?? null, // same ^
+    title: r.title ?? null,
+    body: r.body ?? null,
+    actorId: r.user_id ?? r.actor?.id ?? null,
+    actorUsername: r.actor?.username ?? null,
+    actorAvatar: r.actor?.avatar_url ?? null,
+    recipeTitle: r.recipe_title ?? null, // stays null unless you add it
+    createdAt: r.created_at as string,
+    isRead: !!r.is_read,
   }));
 }
 
 /**
  * markNotificationRead(id)
- * - When you tap a card, we flip the "is_read" switch.
+ * - flips is_read = true for *my* row
  */
 export async function markNotificationRead(id: string) {
+  const me = (await supabase.auth.getUser()).data.user?.id;
+  if (!me) return;
   const { error } = await supabase
     .from("notifications")
     .update({ is_read: true, updated_at: new Date().toISOString() })
+    .eq("recipient_id", me)
     .eq("id", id);
   if (error) throw error;
 }
 
 /**
  * markAllNotificationsRead()
- * - Big "Mark all read" button at the top of the sheet.
+ * - flips all of *my* unread to read
  */
 export async function markAllNotificationsRead() {
+  const me = (await supabase.auth.getUser()).data.user?.id;
+  if (!me) return;
   const { error } = await supabase
     .from("notifications")
     .update({ is_read: true, updated_at: new Date().toISOString() })
+    .eq("recipient_id", me)
     .eq("is_read", false);
   if (error) throw error;
 }
 
 /**
  * subscribeToNotifications(onNew)
- * - Realtime listener to bump the bell badge.
- * - Returns an unsubscribe function. Call it on unmount.
+ * - Realtime bump for *my* inserts
  */
 export function subscribeToNotifications(onNew: (row: any) => void) {
   const channel = supabase
@@ -1313,7 +1339,15 @@ export function subscribeToNotifications(onNew: (row: any) => void) {
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "notifications" },
-      (payload) => onNew(payload.new)
+      (payload) => {
+        const row = payload?.new as any;
+        if (!row) return;
+        // only fire if it's for me
+        supabase.auth.getUser().then(({ data }) => {
+          const me = data.user?.id;
+          if (row.recipient_id === me) onNew(row);
+        });
+      }
     )
     .subscribe();
 

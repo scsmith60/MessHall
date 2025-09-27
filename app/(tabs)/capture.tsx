@@ -17,7 +17,7 @@ import {
   ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator,
   Image as RNImage, Animated, Easing, Dimensions, Modal, StyleSheet,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router"; // 🆕 we use useLocalSearchParams
 
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Swipeable, RectButton } from "react-native-gesture-handler";
@@ -760,6 +760,29 @@ export default function CaptureScreen() {
   const lastResolvedUrlRef = useRef<string>("");
   const lastGoodPreviewRef = useRef<string>("");
 
+  // 🆕 ELI5: when we arrive from "Share → MessHall", we get a gift in the mail.
+  // Normalize sharedUrl to a plain string (handles string | string[] from router).
+  const { sharedUrl: sharedParam } = useLocalSearchParams<{ sharedUrl?: string | string[] }>();
+  const sharedRaw = React.useMemo(
+    () => (Array.isArray(sharedParam) ? sharedParam[0] : sharedParam) || "",
+    [sharedParam]
+  );
+
+  // If we see a good http(s) link, we:
+  // - put it into the paste box (if it’s empty)
+  // - press your Import button for you (call resolveOg)
+  useEffect(() => {
+    if (sharedRaw && /^https?:\/\//i.test(sharedRaw)) {
+      setPastedUrl((prev) => (prev?.trim() ? prev : sharedRaw.trim()));
+      setTimeout(() => {
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        resolveOg();
+      }, 0);
+    }
+    // only when a new share arrives
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharedRaw]);
+
   const getImageDims = useCallback(async (uri: string) => {
     if (!uri) return { w: 0, h: 0 };
     if (uri.startsWith("file://")) return await getLocalDimensions(uri);
@@ -1028,11 +1051,15 @@ export default function CaptureScreen() {
     }
   }, [autoSnapTikTok, tryImageUrl, title, hardResetImport, ingredients, steps]);
 
+  // 🧸 CHANGE: resolveOg now falls back to sharedRaw if the text box is empty.
   const resolveOg = useCallback(async () => {
     hardResetImport();
 
-    const url = extractFirstUrl(pastedUrl?.trim() || "");
-    if (!url) {
+    // Use whatever we have first: typed box, otherwise the shared URL from TikTok
+    const candidateInput = (pastedUrl?.trim() || "") || (sharedRaw?.trim() || "");
+    const url = extractFirstUrl(candidateInput);
+
+    if (!url || !/^https?:\/\//i.test(url)) {
       setImg({ kind: "none" });
       return Alert.alert("Link error", "Please paste a full link that starts with http(s)://");
     }
@@ -1061,7 +1088,7 @@ export default function CaptureScreen() {
 
     setHudVisible(true);
     setPendingImportUrl(url);
-  }, [title, hardResetImport, pastedUrl]);
+  }, [title, hardResetImport, pastedUrl, sharedRaw]);
 
   const onPaste = useCallback(async () => { const t = await Clipboard.getStringAsync(); if (t) setPastedUrl(t.trim()); }, []);
   const pickOrCamera = useCallback(async () => {
@@ -1105,7 +1132,7 @@ export default function CaptureScreen() {
       let uploadUri = previewUri;
       if (uploadUri && uploadUri.startsWith("http")) {
         const local =
-          (await ((globalThis as any).__MH_dlV2 ?? downloadRemoteToLocalImageV2)(uploadUri, lastResolvedUrlRef.current || undefined)) || (await downloadRemoteToLocalImage(uploadUri, lastResolvedUrlRef.current || undefined)); // legacy attempt
+          (await ((globalThis as any).__MH_dlV2 ?? downloadRemoteToLocalImage)(uploadUri, lastResolvedUrlRef.current || undefined));
         if (!local) throw new Error("Failed to download remote image (status 403)");
         uploadUri = local;
       }
@@ -1117,7 +1144,7 @@ export default function CaptureScreen() {
       }
 
       const ing = ingredients.map((s) => (s || "").trim()).filter(Boolean);
-      if (ing.length) await supabase.from("recipe_ingredients").insert(ing.map((text, i) => ({ recipe_id: recipeId, pos: i + 1, text })));
+      if (ig.length) await supabase.from("recipe_ingredients").insert(ing.map((text, i) => ({ recipe_id: recipeId, pos: i + 1, text })));
 
       const stp = steps.map((s) => (s || "").trim()).filter(Boolean);
       if (stp.length) await supabase.from("recipe_steps").insert(stp.map((text, i) => ({ recipe_id: recipeId, pos: i + 1, text, seconds: null })));
