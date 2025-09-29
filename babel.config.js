@@ -1,29 +1,35 @@
 // babel.config.js
-// 👶 This tells Babel how to read your code and understand our aliases.
-// IMPORTANT:
-// - Keep "expo-router/babel" so Expo Router works.
-// - Add "module-resolver" so Metro understands "@/..." imports.
-// - Keep Reanimated plugin LAST.
+// 👶 ELI5: This tells the app how to read your code super fast.
+// What we changed:
+// - ❌ Removed "expo-router/babel" (it's old and makes warnings).
+// - ✅ Kept "babel-preset-expo" (the new way).
+// - ✅ Kept "module-resolver" so "@/..." paths work.
+// - ✅ Kept Reanimated plugin LAST (it’s picky about order).
 
 module.exports = function (api) {
+  // Cache for speed
   api.cache(true);
+
   return {
-    presets: [
-      "babel-preset-expo",            // ✅ main Expo preset
-    ],
+    // ✅ New preset for Expo SDK 50+ (covers expo-router too)
+    presets: ['babel-preset-expo'],
+
+    // 🧩 Extra helpers
     plugins: [
-      "expo-router/babel",            // ✅ needed for expo-router
+      // Teaches Metro what "@/..." means (nice short imports)
       [
-        "module-resolver",            // ✅ teaches Metro what "@" means
+        'module-resolver',
         {
-          root: ["./"],               // project root
+          root: ['./'],
           alias: {
-            "@": "./"                 // "@/lib/..." → "./lib/..."
+            '@': './', // so "@/components/Button" == "./components/Button"
           },
-          extensions: [".ts", ".tsx", ".js", ".jsx", ".json"]
-        }
+          extensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
+        },
       ],
-      "react-native-reanimated/plugin" // ✅ keep LAST
+
+      // 👇 MUST be last: Reanimated needs to be the final plugin
+      'react-native-reanimated/plugin',
     ],
   };
 };

@@ -1,16 +1,14 @@
 // app/_layout.tsx
 //
 // 🧸 ELI5: This is the boss wrapper for MessHall.
-// - Watches login status
-// - Shows your app screens
-// - 🆕 Listens for "shared stuff" from other apps (TikTok, Safari, etc.).
-//   When someone shares a link to MessHall, we open the Capture tab with that link.
-//
-// We use expo-share-intent's hook so the native share extension/intents talk to JS.
-// Docs say: add the plugin in config, then read shareIntent in your top component. :contentReference[oaicite:5]{index=5}
+// What we fixed:
+// 1) We show a proper spinner while we check "are you logged in?" on very first app open.
+// 2) We added a tiny "watchdog" timer. If the first check is slow or stuck, we go to /login, no black screen.
+// 3) We added an Error Boundary. If a crash happens on start, you see a friendly message instead of a black screen.
+// 4) We kept your share-intent + push token + auth redirect logic the same.
 
-import React, { useEffect, useMemo, useState } from "react";
-import { View, ActivityIndicator, Platform } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { View, ActivityIndicator, Platform, Text, TouchableOpacity } from "react-native";
 import { Slot, usePathname, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -27,9 +25,12 @@ const Gate =
     (({ children }: any) => <>{children}</>)) as React.ComponentType<any>;
 
 // 🎨 quick colors
-const COLORS = { bg: "#0b1220" };
+const COLORS = { bg: "#0b1220", text: "#e5e7eb", sub: "#94a3b8", accent: "#53856b" };
 
-// 🧸 helper: am I at an auth route?
+/* -----------------------------------------------------------
+   🧸 helper: am I at an auth route?
+   (We use this to decide where to send the user.)
+----------------------------------------------------------- */
 function useInAuthFlow() {
   const pathname = usePathname() || "";
   return useMemo(
@@ -75,6 +76,7 @@ async function registerForPushToken(): Promise<string | null> {
       });
     }
 
+    // 🧸 ELI5: we ask Expo "what's our project id?" so it can make a push token
     const projectId =
       (Constants as any).expoConfig?.extra?.eas?.projectId ??
       (Constants as any).easConfig?.projectId ??
@@ -90,13 +92,10 @@ async function registerForPushToken(): Promise<string | null> {
 }
 
 /* -----------------------------------------------------------
-   🆕 Share Intake via expo-share-intent
+   🆕 Share Intake via expo-share-intent (unchanged behavior)
    ELI5:
-   - We ask the hook if someone just shared something to us.
-   - If yes, we grab the first http(s) link.
-   - We jump to Capture with ?sharedUrl=thatLink.
-   - Then we "reset" so it won't repeat.
-   Note: works in dev client / real builds (not Expo Go). :contentReference[oaicite:6]{index=6}
+   - If someone shared a link to us (from TikTok, Safari, etc.)
+   - We open Capture tab with that link.
 ----------------------------------------------------------- */
 import { useShareIntent } from "expo-share-intent";
 
@@ -107,37 +106,98 @@ function extractFirstUrl(s?: string | null): string | null {
   return m ? m[0] : null;
 }
 
+/* -----------------------------------------------------------
+   🧯 Error Boundary so crashes don't look like "black screen"
+----------------------------------------------------------- */
+class RootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; message?: string }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, message: undefined };
+  }
+  static getDerivedStateFromError(err: any) {
+    return { hasError: true, message: err?.message ?? "Something went wrong." };
+  }
+  componentDidCatch(err: any) {
+    console.warn("[RootErrorBoundary]", err);
+  }
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: COLORS.bg,
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 20,
+          gap: 12,
+        }}
+      >
+        <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "800" }}>
+          Oops, MessHall hiccuped
+        </Text>
+        <Text style={{ color: COLORS.sub, textAlign: "center" }}>
+          {this.state.message}
+        </Text>
+        <TouchableOpacity
+          onPress={() => {
+            this.setState({ hasError: false, message: undefined });
+          }}
+          style={{
+            backgroundColor: COLORS.accent,
+            borderRadius: 10,
+            paddingHorizontal: 16,
+            paddingVertical: 10,
+            marginTop: 8,
+          }}
+        >
+          <Text style={{ color: "#0b0f19", fontWeight: "800" }}>Try Again</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+}
+
+/* -----------------------------------------------------------
+   InnerApp: normal app shell + share-intent + push token
+----------------------------------------------------------- */
 function InnerApp() {
   const { loading, isLoggedIn } = useAuth();
   const router = useRouter();
 
   // 👉 read share intent state from native
-  const { hasShareIntent, shareIntent, resetShareIntent, error } = useShareIntent();
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent();
 
   // when a share arrives, route to Capture with the url
   useEffect(() => {
-    if (!hasShareIntent || !shareIntent) return;
+    try {
+      if (!hasShareIntent || !shareIntent) return;
 
-    // shareIntent.webUrl is already extracted when possible; otherwise check raw text
-    const url =
-      shareIntent.webUrl ||
-      extractFirstUrl(shareIntent.text) ||
-      // as a fallback for rich shares, sometimes meta.title contains an url-like string
-      extractFirstUrl(shareIntent?.meta?.title as any);
+      // shareIntent.webUrl is already extracted when possible; otherwise check raw text
+      const url =
+        (shareIntent as any).webUrl ||
+        extractFirstUrl((shareIntent as any).text) ||
+        // as a fallback for rich shares, sometimes meta.title contains a url-like string
+        extractFirstUrl((shareIntent as any)?.meta?.title as any);
 
-    if (url) {
-      // go to Capture and let that screen auto-import
-      router.push({ pathname: "/(tabs)/capture", params: { sharedUrl: url } });
+      if (url) {
+        // go to Capture and let that screen auto-import
+        router.push({ pathname: "/(tabs)/capture", params: { sharedUrl: url } });
+      }
+    } finally {
+      // VERY IMPORTANT: clear the intent so it doesn’t trigger again on re-render
+      resetShareIntent?.();
     }
-
-    // VERY IMPORTANT: clear the intent so it doesn’t trigger again on re-render
-    resetShareIntent();
   }, [hasShareIntent, shareIntent, router, resetShareIntent]);
 
   const content = (
     <>
       <StatusBar style="light" />
       <Slot />
+      {/* ⏳ Overlay spinner while auth is loading (prevents half-ready UI) */}
       {loading && (
         <View
           pointerEvents="none"
@@ -149,6 +209,7 @@ function InnerApp() {
             bottom: 0,
             alignItems: "center",
             justifyContent: "center",
+            backgroundColor: "rgba(0,0,0,0.2)", // soft veil
           }}
         >
           <ActivityIndicator />
@@ -182,34 +243,69 @@ function InnerApp() {
   return wrapped;
 }
 
+/* -----------------------------------------------------------
+   RootLayout: first-boot guard + watchdog
+   LIKE I’M 5:
+   - We check, “do we already have a user?” (getSession)
+   - While we check, we show a spinner (not a black screen)
+   - If the check takes too long (e.g., phone sleepy), we go to /login so you’re never stuck.
+----------------------------------------------------------- */
 export default function RootLayout() {
   const router = useRouter();
   const inAuthFlow = useInAuthFlow();
+
+  // ✅ We track if the first check finished
   const [checkedOnce, setCheckedOnce] = useState(false);
 
-  // initial session check (unchanged)
+  // ⏱️ watchdog timer so we never hang forever
+  const watchdogFiredRef = useRef(false);
+
   useEffect(() => {
     let alive = true;
+
+    // 1) Start a watchdog: if first check takes > 4s, bail to /login so no black screen.
+    const watchdog = setTimeout(() => {
+      if (alive && !checkedOnce && !inAuthFlow) {
+        watchdogFiredRef.current = true;
+        // Send to login as a safe fallback
+        try {
+          router.replace("/login");
+        } catch {}
+        // We still end the "checking" state so UI renders
+        setCheckedOnce(true);
+      }
+    }, 4000);
+
+    // 2) Do the actual first check
     (async () => {
       try {
         const { data } = await supabase.auth.getSession();
         const hasSession = !!data?.session;
-        if (!hasSession && !inAuthFlow) {
+        if (!hasSession && !inAuthFlow && !watchdogFiredRef.current) {
+          router.replace("/login");
+        }
+      } catch (e) {
+        // If it errors, we still want to render something (not black screen)
+        console.warn("[startup] getSession failed:", e);
+        if (!inAuthFlow && !watchdogFiredRef.current) {
           router.replace("/login");
         }
       } finally {
         if (alive) setCheckedOnce(true);
       }
     })();
+
     return () => {
       alive = false;
+      clearTimeout(watchdog);
     };
-  }, [router, inAuthFlow]);
+  }, [router, inAuthFlow, checkedOnce]);
 
-  // auth state changes (unchanged)
+  // 3) Listen for auth flips (same as before)
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") {
+        // use rAF to let router mount
         requestAnimationFrame(() => router.replace("/logout"));
       }
       if (event === "SIGNED_IN") {
@@ -221,20 +317,36 @@ export default function RootLayout() {
     return () => data.subscription?.unsubscribe();
   }, [router, inAuthFlow]);
 
+  // ⛑️ First render while checking: show a spinner with a real background.
   if (!checkedOnce) {
     return (
       <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
         <AuthProvider>
-          <View style={{ flex: 1 }} />
+          <View
+            style={{
+              flex: 1,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: COLORS.bg,
+            }}
+          >
+            <ActivityIndicator />
+            <Text style={{ color: COLORS.sub, marginTop: 12 }}>
+              Warming up MessHall…
+            </Text>
+          </View>
         </AuthProvider>
       </GestureHandlerRootView>
     );
   }
 
+  // ✅ Normal app once first check is done
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <AuthProvider>
-        <InnerApp />
+        <RootErrorBoundary>
+          <InnerApp />
+        </RootErrorBoundary>
       </AuthProvider>
     </GestureHandlerRootView>
   );
