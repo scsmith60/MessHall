@@ -1,42 +1,49 @@
 // app/search/index.tsx
-// LIKE I'M 5 🧸
-// This screen lets you search recipes. We kept your search logic the same.
-// CHANGE: Counts fallback now matches Home — commentCount = number of PARENT comments only.
+// 🧸 ELI5: This is the Search page.
+// What changed:
+// 1) We STOP guessing BBQ/Appetizers with words.
+// 2) We ASK the database for category_tags instead.
+//    So when you tap "BBQ", we filter where category_tags has 'bbq'.
+// 3) Diet chips still use diet_tags (vegan/gluten_free/dairy_free).
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  View,
-  TextInput,
-  Text,
+  ActivityIndicator,
   FlatList,
-  TouchableOpacity,
-  StyleSheet,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
-  ActivityIndicator,
-  Modal,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
   Animated,
-  Alert,
 } from "react-native";
-import { useLocalSearchParams, router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams, router } from "expo-router";
 
 import { supabase } from "../../lib/supabase";
 import RecipeCard from "../../components/RecipeCard";
-import { COLORS, SPACING } from "../../lib/theme";
 import { useUserId } from "../../lib/auth";
+import { COLORS, SPACING } from "../../lib/theme";
 import { success, tap, warn } from "../../lib/haptics";
-import Comments from "../../components/Comments"; // unified comments (threads + avatars + moderation)
+import Comments from "../../components/Comments";
 
-/* ───────────────── chips/filter helpers ───────────────── */
-
+/* ───────────────────────────
+   0) Chips we show on top
+   ─────────────────────────── */
+// We keep the chips you asked for.
+// Diet chips come from diet_tags.
+// Category chips (BBQ/Appetizers/Chicken/Beef/Pork/Seafood/Pasta) come from category_tags.
 type Chip =
-  | "30 Min"
   | "Vegan"
   | "Gluten-Free"
   | "Dairy-Free"
+  | "BBQ"
+  | "Appetizers"
   | "Chicken"
   | "Beef"
   | "Pork"
@@ -44,10 +51,11 @@ type Chip =
   | "Pasta";
 
 const ALL_CHIPS: Chip[] = [
-  "30 Min",
   "Vegan",
   "Gluten-Free",
   "Dairy-Free",
+  "BBQ",
+  "Appetizers",
   "Chicken",
   "Beef",
   "Pork",
@@ -55,37 +63,51 @@ const ALL_CHIPS: Chip[] = [
   "Pasta",
 ];
 
+// Some chips fight each other (Vegan vs meats)
 const CONFLICTS: Record<Chip, Chip[]> = {
   Vegan: ["Chicken", "Beef", "Pork", "Seafood"],
   Chicken: ["Vegan"],
   Beef: ["Vegan"],
   Pork: ["Vegan"],
   Seafood: ["Vegan"],
-  "30 Min": [],
   "Gluten-Free": [],
   "Dairy-Free": [],
+  BBQ: [],
+  Appetizers: [],
   Pasta: [],
 };
 
+/* ───────────────────────────────────────
+   1) Turn chip state into real DB filters
+   ─────────────────────────────────────── */
+// We map chip labels to the exact strings stored in DB arrays.
 function filtersFromState(q: string, sel: Record<string, boolean>) {
+  // Diet (exact strings in recipes.diet_tags)
   const diet: Array<"vegan" | "gluten_free" | "dairy_free"> = [];
   if (sel["Vegan"]) diet.push("vegan");
   if (sel["Gluten-Free"]) diet.push("gluten_free");
   if (sel["Dairy-Free"]) diet.push("dairy_free");
 
-  const includeIngredients: string[] = [];
-  if (sel["Chicken"]) includeIngredients.push("chicken");
-  if (sel["Beef"]) includeIngredients.push("beef");
-  if (sel["Pork"]) includeIngredients.push("pork");
-  if (sel["Seafood"]) includeIngredients.push("seafood");
-  if (sel["Pasta"]) includeIngredients.push("pasta");
+  // Category (exact strings in recipes.category_tags)
+  const cats: string[] = [];
+  if (sel["BBQ"]) cats.push("bbq");
+  if (sel["Appetizers"]) cats.push("appetizers");
+  if (sel["Chicken"]) cats.push("chicken");
+  if (sel["Beef"]) cats.push("beef");
+  if (sel["Pork"]) cats.push("pork");
+  if (sel["Seafood"]) cats.push("seafood");
+  if (sel["Pasta"]) cats.push("pasta");
 
-  const maxMinutes = sel["30 Min"] ? 30 : undefined;
-
-  return { text: q.trim(), maxMinutes, diet, includeIngredients };
+  return {
+    text: q.trim(), // free text for title search
+    diet,           // filter on diet_tags
+    cats,           // filter on category_tags
+  };
 }
 
-/* ───────────────── row + counts helpers ───────────────── */
+/* ─────────────────────────────
+   2) Helper types + count fetch
+   ───────────────────────────── */
 
 type SearchRow = {
   id: string;
@@ -101,24 +123,20 @@ type SearchRow = {
   createdAtMs: number;
 };
 
-// Count helper: tries fast views first, then falls back
+// 🧮 Get live counts from your stats tables (unchanged logic)
 async function fetchLiveCounts(recipeIds: string[]) {
   type C = { knives: number; cooks: number; likes: number; comments: number };
   const zero: C = { knives: 0, cooks: 0, likes: 0, comments: 0 };
   const out = new Map<string, C>();
   const put = (id: string, patch: Partial<C>) => {
     const prev = out.get(id) ?? zero;
-    out.set(
-      id,
-      {
-        ...prev,
-        ...Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, Number(v ?? 0)])),
-      } as C
-    );
+    out.set(id, {
+      ...prev,
+      ...Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, Number(v ?? 0)])),
+    } as C);
   };
   if (!recipeIds.length) return out;
 
-  // 1) recipe_stats view (fast path)
   try {
     const { data, error } = await supabase
       .from("recipe_stats")
@@ -137,7 +155,6 @@ async function fetchLiveCounts(recipeIds: string[]) {
     }
   } catch {}
 
-  // 2) recipe_totals view (backup fast path)
   try {
     const { data, error } = await supabase
       .from("recipe_totals")
@@ -156,12 +173,9 @@ async function fetchLiveCounts(recipeIds: string[]) {
     }
   } catch {}
 
-  // 3) fallback: base tables
-  //    ⬇️ CHANGE HERE — match Home’s logic by counting **parents only**.
   async function countGrouped(table: string, parentOnly = false) {
     try {
       if (parentOnly) {
-        // parentOnly: count recipe_comments WHERE parent_id IS NULL
         const { data } = await supabase
           .from("recipe_comments")
           .select("recipe_id, parent_id")
@@ -192,7 +206,6 @@ async function fetchLiveCounts(recipeIds: string[]) {
     countGrouped("recipe_cooks"),
   ]);
 
-  // 🍰 comments fallback = parents only
   const commentsMap = await countGrouped("recipe_comments", true);
 
   const likeTables = ["recipe_likes", "recipe_like", "recipe_hearts"];
@@ -207,7 +220,7 @@ async function fetchLiveCounts(recipeIds: string[]) {
       knives: knivesMap.get(id) ?? 0,
       cooks: cooksMap.get(id) ?? 0,
       likes: likesMap.get(id) ?? 0,
-      comments: commentsMap.get(id) ?? 0, // ✅ parents-only count
+      comments: commentsMap.get(id) ?? 0,
     });
   }
   return out;
@@ -223,30 +236,35 @@ async function getSavedSet(viewerId: string | null, ids: string[]) {
   return new Set<string>((data ?? []).map((r: any) => String(r.recipe_id)));
 }
 
-/* ───────────────── the Search screen ───────────────── */
+/* ─────────────────────────────
+   3) THE SEARCH SCREEN
+   ───────────────────────────── */
 
 export default function SearchScreen() {
   const insets = useSafeAreaInsets();
+
+  // If you deep-link with ?q=BBQ we’ll pre-select that chip below
   const params = useLocalSearchParams<{ q?: string }>();
   const initialPrefill = (params?.q as string) || "";
 
-  // who am I
+  // Who am I (for saved state)
   const { userId: userIdFromHook } = useUserId();
   const [viewerId, setViewerId] = useState<string | null>(userIdFromHook ?? null);
   useEffect(() => {
     if (!viewerId) supabase.auth.getUser().then(({ data }) => setViewerId(data.user?.id ?? null));
   }, [viewerId]);
 
-  // search state
+  // Search input + chip state
   const [q, setQ] = useState(initialPrefill);
-  const [rows, setRows] = useState<SearchRow[]>([]);
-  const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Record<string, boolean>>(
     Object.fromEntries(ALL_CHIPS.map((c) => [c, initialPrefill.toLowerCase().includes(c.toLowerCase())]))
   );
-  const [savedSet, setSavedSet] = useState<Set<string>>(new Set());
 
-  // tiny HUD
+  // Results + loading
+  const [rows, setRows] = useState<SearchRow[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // HUD (tiny toast)
   const [hudText, setHudText] = useState<string | null>(null);
   const hudAnim = useRef(new Animated.Value(0)).current;
   const showHud = (msg: string) => {
@@ -258,20 +276,20 @@ export default function SearchScreen() {
     ]).start();
   };
 
+  // Focus the box
   const inputRef = useRef<TextInput>(null);
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 150);
     return () => clearTimeout(t);
   }, []);
 
-  // filters
+  // Build filters for DB
   const args = useMemo(() => filtersFromState(q, sel), [q, sel]);
 
-  // run search
+  // 🧠 The REAL query: use diet_tags + category_tags
   const runSearch = useCallback(async () => {
     setLoading(true);
     try {
-      // A) public recipes matching text/filters
       let query = supabase
         .from("recipes")
         .select(
@@ -279,93 +297,64 @@ export default function SearchScreen() {
           id,
           title,
           image_url,
-          minutes,
-          diet_tags,
-          main_ingredients,
           user_id,
           created_at,
+          diet_tags,
+          category_tags,
           profiles!recipes_user_id_fkey ( username, avatar_url )
         `
         )
         .eq("is_private", false)
         .order("created_at", { ascending: false })
-        .limit(50);
+        .limit(60);
 
+      // title text (simple contains)
       if (args.text) query = query.ilike("title", `%${args.text}%`);
-      if (typeof args.maxMinutes === "number") query = query.lte("minutes", args.maxMinutes);
-      if (args.diet.length) query = query.overlaps("diet_tags", args.diet);
-      if (args.includeIngredients.length)
-        query = query.overlaps("main_ingredients", args.includeIngredients.map((x) => x.toLowerCase()));
 
-      const { data: recipeRows, error } = await query;
+      // ✅ diet filters (AND logic: if you pick Vegan + GF, we want both)
+      if (args.diet.length) query = query.overlaps("diet_tags", args.diet);
+
+      // ✅ category filters (AND logic across selected categories)
+      // If you pick BBQ, we look for 'bbq' in category_tags.
+      if (args.cats.length) query = query.overlaps("category_tags", args.cats);
+
+      const { data, error } = await query;
       if (error) throw error;
 
-      let result = recipeRows ?? [];
-
-      // B) ingredient text fallback
-      if (!result.length && args.text) {
-        const { data: ingMatches } = await supabase
-          .from("recipe_ingredients")
-          .select("recipe_id")
-          .ilike("text", `%${args.text}%`)
-          .limit(50);
-
-        const ids = Array.from(new Set((ingMatches ?? []).map((r: any) => r.recipe_id))).filter(Boolean);
-        if (ids.length) {
-          const { data: byIng } = await supabase
-            .from("recipes")
-            .select(
-              `
-              id,
-              title,
-              image_url,
-              user_id,
-              created_at,
-              profiles!recipes_user_id_fkey ( username, avatar_url )
-            `
-            )
-            .in("id", ids)
-            .eq("is_private", false)
-            .order("created_at", { ascending: false })
-            .limit(50);
-          result = byIng ?? [];
-        }
-      }
-
-      // counts + saved flags
+      const result = data ?? [];
       const ids = Array.from(new Set(result.map((r: any) => String(r.id))));
+
       const [countMap, saved] = await Promise.all([fetchLiveCounts(ids), getSavedSet(viewerId, ids)]);
-      setSavedSet(saved);
 
-      // map rows for the card
-      const mapped: SearchRow[] = (result ?? []).map((r: any) => {
-        const id = String(r.id);
-        const c = countMap.get(id) ?? { knives: 0, cooks: 0, likes: 0, comments: 0 };
-        return {
-          id,
-          title: r.title ?? "",
-          image: r.image_url ?? null,
-          creator: r.profiles?.username ?? "someone",
-          creatorAvatar: r.profiles?.avatar_url ?? null,
-          ownerId: r.user_id as string,
-          knives: c.knives,
-          cooks: c.cooks,
-          likes: c.likes,
-          commentCount: c.comments, // ✅ parents-only if we used fallback
-          createdAtMs: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
-        };
-      });
-
-      setRows(mapped);
+      setRows(
+        result.map((r: any) => {
+          const id = String(r.id);
+          const c = countMap.get(id) ?? { knives: 0, cooks: 0, likes: 0, comments: 0 };
+          return {
+            id,
+            title: r.title ?? "",
+            image: r.image_url ?? null,
+            creator: r.profiles?.username ?? "someone",
+            creatorAvatar: r.profiles?.avatar_url ?? null,
+            ownerId: r.user_id as string,
+            knives: c.knives,
+            cooks: c.cooks,
+            likes: c.likes,
+            commentCount: c.comments,
+            createdAtMs: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
+          };
+        })
+      );
     } finally {
       setLoading(false);
     }
-  }, [args.text, args.maxMinutes, JSON.stringify(args.diet), JSON.stringify(args.includeIngredients), viewerId]);
+  }, [args.text, JSON.stringify(args.diet), JSON.stringify(args.cats), viewerId]);
 
   useEffect(() => {
     runSearch();
   }, [runSearch]);
 
+  // Flip a chip on/off (and handle conflicts like Vegan vs meats)
   function toggleChip(label: Chip) {
     setSel((prev) => {
       const next = { ...prev, [label]: !prev[label] };
@@ -374,6 +363,7 @@ export default function SearchScreen() {
     });
   }
 
+  // Clear everything
   function onClear() {
     setQ("");
     setSel(Object.fromEntries(ALL_CHIPS.map((c) => [c, false])));
@@ -381,36 +371,22 @@ export default function SearchScreen() {
     inputRef.current?.focus();
   }
 
-  /* ───────────────── comments modal state ───────────────── */
-
-  const [commentsVisible, setCommentsVisible] = useState(false);
-  const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
-
-  const openComments = useCallback((recipeId: string) => {
-    setActiveRecipeId(recipeId);
-    setCommentsVisible(true);
-  }, []);
-  const closeComments = useCallback(() => setCommentsVisible(false), []);
-
-  /* ───────────────── save toggle ───────────────── */
-
+  // Save/unsave
+  const [savedSet, setSavedSet] = useState<Set<string>>(new Set());
   const toggleSave = useCallback(
     async (recipeId: string) => {
       if (!viewerId) {
         await warn();
-        showHud("Sign in to save");
+        setHudText("Sign in to save");
         return;
       }
       const hasIt = savedSet.has(recipeId);
-
-      // optimistic UI
       setSavedSet((prev) => {
         const next = new Set(prev);
         if (hasIt) next.delete(recipeId);
         else next.add(recipeId);
         return next;
       });
-
       try {
         if (hasIt) {
           const { error } = await supabase
@@ -420,17 +396,16 @@ export default function SearchScreen() {
             .eq("recipe_id", recipeId);
           if (error) throw error;
           await tap();
-          showHud("Removed");
+          setHudText("Removed");
         } else {
           const { error } = await supabase
             .from("recipe_saves")
             .upsert({ user_id: viewerId, recipe_id: recipeId }, { onConflict: "user_id,recipe_id" });
           if (error) throw error;
           await success();
-          showHud("Saved");
+          setHudText("Saved");
         }
-      } catch (e: any) {
-        // revert on error
+      } catch {
         setSavedSet((prev) => {
           const next = new Set(prev);
           if (hasIt) next.add(recipeId);
@@ -438,18 +413,24 @@ export default function SearchScreen() {
           return next;
         });
         await warn();
-        showHud("Save failed");
-        console.warn("save toggle error", e);
+        setHudText("Save failed");
       }
     },
     [viewerId, savedSet]
   );
 
-  /* ───────────────── render ───────────────── */
+  // Comments
+  const [commentsVisible, setCommentsVisible] = useState(false);
+  const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
+  const openComments = useCallback((id: string) => {
+    setActiveRecipeId(id);
+    setCommentsVisible(true);
+  }, []);
+  const closeComments = useCallback(() => setCommentsVisible(false), []);
 
+  // Render one recipe card
   const renderCard = ({ item }: { item: SearchRow }) => {
     const isSaved = savedSet.has(item.id);
-
     return (
       <RecipeCard
         id={item.id}
@@ -479,7 +460,7 @@ export default function SearchScreen() {
       behavior={Platform.select({ ios: "padding", android: undefined })}
       style={{ flex: 1, backgroundColor: COLORS.bg }}
     >
-      {/* ── header ── */}
+      {/* ── header with search box ── */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} accessibilityLabel="Go back">
           <Ionicons name="chevron-back" size={24} color="#fff" />
@@ -490,7 +471,7 @@ export default function SearchScreen() {
           <TextInput
             ref={inputRef}
             style={styles.input}
-            placeholder="Search recipes (e.g., chicken pasta)"
+            placeholder="Search recipes"
             placeholderTextColor="#94a3b8"
             value={q}
             onChangeText={setQ}
@@ -509,25 +490,27 @@ export default function SearchScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* ── chips ── */}
+      {/* ── chips row ── */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingVertical: 8 }}
       >
-        {ALL_CHIPS.map((item, idx) => {
-          const active = !!sel[item];
+        {ALL_CHIPS.map((label, idx) => {
+          const active = !!sel[label];
           return (
             <TouchableOpacity
-              key={item}
-              onPress={() => toggleChip(item)}
+              key={label}
+              onPress={() => toggleChip(label)}
               style={[
                 styles.chip,
                 active && styles.chipActive,
                 { marginRight: idx === ALL_CHIPS.length - 1 ? 0 : 8 },
               ]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
             >
-              <Text style={[styles.chipText, active && styles.chipTextActive]}>{item}</Text>
+              <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
             </TouchableOpacity>
           );
         })}
@@ -548,13 +531,13 @@ export default function SearchScreen() {
         ListEmptyComponent={
           !loading && (
             <Text style={{ color: "#94a3b8", textAlign: "center", marginTop: 32 }}>
-              No recipes yet. Try different words or chips.
+              No recipes yet. Try different chips or words.
             </Text>
           )
         }
       />
 
-      {/* ── COMMENTS MODAL: unified + safe header (X never covers Send) ── */}
+      {/* ── comments modal ── */}
       <Modal visible={commentsVisible} animationType="slide" transparent onRequestClose={closeComments}>
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
           <KeyboardAvoidingView
@@ -569,7 +552,7 @@ export default function SearchScreen() {
               maxHeight: "80%",
             }}
           >
-            {/* header row (no absolute) */}
+            {/* modal header */}
             <View
               style={{
                 flexDirection: "row",
@@ -578,35 +561,20 @@ export default function SearchScreen() {
                 paddingBottom: 8,
               }}
             >
-              {/* drag handle centered */}
               <View style={{ flex: 1, alignItems: "center" }}>
-                <View
-                  style={{
-                    width: 44,
-                    height: 4,
-                    borderRadius: 2,
-                    backgroundColor: "rgba(255,255,255,0.2)",
-                  }}
-                />
+                <View style={{ width: 44, height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.2)" }} />
               </View>
-
-              {/* big X, easy finger target */}
               <TouchableOpacity
                 onPress={closeComments}
                 accessibilityRole="button"
                 accessibilityLabel="Close comments"
-                style={{
-                  paddingHorizontal: 16,
-                  paddingVertical: 10, // ≈44pt tall
-                  marginLeft: 8,
-                }}
+                style={{ paddingHorizontal: 16, paddingVertical: 10, marginLeft: 8 }}
                 hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
               >
                 <Text style={{ color: "#fff", fontWeight: "900", fontSize: 22 }}>✕</Text>
               </TouchableOpacity>
             </View>
 
-            {/* 🧠 The ONE comments UI (threads, avatars, moderation, replies) */}
             {activeRecipeId ? (
               <Comments recipeId={activeRecipeId} />
             ) : (
@@ -631,9 +599,7 @@ export default function SearchScreen() {
             borderRadius: 12,
             backgroundColor: "rgba(34,197,94,0.95)",
             transform: [
-              {
-                translateY: hudAnim.interpolate({ inputRange: [0, 1], outputRange: [40, 0] }),
-              },
+              { translateY: hudAnim.interpolate({ inputRange: [0, 1], outputRange: [40, 0] }) },
             ],
             opacity: hudAnim,
           }}
@@ -645,8 +611,9 @@ export default function SearchScreen() {
   );
 }
 
-/* ───────────────── styles ───────────────── */
-
+/* ─────────────────────────────
+   4) Styles
+   ───────────────────────────── */
 const styles = StyleSheet.create({
   header: {
     paddingBottom: 10,

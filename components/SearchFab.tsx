@@ -1,8 +1,7 @@
 // components/SearchFab.tsx
-// LIKE I'M 5:
-// - This is the tiny bubble you tap to search.
-// - It's smaller, semi-transparent, and matches your theme.
-// - Long-press shows little helper chips you can tap.
+// 👶 ELI5: This is the tiny floating "Search" bubble.
+// When you LONG-PRESS it, little helper chips appear.
+// We updated the quick chips to: Vegan, Gluten-Free, BBQ, Appetizers (no "30 Min").
 
 import React, { useState } from 'react';
 import { View, TouchableOpacity, StyleSheet, Text } from 'react-native';
@@ -16,7 +15,7 @@ type Props = {
 export default function SearchFab({ onPress, bottomOffset = 24 }: Props) {
   const [showQuick, setShowQuick] = useState(false);
 
-  // helper tiny chip
+  // tiny chip button
   const Quick = ({ label }: { label: string }) => (
     <TouchableOpacity
       onPress={() => onPress(label)}
@@ -32,9 +31,10 @@ export default function SearchFab({ onPress, bottomOffset = 24 }: Props) {
       {/* quick chips stack (only visible on long-press) */}
       {showQuick && (
         <View style={[styles.quickWrap, { bottom: bottomOffset + 56 + 8 }]}>
-          <Quick label="30 Min" />
           <Quick label="Vegan" />
-          <Quick label="Chicken" />
+          <Quick label="Gluten-Free" />
+          <Quick label="BBQ" />
+          <Quick label="Appetizers" />
         </View>
       )}
 
@@ -43,7 +43,7 @@ export default function SearchFab({ onPress, bottomOffset = 24 }: Props) {
         accessibilityRole="button"
         accessibilityLabel="Open search"
         onPress={() => onPress()}
-        onLongPress={() => setShowQuick((s) => !s)} // long-press to toggle quick chips
+        onLongPress={() => setShowQuick((s) => !s)} // long-press to toggle chips
         activeOpacity={0.9}
         style={[
           styles.fab,
@@ -65,13 +65,13 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    // soft translucent bubble that fits your dark theme
+    // soft translucent bubble for dark theme
     backgroundColor: 'rgba(56,189,248,0.15)', // sky-400 @ 15%
     borderWidth: 1,
     borderColor: 'rgba(56,189,248,0.55)',
     alignItems: 'center',
     justifyContent: 'center',
-    // soft shadow
+    // gentle shadow
     shadowColor: '#000',
     shadowOpacity: 0.2,
     shadowRadius: 6,
