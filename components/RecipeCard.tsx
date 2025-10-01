@@ -44,6 +44,10 @@ import { supabase } from "@/lib/supabase";
 import { Share } from "react-native";
 import { recipeUrl } from "@/lib/links";
 
+// 🎯 NEW: unify surface colors so big RecipeCard matches horizontal rail cards
+const SURFACE = "#0b1220";        // dark navy (same as rails)
+const SURFACE_BORDER = "#2c3a4d"; // subtle outline used across app
+
 // 👉 tiny badge
 import CaloriePill from "@/components/CaloriePill";
 
@@ -331,7 +335,8 @@ try {
   // 🎨 UI
   return (
     <SwipeCard onSave={save} onShare={share}>
-      <HapticButton onPress={open} style={{ borderRadius: RADIUS.xl }}>
+      {/* CHANGE #1: Use unified card surface style so it matches rails */}
+      <HapticButton onPress={open} style={styles.cardWrap}>
         <View>
           {/* ===== IMAGE + TITLE ===== */}
           <View style={styles.imageWrap}>
@@ -555,7 +560,7 @@ const AvatarTiny = memo(function AvatarTiny({
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
-        borderColor: "#243042",
+        borderColor: "##1a2433",
       }}
     >
       <Text style={{ color: COLORS.text, fontSize: size * 0.6, fontWeight: "800" }}>{letter}</Text>
@@ -600,6 +605,21 @@ const CommentStat = memo(function CommentStat({
    Styles
 ------------------------- */
 const styles = StyleSheet.create({
+  // NEW: wrapper so RecipeCard matches rails (only addition to styles)
+  cardWrap: {
+    borderRadius: RADIUS.xl,
+    backgroundColor:  COLORS.card,
+    borderWidth: 1,
+    borderColor: "#1a2433",
+    padding: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    
+    
+  },
+
   imageWrap: { position: "relative", marginBottom: 8 },
   img: { width: "100%", height: 240, borderRadius: 16 },
 
@@ -607,7 +627,7 @@ const styles = StyleSheet.create({
   imgFallback: {
     backgroundColor: "#0b1220",
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: "#1a2433",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -660,15 +680,15 @@ const styles = StyleSheet.create({
   titleSticker: {
     position: "absolute",
     left: 10,
-    right: 66,
-    bottom: 10,
+    right: 88,
+    bottom: 16,
     //maxWidth: "85%",
-    backgroundColor: "rgba(2, 6, 23, 0.55)",
+    backgroundColor: "rgba(2, 6, 23, 0.60)",
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: "#1a2433",
   },
   titleText: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
 
@@ -726,8 +746,9 @@ const styles = StyleSheet.create({
   saveText: { color: COLORS.text, fontWeight: "700", fontSize: 13 },
 
   actionRow: { marginTop: 6 },
+  // CHANGE #2: cooked button uses unified surface + border
   cookedButton: {
-    backgroundColor: "#1e293b",
+    backgroundColor: SURFACE,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 14,
@@ -736,7 +757,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: SURFACE_BORDER,
   },
   cookedButtonActive: { backgroundColor: "#14532d", borderColor: "#134e4a" },
   cookedText: { color: "#E5E7EB", fontWeight: "900", fontSize: 14 },
@@ -772,7 +793,7 @@ const styles = StyleSheet.create({
     gap: 8,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: "#1a2433",
     paddingVertical: 10,
     justifyContent: "center",
   },
@@ -782,7 +803,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 999,
-    backgroundColor: "#0b1220",
+    backgroundColor: "transparent",
     borderWidth: 1,
     borderColor: "#2c3a4d",
   },

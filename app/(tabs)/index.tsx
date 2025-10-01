@@ -13,6 +13,7 @@
 // - We restored toggleSave() and imported warn/tap for it.
 //
 // ✅ Everything else stays the same.
+// ✅ NEW: scroll memory so Back returns to your previous scroll position.
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -32,10 +33,10 @@ import {
   Image,
   Pressable,
   Linking,
-  PanResponder, // 👈 added: for swipe-to-close on the header
+  PanResponder, // 👈 for swipe-to-close on the header
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router"; // 👈 NEW: useFocusEffect for restore
 
 import { COLORS, SPACING } from "../../lib/theme";
 import { dataAPI } from "../../lib/data";
@@ -48,6 +49,13 @@ import SearchFab from "../../components/SearchFab";
 import { useUserId } from "../../lib/auth";
 import { supabase } from "../../lib/supabase";
 import Comments from "../../components/Comments"; // wraps RecipeComments (threads + avatars + moderation)
+
+/* ───────── NEW: tiny scroll memory helper (like a little notebook) ───────── */
+// like I'm 5: we write down the scroll Y when you stop; when you come back, we read it.
+const __scrollNotebook = new Map<string, number>();
+const SCROLL_KEY = "HomeFeedList";
+function rememberScroll(y: number) { __scrollNotebook.set(SCROLL_KEY, y); }
+function recallScroll(): number { return __scrollNotebook.get(SCROLL_KEY) ?? 0; }
 
 /* ───────── helpers ───────── */
 
@@ -221,6 +229,10 @@ export default function HomeScreen() {
   // tracking
   const seenAdsRef = useRef<Set<string>>(new Set());
   const seenRailImpressions = useRef<Set<string>>(new Set());
+
+  // ✅ NEW: FlatList ref + last offset memory
+  const listRef = useRef<FlatList>(null);
+  const lastOffsetY = useRef(0);
 
   // privacy: only show your own private recipes
   const safetyFilter = useCallback(
@@ -486,21 +498,31 @@ export default function HomeScreen() {
     }
   };
 
+  // 🎢 RAIL SKELETON (the fake loading cards)
+  // like I'm 5: we color the empty boxes the same as real cards,
+  // so loading and loaded look like the same family.
   const RailSkeleton = () => (
     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
       {Array.from({ length: 4 }).map((_, i) => (
         <View
           key={`skeleton_${i}`}
           style={{
-            width: 140, height: 140, marginRight: 12, borderRadius: 14,
-            backgroundColor: "rgba(255,255,255,0.06)",
-            borderWidth: 1, borderColor: "rgba(255,255,255,0.08)",
+            width: 140,
+            height: 140,
+            marginRight: 12,
+            borderRadius: 16,
+            // 🟦 MATCH: same surface + thin outline as other cards
+            backgroundColor: COLORS.card,    // was "rgba(255,255,255,0.06)"
+            borderWidth: 1,
+            borderColor: COLORS.border,      // was "rgba(255,255,255,0.08)"
           }}
         />
       ))}
     </ScrollView>
   );
 
+  // 🛝 RAIL (the real mini cards you can tap)
+  // like I'm 5: paint them the same navy + border as big RecipeCard.
   const Rail = () => (
     <View style={{ marginBottom: SPACING.lg }}>
       <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
@@ -522,9 +544,15 @@ export default function HomeScreen() {
               key={`${it.kind}_${it.id}`}
               onPress={() => onPressRail(it)}
               style={{
-                width: 140, marginRight: 12, borderRadius: 14, overflow: "hidden",
-                backgroundColor: "rgba(255,255,255,0.04)",
-                borderWidth: 1, borderColor: "rgba(255,255,255,0.06)",
+                width: 140,
+                marginRight: 12,
+                borderRadius: 16,
+                overflow: "hidden",
+                // 🟦 MATCH: same surface + thin outline as other cards
+                backgroundColor: COLORS.card,   // was "rgba(255,255,255,0.04)"
+                borderWidth: 1,
+                borderColor: "#1a2433",     // was "rgba(255,255,255,0.06)"
+                paddingBottom: 4,
               }}
             >
               {it.image ? (
@@ -538,7 +566,14 @@ export default function HomeScreen() {
                 <Text numberOfLines={2} style={{ color: "#fff", fontWeight: "800", fontSize: 13 }}>
                   {it.title}
                 </Text>
-                <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginTop: 2 }}>
+                {/* tiny footer label */}
+                <Text
+                  style={{
+                    color: "rgba(255,255,255,0.85)",
+                    fontSize: 11,
+                    marginTop: 2,
+                  }}
+                >
                   {it.kind === "creative" ? "Ad" : "Recipe"}
                 </Text>
               </View>
@@ -762,6 +797,29 @@ export default function HomeScreen() {
     }
   }).current;
 
+  /* ───────── NEW: restore + remember scroll offset ───────── */
+  // When the screen focuses again (after opening a recipe), jump back to saved spot.
+  useFocusEffect(
+    useCallback(() => {
+      const y = recallScroll();
+      // wait a tick so the list is mounted and has data
+      const t = setTimeout(() => listRef.current?.scrollToOffset({ offset: y, animated: false }), 0);
+      return () => clearTimeout(t);
+    }, [])
+  );
+
+  // As user stops scrolling, save the current spot.
+  const handleMomentumEnd = useCallback((e: any) => {
+    const y = e?.nativeEvent?.contentOffset?.y ?? 0;
+    lastOffsetY.current = y;
+    rememberScroll(y);
+  }, []);
+  const handleEndDrag = useCallback((e: any) => {
+    const y = e?.nativeEvent?.contentOffset?.y ?? 0;
+    lastOffsetY.current = y;
+    rememberScroll(y);
+  }, []);
+
   /* ───────── render row ───────── */
 
   function renderItem({ item }: ListRenderItemInfo<FeedItem>) {
@@ -818,6 +876,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <FlatList
+        ref={listRef}                                                // 👈 NEW: we control the list
         style={{ flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg }}
         data={data}
         keyExtractor={(it) => `${it.type}_${(it as any).id}`}
@@ -832,6 +891,9 @@ export default function HomeScreen() {
         viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
         initialNumToRender={8}
         windowSize={11}
+        // 👇 NEW: remember our place when the scroll stops
+        onMomentumScrollEnd={handleMomentumEnd}
+        onScrollEndDrag={handleEndDrag}
       />
       <SearchFab onPress={() => router.push("/search")} bottomOffset={24} />
       {/* comments modal */}
