@@ -1,16 +1,11 @@
 // app/u/[username].tsx
 // LIKE I'M 5 🧸
 // – We read the person's name (username) and secret id (uid) from the URL.
-// – We find the person in public.profiles.
-// – We show their picture, their KNIVES (medals) from profiles.knives,
-//   plus Followers and Following (if your table exists).
-// – We show ALL of their recipes from public.recipes.
-// – We use SafeArea so nothing hides under the clock/battery notch.
-// – We try many common column names so it "just works" in your schema.
+// – We find the person in public.profiles (RLS-aware).
+// – If blocked either way, we show “M.I.A (missing in action)”.
+// – If YOU blocked them (and we have ?uid=their-id), you can Unblock right here.
+// – We show their recipes below. Everything else stays the same.
 
-// -----------------------------------------
-// IMPORTS
-// -----------------------------------------
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -22,13 +17,17 @@ import {
   TouchableOpacity,
   View,
   Dimensions,
+  Alert,
 } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { supabase } from "@/lib/supabase";
 
+// 👇 blocking helpers you already have
+import { isBlocked, blockUser, unblockUser } from "@/lib/blocking";
+
 // -----------------------------------------
-// COLORS (match your app)
+// COLORS (match your app theme)
 // -----------------------------------------
 const COLORS = {
   bg: "#0f172a",     // slate-900
@@ -43,17 +42,17 @@ const COLORS = {
 // TYPES (simple)
 // -----------------------------------------
 type Profile = {
-  id: string;                 // profiles.id (uuid)
-  username: string | null;    // handle (e.g., "Beta")
-  avatar_url: string | null;  // picture url
-  bio?: string | null;        // little about me
-  knives?: number | null;     // 🟩 medals → THIS is what you asked ("knives")
+  id: string;
+  username: string | null;
+  avatar_url: string | null;
+  bio?: string | null;
+  knives?: number | null;
 };
 
 type RecipeRow = Record<string, any>; // keep loose so any schema works
 
 // -----------------------------------------
-// LAYOUT: grid math (2 columns)
+// LAYOUT math for a 2-col grid
 // -----------------------------------------
 const SCREEN_PADDING = 24;
 const GAP = 12;
@@ -63,7 +62,7 @@ const CARD_W =
   COLS;
 
 // -----------------------------------------
-// HELPER: pick the best image field found on the row
+// Pick best image field from a recipe row
 // -----------------------------------------
 function pickImage(r: RecipeRow): string {
   return (
@@ -77,7 +76,24 @@ function pickImage(r: RecipeRow): string {
 }
 
 // -----------------------------------------
-// SMALL: one recipe tile (touch to open)
+// Helper: are these two users blocked either way?
+// (Me blocked them OR they blocked me)
+// -----------------------------------------
+async function isBlockedEitherWay(me: string | null, otherId: string | null) {
+  if (!me || !otherId) return false;
+  const { data, error } = await supabase
+    .from("user_blocks")
+    .select("id")
+    .or(
+      `and(blocker_id.eq.${me},blocked_id.eq.${otherId}),and(blocker_id.eq.${otherId},blocked_id.eq.${me})`
+    )
+    .limit(1);
+  if (error) return false; // don’t crash UI on client
+  return !!(data && data.length);
+}
+
+// -----------------------------------------
+// A tiny recipe tile (touch to open)
 // -----------------------------------------
 function GridCard({ item, onPress }: { item: RecipeRow; onPress: () => void }) {
   const img = pickImage(item);
@@ -106,9 +122,7 @@ function GridCard({ item, onPress }: { item: RecipeRow; onPress: () => void }) {
         {img ? (
           <Image source={{ uri: img }} style={{ width: "100%", height: "100%" }} />
         ) : (
-          <View
-            style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
-          >
+          <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
             <Text style={{ color: COLORS.sub }}>No image</Text>
           </View>
         )}
@@ -131,12 +145,9 @@ function GridCard({ item, onPress }: { item: RecipeRow; onPress: () => void }) {
 // -----------------------------------------
 export default function PublicProfile() {
   // 1) Read /u/[username]?uid=xxxx
-  const { username, uid } = useLocalSearchParams<{
-    username?: string;
-    uid?: string;
-  }>();
+  const { username, uid } = useLocalSearchParams<{ username?: string; uid?: string }>();
 
-  // 2) Safe area padding (so UI won't hide under status bar)
+  // 2) Safe area padding
   const insets = useSafeAreaInsets();
 
   // 3) Screen state
@@ -147,11 +158,18 @@ export default function PublicProfile() {
   const [followers, setFollowers] = useState<number>(0);
   const [following, setFollowing] = useState<number>(0);
 
+  // who am I, and did I block them?
+  const [meId, setMeId] = useState<string | null>(null);
+  const [blockedByMe, setBlockedByMe] = useState<boolean>(false);
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setMeId(data.user?.id ?? null));
+  }, []);
+
   // ---------------------------------------
-  // DATA: load profile (UID first, then username case-insensitive)
+  // Load profile (RLS-aware)
   // ---------------------------------------
   const loadProfile = useCallback(async (): Promise<Profile | null> => {
-    // A) by uid (bulletproof if provided)
+    // A) by uid (exact id, best)
     if (uid) {
       const { data, error } = await supabase
         .from("profiles")
@@ -159,10 +177,9 @@ export default function PublicProfile() {
         .eq("id", String(uid))
         .maybeSingle();
       if (error) throw error;
-      if (data) return data as Profile;
+      return (data as Profile) ?? null;
     }
-
-    // B) by username (equal but ignore BIG/small letters)
+    // B) by username (case-insensitive)
     if (username) {
       const uname = String(username).trim();
       const { data, error } = await supabase
@@ -171,70 +188,71 @@ export default function PublicProfile() {
         .ilike("username", uname)
         .limit(1);
       if (error) throw error;
-      if (data && data[0]) return data[0] as Profile;
+      return data && data[0] ? (data[0] as Profile) : null;
     }
-
     return null;
   }, [uid, username]);
 
   // ---------------------------------------
-  // DATA: load recipes robustly from public.recipes
-  // tries a bunch of common owner columns until one works
+  // Load recipes robustly from public.recipes
+  // (tries a bunch of common owner columns until one works)
   // ---------------------------------------
-  const loadRecipes = useCallback(async (ownerId: string, ownerUsername?: string | null) => {
-    // helper that tries a single column, returns [] if error/no rows
-    const tryBy = async (column: string, value: string) => {
-      try {
-        const q = supabase.from("recipes").select("*").eq(column, value);
-        // try to order by created_at if it exists;
-        // if DB errors on order, we just ignore and use unordered rows.
-        const { data, error } = await q.order?.("created_at", { ascending: false }) ?? (await q);
-        if (error) {
-          // retry without order (in case created_at is named differently)
-          const r = await supabase.from("recipes").select("*").eq(column, value);
-          if (r.error) return [];
-          return r.data ?? [];
-        }
-        return data ?? [];
-      } catch {
-        return [];
-      }
-    };
-
-    // try id-based columns first (most reliable)
-    const candidates: Array<[string, string]> = [
-      ["owner_id", ownerId],
-      ["user_id", ownerId],
-      ["profile_id", ownerId],
-      ["created_by", ownerId],
-      ["creator_id", ownerId],
-    ];
-
-    // if nothing by id, try username-based columns
-    if (ownerUsername) {
-      candidates.push(
-        ["owner_username", ownerUsername],
-        ["creator_username", ownerUsername],
-        ["username", ownerUsername],
-        ["author", ownerUsername]
-      );
-    }
-
-    for (const [col, val] of candidates) {
-      const rows = await tryBy(col, val);
-      if (rows.length > 0) {
-        setRecipes(rows);
+  const loadRecipes = useCallback(
+    async (ownerId: string, ownerUsername?: string | null) => {
+      // ⛔ stop if blocked in either direction
+      if (await isBlockedEitherWay(meId, ownerId)) {
+        setRecipes([]);
         return;
       }
-    }
 
-    // if we get here: nothing matched → just empty list
-    setRecipes([]);
-  }, []);
+      const tryBy = async (column: string, value: string) => {
+        try {
+          const q = supabase.from("recipes").select("*").eq(column, value);
+          const { data, error } =
+            (await q.order?.("created_at", { ascending: false })) ?? (await q);
+          if (error) {
+            const r = await supabase.from("recipes").select("*").eq(column, value);
+            if (r.error) return [];
+            return r.data ?? [];
+          }
+          return data ?? [];
+        } catch {
+          return [];
+        }
+      };
+
+      const candidates: Array<[string, string]> = [
+        ["owner_id", ownerId],
+        ["user_id", ownerId],
+        ["profile_id", ownerId],
+        ["created_by", ownerId],
+        ["creator_id", ownerId],
+      ];
+
+      if (ownerUsername) {
+        candidates.push(
+          ["owner_username", ownerUsername],
+          ["creator_username", ownerUsername],
+          ["username", ownerUsername],
+          ["author", ownerUsername]
+        );
+      }
+
+      for (const [col, val] of candidates) {
+        const rows = await tryBy(col, val);
+        if (rows.length > 0) {
+          setRecipes(rows);
+          return;
+        }
+      }
+
+      setRecipes([]);
+    },
+    [meId]
+  );
 
   // ---------------------------------------
-  // DATA: follower/following counters with fallbacks
-  // tries common tables/columns: follows(follower_id, following_id) or user_follows(follower_id, followee_id)
+  // Follower/following counters with fallbacks
   // ---------------------------------------
   const loadFollowCounts = useCallback(async (profileId: string) => {
     async function tryCount(table: string, col: string, value: string) {
@@ -250,9 +268,6 @@ export default function PublicProfile() {
       }
     }
 
-    // Followers = people who follow THIS user (who follows ME)
-    // Following = people THIS user follows (who I follow)
-    // Try common shapes in order:
     const followersTry =
       (await tryCount("follows", "following_id", profileId)) ??
       (await tryCount("user_follows", "followee_id", profileId)) ??
@@ -270,13 +285,36 @@ export default function PublicProfile() {
   }, []);
 
   // ---------------------------------------
-  // GLUE: load everything
-  // ---------------------------------------
+  // GLUE: load everything + detect blocked state
+  // (THIS is where our awaits belong)
+// ---------------------------------------
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const prof = await loadProfile();
       setProfile(prof);
+
+      // If no profile (RLS hide) but we have ?uid, check if *I* blocked them → show Unblock button
+      if (!prof && uid) {
+        const mine = await isBlocked(String(uid));
+        setBlockedByMe(mine);
+      } else if (prof) {
+        // If visible, still check if I blocked (should be false, but just in case)
+        const mine = await isBlocked(prof.id);
+        setBlockedByMe(mine);
+
+        // ⛔ client gate — if blocked in either direction, treat as M.I.A
+        if (await isBlockedEitherWay(meId, prof.id)) {
+          setProfile(null);
+          setRecipes([]);
+          setFollowers(0);
+          setFollowing(0);
+          setBlockedByMe(true); // so Unblock can show if I initiated it
+          return;               // stop; don't load recipes
+        }
+      } else {
+        setBlockedByMe(false);
+      }
 
       if (prof) {
         await Promise.all([
@@ -294,10 +332,14 @@ export default function PublicProfile() {
       setRecipes([]);
       setFollowers(0);
       setFollowing(0);
+      if (uid) {
+        const mine = await isBlocked(String(uid));
+        setBlockedByMe(mine);
+      }
     } finally {
       setLoading(false);
     }
-  }, [loadProfile, loadRecipes, loadFollowCounts]);
+  }, [loadProfile, loadRecipes, loadFollowCounts, uid, meId]);
 
   useEffect(() => {
     load();
@@ -309,12 +351,41 @@ export default function PublicProfile() {
     setRefreshing(false);
   }, [load]);
 
-  // easy stats
-  const recipesCount = recipes.length;
-  const knivesCount = Number(profile?.knives ?? 0); // 🟩 medals live on profiles.knives
+  // quick derived stats (unchanged)
+  const knivesCount = Number(profile?.knives ?? 0);
 
   // ---------------------------------------
-  // LOADING + NOT FOUND
+  // ACTIONS: Block / Unblock buttons
+  // ---------------------------------------
+  const doBlock = useCallback(async () => {
+    if (!profile?.id) return;
+    const ok = await blockUser(profile.id);
+    if (ok) {
+      Alert.alert("Done", "This user is now blocked.");
+      // simulate RLS hiding them immediately
+      setProfile(null);
+      setRecipes([]);
+      setBlockedByMe(true);
+    } else {
+      Alert.alert("Sorry", "We couldn't block. Try again.");
+    }
+  }, [profile?.id]);
+
+  const doUnblock = useCallback(async () => {
+    // Try visible profile id first; else fall back to uid param
+    const target = profile?.id || (uid ? String(uid) : null);
+    if (!target) return;
+    const ok = await unblockUser(target);
+    if (ok) {
+      setBlockedByMe(false);
+      await load(); // reload now that RLS may allow it
+    } else {
+      Alert.alert("Sorry", "We couldn't unblock. Try again.");
+    }
+  }, [profile?.id, uid, load]);
+
+  // ---------------------------------------
+  // LOADING STATE
   // ---------------------------------------
   if (loading) {
     return (
@@ -334,6 +405,9 @@ export default function PublicProfile() {
     );
   }
 
+  // ---------------------------------------
+  // M.I.A (blocked or not found)
+// ---------------------------------------
   if (!profile) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
@@ -346,12 +420,26 @@ export default function PublicProfile() {
             padding: 24,
           }}
         >
-          <Text style={{ color: COLORS.text, fontWeight: "800", textAlign: "center" }}>
-            User not found
+          <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18 }}>
+            M.I.A (missing in action)
           </Text>
-          <Text style={{ color: COLORS.sub, marginTop: 6, textAlign: "center" }}>
-            (Tip: RecipeCard should send both ?uid=profiles.id and username.)
-          </Text>
+
+          {/* If *you* blocked them and you passed a uid, show UNBLOCK for convenience */}
+          {blockedByMe && uid ? (
+            <TouchableOpacity
+              onPress={doUnblock}
+              style={{
+                marginTop: 12,
+                paddingHorizontal: 14,
+                paddingVertical: 10,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: "#2c3a4d",
+              }}
+            >
+              <Text style={{ color: COLORS.text, fontWeight: "800" }}>Unblock user</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </SafeAreaView>
     );
@@ -373,7 +461,7 @@ export default function PublicProfile() {
           />
         }
       >
-        {/* 🔒 keep below notch */}
+        {/* keep below notch */}
         <View style={{ paddingTop: insets.top, paddingHorizontal: SCREEN_PADDING }}>
           {/* HEADER: avatar + name + bio */}
           <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -407,11 +495,42 @@ export default function PublicProfile() {
                 {profile.bio || "Cooking enthusiast sharing simple and delicious recipes."}
               </Text>
             </View>
+
+            {/* Block/Unblock actions (hidden on your own profile) */}
+            {meId && meId !== profile.id ? (
+              blockedByMe ? (
+                <TouchableOpacity
+                  onPress={doUnblock}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: "#2c3a4d",
+                  }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "800" }}>Unblock</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  onPress={doBlock}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: "#2c3a4d",
+                  }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "800" }}>Block</Text>
+                </TouchableOpacity>
+              )
+            ) : null}
           </View>
 
-          {/* STATS ROW: Recipes | Followers | Following | Medals (Knives) */}
+          {/* STATS ROW */}
           <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
-            <StatCard label="Recipes" value={recipesCount} />
+            <StatCard label="Recipes" value={recipes.length} />
             <StatCard label="Followers" value={followers} />
             <StatCard label="Following" value={following} />
             <StatCard label="Medals" value={knivesCount} />
@@ -431,12 +550,8 @@ export default function PublicProfile() {
 
           {/* GRID OF RECIPES */}
           {recipes.length === 0 ? (
-            <View
-              style={{ backgroundColor: COLORS.card, padding: 16, borderRadius: 12 }}
-            >
-              <Text style={{ color: COLORS.text, fontWeight: "700" }}>
-                No recipes yet
-              </Text>
+            <View style={{ backgroundColor: COLORS.card, padding: 16, borderRadius: 12 }}>
+              <Text style={{ color: COLORS.text, fontWeight: "700" }}>No recipes yet</Text>
             </View>
           ) : (
             <FlatList

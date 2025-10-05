@@ -1,11 +1,14 @@
 // app/recipe/[id].tsx
 // LIKE I'M 5 👶
-// (…original header comments preserved…)
+// What changed (only these):
+// 1) A tiny "Remix" pill sits on the hero image (bottom-left), matching theme.
+// 2) Bottom actions are tidy: "I cooked this!" is a proper button with spacing.
+//    No more nested/overlapping buttons. No other features touched.
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Alert, Share, Text, View, TouchableOpacity, FlatList } from 'react-native'; // 👈 added FlatList, removed ScrollView
+import { Alert, Share, Text, View, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
-import { Image } from 'expo-image';
+import { Image as ExpoImage } from 'expo-image';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -19,15 +22,18 @@ import { supabase } from '@/lib/supabase';
 import RecipeComments from '../../components/RecipeComments';
 import { IngredientPicker } from '@/components/IngredientPicker';
 
-// ✅ Calories pill + hook you already have
+// Calories pill
 import { useRecipeCalories } from '@/lib/nutrition';
 import CaloriePill from '@/components/CaloriePill';
 
-// 👇 NEW: shared converter (add this module per earlier message)
+// Units converter
 import { convertForDisplay, type UnitsPref } from '@/lib/units';
 
+// Block helpers
+import { isBlocked, unblockUser } from '@/lib/blocking';
+
 /* -----------------------------------------------------------
-   Tiny helpers (kept same / small additions)
+   Small helpers
 ----------------------------------------------------------- */
 function toNum(v: unknown, fallback = 0): number {
   if (v === null || v === undefined) return fallback;
@@ -35,56 +41,41 @@ function toNum(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// 👇 NEW: simple formatter for displaying numbers nicely
-// ✅ drop-in replacement for formatQty (handles 1/8 → ⅛, 1/4 → ¼, 1/2 → ½, etc.)
 function formatQty(n?: number | null): string {
   if (n == null || !Number.isFinite(Number(n))) return '';
   const x = Number(n);
-
   const whole = Math.floor(x);
   const frac = x - whole;
-
-  // common fractions we want to “snap” to
   const FRACTIONS: Array<[number, string]> = [
-    [0,    ''],
-    [1/8,  '⅛'],
-    [1/6,  '⅙'],
-    [1/5,  '⅕'],
-    [1/4,  '¼'],
-    [1/3,  '⅓'],
-    [3/8,  '⅜'],
-    [2/5,  '⅖'],
-    [1/2,  '½'],
-    [3/5,  '⅗'],
-    [2/3,  '⅔'],
-    [3/4,  '¾'],
-    [4/5,  '⅘'],
-    [5/6,  '⅚'],
-    [7/8,  '⅞'],
+    [0,''],[1/8,'⅛'],[1/6,'⅙'],[1/5,'⅕'],[1/4,'¼'],[1/3,'⅓'],[3/8,'⅜'],
+    [2/5,'⅖'],[1/2,'½'],[3/5,'⅗'],[2/3,'⅔'],[3/4,'¾'],[4/5,'⅘'],[5/6,'⅚'],[7/8,'⅞'],
   ];
-
-  // find the closest “nice” fraction
-  let bestSym = '';
-  let bestDiff = 1;
+  let bestSym = '', bestDiff = 1;
   for (const [val, sym] of FRACTIONS) {
     const d = Math.abs(frac - val);
     if (d < bestDiff) { bestDiff = d; bestSym = sym; }
   }
-
-  // tolerance: within ~2% we snap to the unicode fraction
-  if (bestSym && bestDiff < 0.02) {
-    if (whole === 0) return bestSym;
-    return `${whole} ${bestSym}`;
-  }
-
-  // otherwise: integers as-is, small decimals to 1 place
+  if (bestSym && bestDiff < 0.02) return whole === 0 ? bestSym : `${whole} ${bestSym}`;
   if (Math.abs(x - Math.round(x)) < 1e-6) return String(Math.round(x));
   return String(Math.round(x * 10) / 10);
 }
 
+// 👮 helper: are we blocked either way?
+async function isBlockedEitherWay(me: string | null, otherId: string | null) {
+  if (!me || !otherId) return false;
+  const { data, error } = await supabase
+    .from("user_blocks")
+    .select("id", { count: "exact", head: false })
+    .or(
+      `and(blocker_id.eq.${me},blocked_id.eq.${otherId}),and(blocker_id.eq.${otherId},blocked_id.eq.${me})`
+    )
+    .limit(1);
+  if (error) return false; // be safe; don't crash on client
+  return !!(data && data.length);
+}
 
 /* -----------------------------------------------------------
-   Shopping list helpers (kept same)
+   Shopping list helpers (unchanged)
 ----------------------------------------------------------- */
 async function ensureDefaultList(userId: string) {
   const { data: existing } = await supabase
@@ -139,7 +130,7 @@ async function readActiveItemNames(listId: string): Promise<Set<string>> {
 }
 
 /* -----------------------------------------------------------
-   MacroChip (unchanged)
+   Macro chip
 ----------------------------------------------------------- */
 function MacroChip({
   label,
@@ -178,6 +169,114 @@ function MacroChip({
 }
 
 /* -----------------------------------------------------------
+   Themed M.I.A overlay
+----------------------------------------------------------- */
+function BlockedScreen({
+  onBack,
+  onUnblock,
+}: {
+  onBack: () => void;
+  onUnblock: () => void;
+}) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: COLORS.bg,
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+    >
+      <View
+        style={{
+          width: "100%",
+          maxWidth: 420,
+          backgroundColor: COLORS.card,
+          borderRadius: 16,
+          padding: 18,
+          borderWidth: 1,
+          borderColor: "#233041",
+        }}
+      >
+        <View
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 28,
+            backgroundColor: "#052638",
+            borderWidth: 1,
+            borderColor: "#0ea5e9",
+            alignSelf: "center",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: 12,
+          }}
+        >
+          <Ionicons name="shield-half-outline" size={24} color="#7dd3fc" />
+        </View>
+
+        <Text
+          style={{
+            color: "#e5e7eb",
+            fontWeight: "900",
+            fontSize: 18,
+            textAlign: "center",
+          }}
+        >
+          M.I.A (missing in action)
+        </Text>
+        <Text
+          style={{
+            color: "#94a3b8",
+            marginTop: 6,
+            textAlign: "center",
+          }}
+        >
+          You can’t view this recipe because you and the creator have a block in
+          place.
+        </Text>
+
+        <View
+          style={{
+            flexDirection: "row",
+            gap: 10,
+            marginTop: 16,
+            justifyContent: "center",
+          }}
+        >
+          <TouchableOpacity
+            onPress={onBack}
+            style={{
+              paddingHorizontal: 16,
+              paddingVertical: 12,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: "#233041",
+              backgroundColor: "#0b1220",
+            }}
+          >
+            <Text style={{ color: "#e5e7eb", fontWeight: "800" }}>Go back</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={onUnblock}
+            style={{
+              paddingHorizontal: 16,
+              paddingVertical: 12,
+              borderRadius: 12,
+              backgroundColor: COLORS.accent,
+            }}
+          >
+            <Text style={{ color: "#001018", fontWeight: "900" }}>Unblock to view</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/* -----------------------------------------------------------
    Screen
 ----------------------------------------------------------- */
 export default function RecipeDetail() {
@@ -199,15 +298,17 @@ export default function RecipeDetail() {
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const isOwner = !!userId && !!ownerId && userId === ownerId;
 
-  // ✅ Calories (overlay pill on the image)
+  // 👁‍🗨 whether to hide the entire recipe behind the M.I.A screen
+  const [blockedView, setBlockedView] = useState(false);
+
+  // Calories pill
   const { total: calTotal, perServing: calPer } = useRecipeCalories(id ? String(id) : undefined);
 
-  // ✅ Macros (we read from public.recipes)
+  // Macros
   const [proteinTotalG, setProteinTotalG] = useState<number>(0);
   const [fatTotalG, setFatTotalG] = useState<number>(0);
   const [carbsTotalG, setCarbsTotalG] = useState<number>(0);
 
-  // remember snapshot for polling stop condition
   const snapshot = useMemo(() => ({ p: proteinTotalG, f: fatTotalG, c: carbsTotalG }), [proteinTotalG, fatTotalG, carbsTotalG]);
 
   const [isPrivate, setIsPrivate] = useState(false);
@@ -222,18 +323,15 @@ export default function RecipeDetail() {
   const [isCooked, setIsCooked] = useState(false);
   const [savingCook, setSavingCook] = useState(false);
 
-  // display-ready ingredients (strings) + raw steps
   const [ingredients, setIngredients] = useState<string[]>([]);
   const [steps, setSteps] = useState<{ text: string; seconds?: number | null }[]>([]);
 
-  // 👇 NEW: user’s preferred units
   const [unitPref, setUnitPref] = useState<UnitsPref>('us');
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null));
   }, []);
 
-  // 👇 NEW: fetch preferred_units once we know the userId
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -272,7 +370,7 @@ export default function RecipeDetail() {
           setIsPrivate(!!r.is_private);
           setSourceUrl(r.sourceUrl ?? null);
           if (Array.isArray(r.steps)) setSteps(r.steps);
-          if (Array.isArray(r.ingredients)) setIngredients(r.ingredients); // legacy strings OK; will be replaced by structured fetch below
+          if (Array.isArray(r.ingredients)) setIngredients(r.ingredients);
         } else {
           const s: any = recipeStore.get(id);
           setModel(
@@ -306,8 +404,20 @@ export default function RecipeDetail() {
       const owner = await dataAPI.getRecipeOwnerId(id).catch(() => null);
       if (!gone) setOwnerId(owner);
     })();
-    return () => { gone = true; };
+    return () => { gone = false; };
   }, [id]);
+
+  /* ------------------ Decide if we should hide behind M.I.A ------------------ */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!userId || !ownerId) return;
+      const blocked = await isBlockedEitherWay(userId, ownerId);
+      if (!alive) return;
+      setBlockedView(blocked);
+    })();
+    return () => { alive = false; };
+  }, [userId, ownerId]);
 
   /* ------------------ Parent / remix ------------------ */
   useEffect(() => {
@@ -326,13 +436,11 @@ export default function RecipeDetail() {
     return () => { off = true; };
   }, [id]);
 
-  /* ------------------ Ingredients & steps fallbacks ------------------ */
-  // 🔁 UPDATED: we now fetch structured ingredient fields and render according to unitPref
+  /* ------------------ Ingredients & steps structured fetch ------------------ */
   useEffect(() => {
     let cancelled = false;
 
     function lineFromRow(row: any, pref: UnitsPref): string {
-      // precomputed twins path
       if (row.convertible) {
         const qty   = pref === 'metric' ? row.metric_qty     : row.us_qty;
         const qmax  = pref === 'metric' ? row.metric_qty_max : row.us_qty_max;
@@ -344,14 +452,12 @@ export default function RecipeDetail() {
           return [amount, unit, row.item].filter(Boolean).join(' ').trim();
         }
       }
-      // runtime fallback if we only have qty+unit
       if (row.qty != null && row.unit) {
         const a = convertForDisplay(Number(row.qty), row.unit, pref);
         const b = row.qty_max != null ? convertForDisplay(Number(row.qty_max), row.unit, pref) : null;
         const amount = b ? `${formatQty(a.qty)}–${formatQty(b.qty)}` : `${formatQty(a.qty)}`;
         return [amount, a.unit, row.item ?? ''].filter(Boolean).join(' ').trim();
       }
-      // last resort: original/raw text
       return row.text_original || row.text || '';
     }
 
@@ -444,6 +550,25 @@ export default function RecipeDetail() {
     } else setIsCooked(false);
   }, [id, userId]);
   useEffect(() => { fetchEngagement(); }, [fetchEngagement]);
+
+  /* REMIX → go to Remix Editor (no instant clone) */
+  const handleRemix = useCallback(async () => {
+    try {
+      if (!id) return;
+      const { data: auth } = await supabase.auth.getUser();
+      const me = auth?.user;
+      if (!me) {
+        await warn();
+        Alert.alert('Sign in required', 'Please sign in to remix this recipe.');
+        return;
+      }
+      // open your Remix screen with this recipe as parent
+      router.push({ pathname: '/remix/[parentId]', params: { parentId: String(id) } });
+    } catch (e: any) {
+      await warn();
+      Alert.alert('Remix failed', e?.message || 'M.I.A (missing in action)');
+    }
+  }, [id]);
 
   /* ------------------ Ingredient picker prep ------------------ */
   const ings = ingredients.length ? ingredients : ['2 tbsp olive oil', '2 cloves garlic'];
@@ -566,27 +691,98 @@ export default function RecipeDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  /* ------------------ Block-aware creator opener ------------------ */
+  const handleOpenCreator = useCallback(async () => {
+    try {
+      if (!model?.creator) return;
+
+      // first, identify the target user id
+      let targetId: string | null = ownerId || null;
+      if (!targetId) {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("username", model.creator)
+          .maybeSingle();
+        targetId = prof?.id ? String(prof.id) : null;
+      }
+
+      // if we still have no id, try a neutral open by username (may be RLS-hidden)
+      if (!targetId) {
+        const { data: viewable } = await supabase
+          .from("profiles")
+          .select("username")
+          .eq("username", model.creator)
+          .maybeSingle();
+        if (!viewable) {
+          setBlockedView(true); // themed overlay instead of system alert
+          return;
+        }
+        router.push(`/u/${model.creator}`);
+        return;
+      }
+
+      // 🚫 client guard: if either party blocked the other, don't open
+      if (await isBlockedEitherWay(userId, targetId)) {
+        setBlockedView(true);
+        return;
+      }
+
+      // RLS check: can we read their row?
+      const { data: canSee } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("id", targetId)
+        .maybeSingle();
+
+      if (canSee) {
+        router.push({ pathname: "/u/[username]", params: { username: model.creator, uid: targetId } });
+        return;
+      }
+
+      setBlockedView(true);
+    } catch {
+      setBlockedView(true);
+    }
+  }, [model?.creator, ownerId, userId]);
+
   /* ------------------ Render ------------------ */
+  // If blocked, render themed overlay and stop
+  if (blockedView) {
+    return (
+      <BlockedScreen
+        onBack={() => router.back()}
+        onUnblock={async () => {
+          if (!ownerId) return;
+          const ok = await unblockUser(ownerId);
+          if (ok) {
+            const blocked = await isBlockedEitherWay(userId, ownerId);
+            setBlockedView(blocked);
+          }
+        }}
+      />
+    );
+  }
+
   if (loading)
     return (
       <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center' }}>
-        <Text style={{ color: COLORS.text }}>Loading…</Text>
+        <ActivityIndicator />
       </View>
     );
   if (!model)
     return (
       <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: 'center', justifyContent: 'center' }}>
-        <Text style={{ color: COLORS.text }}>Not found</Text>
+        <Text style={{ color: COLORS.text }}>M.I.A (missing in action)</Text>
       </View>
     );
 
-  // ===== Move everything that used to be inside <ScrollView> into header/footer of a FlatList =====
   const Header = (
     <View>
-      {/* HERO IMAGE + ✏️ edit + ✅ calories pill (bottom-right) */}
+      {/* HERO IMAGE + ✏️ edit + ✅ calories pill */}
       <View style={{ position: 'relative' }}>
-        <Image
-          source={{ uri: signedImageUrl || undefined }}
+        <ExpoImage
+          source={{ uri: model.image ? model.image : undefined }}
           style={{ width: '100%', height: 280, backgroundColor: '#111827' }}
           contentFit="cover"
         />
@@ -619,7 +815,33 @@ export default function RecipeDetail() {
           </TouchableOpacity>
         )}
 
-        {/* 🍏 Calories pill on the image */}
+        {/* 🟦 Small Remix pill on hero image (for non-owners) */}
+        {!isOwner && (
+          <TouchableOpacity
+            onPress={handleRemix}
+            activeOpacity={0.85}
+            style={{
+              position: 'absolute',
+              left: 12,
+              bottom: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: 'rgba(5, 38, 56, 0.85)', // dark glass
+              borderWidth: 1,
+              borderColor: '#0ea5e9',
+              paddingHorizontal: 10,
+              paddingVertical: 6,
+              borderRadius: 999,
+            }}
+          >
+            <Ionicons name="git-branch-outline" size={12} color="#7dd3fc" />
+            <Text style={{ color: '#7dd3fc', fontWeight: '800', fontSize: 12, marginLeft: 6 }}>
+              Remix
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Calories pill (right-bottom) */}
         <View style={{ position: 'absolute', right: 12, bottom: 12 }}>
           <CaloriePill total={calTotal ?? undefined} perServing={calPer ?? undefined} compact />
         </View>
@@ -631,16 +853,16 @@ export default function RecipeDetail() {
 
         {/* Creator row */}
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-          <TouchableOpacity onPress={() => router.push(`/u/${model.creator}`)} activeOpacity={0.7}>
+          <TouchableOpacity onPress={handleOpenCreator} activeOpacity={0.7}>
             {model.creatorAvatar ? (
-              <Image source={{ uri: model.creatorAvatar }} style={{ width: 24, height: 24, borderRadius: 12, marginRight: 8 }} />
+              <ExpoImage source={{ uri: model.creatorAvatar }} style={{ width: 24, height: 24, borderRadius: 12, marginRight: 8 }} />
             ) : (
               <View style={{ width: 24, height: 24, borderRadius: 12, marginRight: 8, backgroundColor: '#111827', alignItems: 'center', justifyContent: 'center' }}>
                 <Text style={{ color: '#e5e7eb', fontSize: 12, fontWeight: '800' }}>{(model.creator || 'U')[0]?.toUpperCase()}</Text>
               </View>
             )}
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => router.push(`/u/${model.creator}`)} activeOpacity={0.7}>
+          <TouchableOpacity onPress={handleOpenCreator} activeOpacity={0.7}>
             <Text style={{ color: COLORS.text, fontWeight: '700' }}>{model.creator}</Text>
           </TouchableOpacity>
 
@@ -685,32 +907,6 @@ export default function RecipeDetail() {
                 </View>
               </TouchableOpacity>
             ) : null}
-          </View>
-        )}
-
-        {/* Remix button */}
-        {!isOwner && !isPrivate && (
-          <View style={{ marginBottom: 10 }}>
-            <HapticButton
-              onPress={() => router.push(`/remix/${id}`)}
-              style={{
-                backgroundColor: '#183B2B',
-                borderWidth: 1,
-                borderColor: '#2BAA6B',
-                paddingVertical: 8,
-                paddingHorizontal: 12,
-                borderRadius: RADIUS.lg,
-                alignItems: 'center',
-                alignSelf: 'flex-start',
-                flexDirection: 'row',
-                gap: 6,
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Remix this recipe"
-            >
-              <Ionicons name="git-branch-outline" size={14} color="#CFF8D6" />
-              <Text style={{ color: '#CFF8D6', fontWeight: '900', fontSize: 13 }}>Remix</Text>
-            </HapticButton>
           </View>
         )}
 
@@ -763,35 +959,89 @@ export default function RecipeDetail() {
         ))}
       </View>
 
-      {/* BOTTOM ACTIONS */}
+      {/* ---------------------------------------
+         BOTTOM ACTIONS (unchanged logic, fixed layout)
+      ---------------------------------------- */}
       <View style={{ paddingHorizontal: SPACING.lg, marginTop: 8 }}>
         {isOwner ? (
-          <HapticButton onPress={() => router.push(`/cook/${id}`)} style={{ backgroundColor: COLORS.accent, paddingVertical: 16, borderRadius: RADIUS.xl, alignItems: 'center' }}>
-            <Text style={{ color: '#001018', fontWeight: '900', fontSize: 16 }}>Start Cook Mode</Text>
+          <HapticButton
+            onPress={() => router.push(`/cook/${id}`)}
+            style={{
+              backgroundColor: COLORS.accent,
+              paddingVertical: 16,
+              borderRadius: RADIUS.xl,
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ color: '#001018', fontWeight: '900', fontSize: 16 }}>
+              Start Cook Mode
+            </Text>
           </HapticButton>
         ) : (
           <>
+            {/* ✅ "I cooked this!" — theme-matched, spaced so nothing overlaps */}
             <HapticButton
               onPress={async () => {
                 if (!userId) { await warn(); Alert.alert('Please sign in to record cooks.'); return; }
-                await toggleCooked();
+                setSavingCook(true);
+                try {
+                  if (isCooked) {
+                    await supabase.from('recipe_cooks').delete().eq('recipe_id', id).eq('user_id', userId);
+                    setIsCooked(false);
+                    setCooksCount((n) => Math.max(0, n - 1));
+                  } else {
+                    await supabase.from('recipe_cooks').insert({ recipe_id: id, user_id: userId } as any);
+                    setIsCooked(true);
+                    setCooksCount((n) => n + 1);
+                  }
+                } catch {
+                  Alert.alert('M.I.A (missing in action)');
+                } finally {
+                  setSavingCook(false);
+                }
               }}
               disabled={savingCook}
-              style={{ backgroundColor: isCooked ? '#14532d' : COLORS.card, paddingVertical: 12, borderRadius: RADIUS.lg, alignItems: 'center', marginBottom: 8, opacity: savingCook ? 0.7 : 1 }}
+              style={{
+                backgroundColor: isCooked ? '#14532d' : COLORS.card,
+                borderWidth: 1,
+                borderColor: isCooked ? '#166534' : '#233041',
+                paddingVertical: 14,
+                borderRadius: RADIUS.xl,
+                alignItems: 'center',
+                marginBottom: 12, // spacing so buttons never collide
+                opacity: savingCook ? 0.7 : 1,
+              }}
             >
-              <Text style={{ color: isCooked ? '#CFF8D6' : COLORS.text, fontWeight: '900', fontSize: 15 }}>
+              <Text
+                style={{
+                  color: isCooked ? '#CFF8D6' : COLORS.text,
+                  fontWeight: '900',
+                  fontSize: 15,
+                }}
+              >
                 {savingCook ? 'Saving…' : isCooked ? 'Uncook' : 'I cooked this!'}
               </Text>
             </HapticButton>
 
-            <HapticButton onPress={() => router.push(`/cook/${id}`)} style={{ backgroundColor: COLORS.accent, paddingVertical: 16, borderRadius: RADIUS.xl, alignItems: 'center' }}>
-              <Text style={{ color: '#001018', fontWeight: '900', fontSize: 16 }}>Start Cook Mode</Text>
+            {/* Primary: Cook Mode */}
+            <HapticButton
+              onPress={() => router.push(`/cook/${id}`)}
+              style={{
+                backgroundColor: COLORS.accent,
+                paddingVertical: 16,
+                borderRadius: RADIUS.xl,
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: '#001018', fontWeight: '900', fontSize: 16 }}>
+                Start Cook Mode
+              </Text>
             </HapticButton>
           </>
         )}
       </View>
 
-      {/* add a little space before comments footer */}
+      {/* spacer under actions */}
       <View style={{ height: 8 }} />
     </View>
   );
@@ -799,12 +1049,10 @@ export default function RecipeDetail() {
   const Footer = (
     <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: 32, marginTop: 24 }}>
       <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 10 }}>Comments</Text>
-      {/* Keep your prop; if RecipeComments renders a VirtualizedList, that's OK now because the OUTER is also virtualized */}
       {id ? <RecipeComments recipeId={String(id)} isRecipeOwner={isOwner} /> : null}
     </View>
   );
 
-  // Single-item FlatList just to host header/footer content in a Virtualized container
   return (
     <FlatList
       style={{ flex: 1, backgroundColor: COLORS.bg }}

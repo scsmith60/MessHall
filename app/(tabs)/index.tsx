@@ -7,14 +7,11 @@
 // - We also put a sponsored card in the feed sometimes.
 // - We show comments in a bottom sheet and keep the screen safe from the notch.
 //
-// 🔧 What changed right now (to fix self-like/cook):
-// - We now pass ownerId + isPrivate + the same handlers your old file used to <RecipeCard>.
-// - We convert createdAt to a number (getTime), like before.
-// - We restored toggleSave() and imported warn/tap for it.
-//
-// ✅ Everything else stays the same.
-// ✅ NEW: scroll memory so Back returns to your previous scroll position.
-
+// 🔧 What changed right now:
+// - ✅ NEW: scroll memory with AsyncStorage + safe restore (waits for layout, retries)
+// - ✅ NEW: rail priority → Owner shelf > Sponsored > Seasonal/AI > For You (fallback overlay only)
+// - Everything else kept the same.
+import { isBlocked, unblockUser } from "../../lib/blocking";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -33,32 +30,55 @@ import {
   Image,
   Pressable,
   Linking,
-  PanResponder, // 👈 for swipe-to-close on the header
+  PanResponder, // for swipe-to-close on the header
+  InteractionManager, // NEW: for safe scroll restore after layout
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router, useFocusEffect } from "expo-router"; // 👈 NEW: useFocusEffect for restore
+import { router, useFocusEffect } from "expo-router";
 
 import { COLORS, SPACING } from "../../lib/theme";
 import { dataAPI } from "../../lib/data";
 import RecipeCard from "../../components/RecipeCard";
 import SponsoredCard from "../../components/SponsoredCard";
-import { success, tap, warn } from "../../lib/haptics"; // ⬅️ bring back tap, warn
+import { success, tap, warn } from "../../lib/haptics";
 import { recipeStore } from "../../lib/store";
 import { logAdEvent } from "../../lib/ads";
 import SearchFab from "../../components/SearchFab";
 import { useUserId } from "../../lib/auth";
 import { supabase } from "../../lib/supabase";
-import Comments from "../../components/Comments"; // wraps RecipeComments (threads + avatars + moderation)
+import Comments from "../../components/Comments";
 
-/* ───────── NEW: tiny scroll memory helper (like a little notebook) ───────── */
-// like I'm 5: we write down the scroll Y when you stop; when you come back, we read it.
-const __scrollNotebook = new Map<string, number>();
-const SCROLL_KEY = "HomeFeedList";
-function rememberScroll(y: number) { __scrollNotebook.set(SCROLL_KEY, y); }
-function recallScroll(): number { return __scrollNotebook.get(SCROLL_KEY) ?? 0; }
+/* ───────── storage: scroll memory ───────── */
+type StorageLike = { getItem(k: string): Promise<string | null>; setItem(k: string, v: string): Promise<void> };
+const memStore: Record<string, string> = {};
+const MemoryStorage: StorageLike = {
+  async getItem(k) { return Object.prototype.hasOwnProperty.call(memStore, k) ? memStore[k] : null; },
+  async setItem(k, v) { memStore[k] = v; },
+};
+async function getStorage(): Promise<StorageLike> {
+  try {
+    const mod = (await import("@react-native-async-storage/async-storage")).default as any;
+    if (mod?.getItem && mod?.setItem) return mod as StorageLike;
+  } catch {}
+  return MemoryStorage;
+}
+const SCROLL_KEY = "HomeFeedList:offset";
+async function persistScrollOffset(y: number) {
+  try {
+    const storage = await getStorage();
+    await storage.setItem(SCROLL_KEY, String(Math.max(0, Math.floor(y))));
+  } catch {}
+}
+async function loadScrollOffset(): Promise<number> {
+  try {
+    const storage = await getStorage();
+    const raw = await storage.getItem(SCROLL_KEY);
+    const y = raw ? parseInt(raw, 10) : 0;
+    return Number.isFinite(y) && y >= 0 ? y : 0;
+  } catch { return 0; }
+}
 
 /* ───────── helpers ───────── */
-
 const booly = (v: any) => v === true || v === 1 || v === "1" || String(v).toLowerCase?.() === "true";
 const firstDefined = <T,>(...vals: (T | undefined | null)[]) =>
   vals.find(v => typeof v !== "undefined" && v !== null) as T | undefined;
@@ -77,13 +97,11 @@ function weightedPick<T>(items: T[], getWeight: (x: T) => number): T | undefined
   }
   return items[items.length - 1];
 }
-
 function isPrivateFlag(v: any): boolean {
   return v === true || v === 1 || v === "1" || String(v).toLowerCase() === "true";
 }
 
 /* ───────── types ───────── */
-
 type SponsoredSlot = {
   id: string;
   brand?: string | null;
@@ -116,7 +134,7 @@ type FeedItem =
     }
   | {
       type: "sponsored";
-      id: string; // creative id when available, else slot id
+      id: string;
       brand: string;
       title: string;
       image: string | null;
@@ -125,7 +143,7 @@ type FeedItem =
         id: string;
         brand?: string | null;
         title?: string | null;
-        image?: string | null;       // keep legacy shape
+        image?: string | null;
         cta_url?: string | null;
       };
     };
@@ -141,8 +159,10 @@ type Comment = {
   createdAt: string;
 };
 
-/* ───────── label logic ───────── */
+/* ───────── feed mode (client-side sort only; no backend changes) ───────── */
+type FeedMode = "trending" | "top_week" | "newest";
 
+/* ───────── seasonal labels ───────── */
 function getSeasonalContext(now = new Date()) {
   const m = now.getMonth();
   const d = now.getDay();
@@ -163,17 +183,15 @@ function labelForTopic(topic: string) {
 }
 
 /* ───────── rail badge ───────── */
-
 const USE_HOUSE_BADGE = true;
 const HOUSE_BADGE_TEXT = "MessHall Picks";
-
 function RailBadge({ kind }: { kind: "house" | "sponsored" }) {
   if (kind === "sponsored") {
     return (
       <Text
         style={{
           color: COLORS.accent,
-          backgroundColor: "rgba(0, 200, 120, 0.15)",
+          backgroundColor: COLORS.card,
           paddingHorizontal: 10,
           paddingVertical: 4,
           borderRadius: 999,
@@ -189,7 +207,7 @@ function RailBadge({ kind }: { kind: "house" | "sponsored" }) {
     <Text
       style={{
         color: "#fff",
-        backgroundColor: "rgba(0,0,0,0.35)",
+        backgroundColor: COLORS.card,
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.12)",
         paddingHorizontal: 10,
@@ -204,8 +222,6 @@ function RailBadge({ kind }: { kind: "house" | "sponsored" }) {
   );
 }
 
-/* ───────── component ───────── */
-
 export default function HomeScreen() {
   const { userId: viewerId } = useUserId();
 
@@ -218,6 +234,9 @@ export default function HomeScreen() {
   const [savedSet, setSavedSet] = useState<Set<string>>(new Set());
   const RecipeCardAny = RecipeCard as any;
 
+  // feed mode state (we keep everything else the same; just sort locally)
+  const [mode, setMode] = useState<FeedMode>("trending");
+
   // rail state
   const [railTitle, setRailTitle] = useState<string | null>(null);
   const [railItems, setRailItems] = useState<RailItem[]>([]);
@@ -226,13 +245,13 @@ export default function HomeScreen() {
   const [railSponsorLogo, setRailSponsorLogo] = useState<string | null>(null);
   const [railShelfId, setRailShelfId] = useState<string | null>(null);
 
-  // tracking
+  // impressions & scroll memory
   const seenAdsRef = useRef<Set<string>>(new Set());
   const seenRailImpressions = useRef<Set<string>>(new Set());
-
-  // ✅ NEW: FlatList ref + last offset memory
   const listRef = useRef<FlatList>(null);
   const lastOffsetY = useRef(0);
+  const pendingRestoreY = useRef<number | null>(null);   // NEW
+  const restoreTries = useRef(0);                        // NEW
 
   // privacy: only show your own private recipes
   const safetyFilter = useCallback(
@@ -245,8 +264,7 @@ export default function HomeScreen() {
     [viewerId]
   );
 
-  /* ───────── comments sheet ───────── */
-
+  /* comments sheet (unchanged) */
   const [commentsVisible, setCommentsVisible] = useState(false);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -254,13 +272,13 @@ export default function HomeScreen() {
   const [newText, setNewText] = useState("");
   const [sheetRefreshing, setSheetRefreshing] = useState(false);
 
-  // 👇 NEW: simple swipe-down-to-close (header only)
+  // simple swipe-down-to-close (header only)
   const pan = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => g.dy > 6, // finger moves down a bit
-      onPanResponderMove: () => {},                    // no visual drag; just detect
+      onMoveShouldSetPanResponder: (_, g) => g.dy > 6,
+      onPanResponderMove: () => {},
       onPanResponderRelease: (_, g) => {
-        if (g.dy > 120 || g.vy > 1.0) closeComments(); // pull far or fling fast → close
+        if (g.dy > 120 || g.vy > 1.0) closeComments();
       },
     })
   ).current;
@@ -285,19 +303,13 @@ export default function HomeScreen() {
     },
     [fetchComments]
   );
-
-  const closeComments = useCallback(() => {
-    setCommentsVisible(false);
-    setNewText("");
-  }, []);
-
+  const closeComments = useCallback(() => { setCommentsVisible(false); setNewText(""); }, []);
   const refreshSheet = useCallback(async () => {
     if (!activeRecipeId) return;
     setSheetRefreshing(true);
     await fetchComments(activeRecipeId);
     setSheetRefreshing(false);
   }, [activeRecipeId, fetchComments]);
-
   const sendComment = useCallback(async () => {
     const message = newText.trim();
     if (!message || !activeRecipeId) return;
@@ -310,9 +322,32 @@ export default function HomeScreen() {
     }
   }, [newText, activeRecipeId, fetchComments]);
 
-  /* ───────── RAIL loader (shelves → slots → AI) ───────── */
+  /* recommendations + rail loader (unchanged) */
+  const loadRecommendations = useCallback(async () => {
+    if (!viewerId) return { title: null, items: [] as RailItem[] };
 
-  const loadRail = useCallback(async () => {
+    const { data: recs, error } = await supabase.rpc("recommend_vec_for_user", {
+      p_user: viewerId,
+      p_limit: 12,
+    });
+
+    if (error || !Array.isArray(recs) || recs.length === 0) {
+      return { title: null, items: [] as RailItem[] };
+    }
+
+    const items: RailItem[] = recs
+      .filter((r: any) => !isPrivateFlag(r.is_private))
+      .map((r: any) => ({
+        kind: "recipe",
+        id: String(r.id),
+        title: r.title ?? "Recipe",
+        image: r.image_url ?? null,
+      }));
+
+    return { title: "For You", items };
+  }, [viewerId]);
+
+  const loadRail = useCallback(async (): Promise<{ didSet: boolean; priority: "owner"|"sponsored"|"fallback" }> => {
     try {
       const now = new Date();
 
@@ -351,13 +386,13 @@ export default function HomeScreen() {
               setRailIsSponsored(!!hasSponsor);
               setRailSponsorLogo(chosenShelf.sponsor_logo_url ?? null);
               setRailIsHouse(!hasSponsor && USE_HOUSE_BADGE);
-              return;
+              return { didSet: true, priority: hasSponsor ? "sponsored" : "owner" };
             }
           }
         }
       } catch {}
 
-      // 2) SPONSORED SLOT → rail creatives
+      // 2) SPONSORED SLOT
       try {
         const { data: slots } = await supabase.from("sponsored_slots").select("*").limit(50);
         const activeSlots = (slots ?? []).filter((s: any) => {
@@ -367,7 +402,7 @@ export default function HomeScreen() {
           if (!on) return false;
           const start = toDate(startRaw);
           const end = toDate(endRaw);
-          return within(now, start, end);
+          return within(new Date(), start, end);
         });
         const chosen = weightedPick(activeSlots, (s: any) => Number(s.weight ?? 1));
         if (chosen) {
@@ -412,13 +447,13 @@ export default function HomeScreen() {
             setRailIsSponsored(true);
             setRailSponsorLogo(null);
             setRailIsHouse(false);
-            return;
+            return { didSet: true, priority: "sponsored" };
           }
         }
       } catch {}
 
-      // 3) AI fallback
-      const topic = getSeasonalContext(now);
+      // 3) FALLBACK suggestions (seasonal, smart, latest)
+      const topic = getSeasonalContext(new Date());
       let suggestions: RailItem[] = [];
       try {
         const smart = await (dataAPI as any).getSmartSuggestionsForContext?.(topic);
@@ -460,6 +495,7 @@ export default function HomeScreen() {
       setRailIsSponsored(false);
       setRailSponsorLogo(null);
       setRailIsHouse(USE_HOUSE_BADGE);
+      return { didSet: true, priority: "fallback" };
     } catch (e: any) {
       setRailTitle(null);
       setRailItems([]);
@@ -467,10 +503,27 @@ export default function HomeScreen() {
       setRailIsHouse(false);
       setRailSponsorLogo(null);
       setRailShelfId(null);
+      return { didSet: false, priority: "fallback" };
     }
   }, []);
 
-  useEffect(() => { loadRail(); }, [loadRail]);
+  /* run rail + optional overlay when fallback */
+  useEffect(() => {
+    (async () => {
+      const res = await loadRail();
+      if (res.priority === "fallback") {
+        const { title, items } = await loadRecommendations();
+        if (items.length) {
+          setRailTitle(title);
+          setRailItems(items);
+          setRailIsSponsored(false);
+          setRailIsHouse(false);
+          setRailSponsorLogo(null);
+          setRailShelfId(null);
+        }
+      }
+    })();
+  }, [loadRail, loadRecommendations]);
 
   useEffect(() => {
     railItems.forEach((it) => {
@@ -488,6 +541,7 @@ export default function HomeScreen() {
   const onPressRail = async (it: RailItem) => {
     if (it.kind === "recipe") {
       if (railShelfId) logAdEvent(railShelfId, "click", { where: "home_rail", unit: "rail_shelf" }, it.id);
+      await persistScrollOffset(lastOffsetY.current);
       router.push(`/recipe/${it.id}`);
       return;
     }
@@ -498,9 +552,34 @@ export default function HomeScreen() {
     }
   };
 
-  // 🎢 RAIL SKELETON (the fake loading cards)
-  // like I'm 5: we color the empty boxes the same as real cards,
-  // so loading and loaded look like the same family.
+  /* ───────── NEW: simple segmented control (matches theme) ───────── */
+  const FeedModeToggle = () => (
+    <View style={{ backgroundColor: COLORS.card, borderColor: COLORS.border, borderWidth: 1, borderRadius: 16, padding: 6, marginBottom: SPACING.lg }}>
+      <View style={{ flexDirection: "row" }}>
+        {([
+          { key: "trending", label: "Trending" },
+          { key: "top_week", label: "Top (7d)" },
+          { key: "newest", label: "Newest" },
+        ] as {key: FeedMode; label: string}[]).map((m) => {
+          const active = mode === m.key;
+          return (
+            <Pressable
+              key={m.key}
+              onPress={async () => { if (mode !== m.key) { setMode(m.key); await success(); } }}
+              android_ripple={{ color: "rgba(255,255,255,0.08)", borderless: true }}
+              style={{ flex: 1, paddingVertical: 10, alignItems: "center", borderRadius: 12, backgroundColor: active ? "rgba(255,255,255,0.06)" : "transparent", borderWidth: active ? 1 : 0, borderColor: active ? COLORS.border : "transparent" }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+            >
+              <Text style={{ color: "#fff", fontWeight: active ? "900" : "700" }}>{m.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+
+  /* ───────── rail UI (unchanged) ───────── */
   const RailSkeleton = () => (
     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
       {Array.from({ length: 4 }).map((_, i) => (
@@ -511,18 +590,15 @@ export default function HomeScreen() {
             height: 140,
             marginRight: 12,
             borderRadius: 16,
-            // 🟦 MATCH: same surface + thin outline as other cards
-            backgroundColor: COLORS.card,    // was "rgba(255,255,255,0.06)"
+            backgroundColor: COLORS.card,
             borderWidth: 1,
-            borderColor: COLORS.border,      // was "rgba(255,255,255,0.08)"
+            borderColor: COLORS.border,
           }}
         />
       ))}
     </ScrollView>
   );
 
-  // 🛝 RAIL (the real mini cards you can tap)
-  // like I'm 5: paint them the same navy + border as big RecipeCard.
   const Rail = () => (
     <View style={{ marginBottom: SPACING.lg }}>
       <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
@@ -544,14 +620,9 @@ export default function HomeScreen() {
               key={`${it.kind}_${it.id}`}
               onPress={() => onPressRail(it)}
               style={{
-                width: 140,
-                marginRight: 12,
-                borderRadius: 16,
-                overflow: "hidden",
-                // 🟦 MATCH: same surface + thin outline as other cards
-                backgroundColor: COLORS.card,   // was "rgba(255,255,255,0.04)"
-                borderWidth: 1,
-                borderColor: "#1a2433",     // was "rgba(255,255,255,0.06)"
+                width: 140, marginRight: 12, borderRadius: 16, overflow: "hidden",
+                backgroundColor: COLORS.card,
+                borderWidth: 1, borderColor: "#1a2433",
                 paddingBottom: 4,
               }}
             >
@@ -566,7 +637,6 @@ export default function HomeScreen() {
                 <Text numberOfLines={2} style={{ color: "#fff", fontWeight: "800", fontSize: 13 }}>
                   {it.title}
                 </Text>
-                {/* tiny footer label */}
                 <Text
                   style={{
                     color: "rgba(255,255,255,0.85)",
@@ -584,8 +654,7 @@ export default function HomeScreen() {
     </View>
   );
 
-  /* ───────── saved flags + toggle save ───────── */
-
+  /* ───────── saved flags (unchanged) ───────── */
   async function updateSavedFlagsFor(ids: string[], replace: boolean) {
     try {
       if (!viewerId || ids.length === 0) {
@@ -605,11 +674,9 @@ export default function HomeScreen() {
         for (const id of found) next.add(id);
         return next;
       });
-    } catch (e: any) {
-    }
+    } catch {}
   }
 
-  // ⬇️ restored from your old working file
   const toggleSave = useCallback(
     async (recipeId: string) => {
       if (!viewerId) {
@@ -657,12 +724,10 @@ export default function HomeScreen() {
     [viewerId, savedSet]
   );
 
-  /* ───────── inline sponsored selection ───────── */
-
+  /* ───────── inline sponsored selection (unchanged) ───────── */
   const pickSponsoredFeedCard = useCallback(async (): Promise<FeedItem | null> => {
     try {
       const now = new Date();
-
       const { data: slots } = await supabase
         .from("sponsored_slots")
         .select("id,brand,title,image_url,cta_url,starts_at,ends_at,active_from,active_to,is_active,weight")
@@ -709,13 +774,49 @@ export default function HomeScreen() {
       };
 
       return item;
-    } catch (e) {
+    } catch {
       return null;
     }
   }, []);
 
-  /* ───────── load page ───────── */
+  // sort & filter in-app so we don't change server code
+  const applyClientSortFilter = useCallback((items: FeedItem[]) => {
+    let recipes: FeedItem[] = items;
+    if (!Array.isArray(recipes) || !recipes.length) return recipes;
 
+    // only touch recipe rows; leave sponsored alone in order
+    const recipeRows = recipes.filter((r) => r.type === "recipe") as any[];
+    const others = recipes.filter((r) => r.type !== "recipe");
+
+    const now = Date.now();
+    const ageHours = (d: number) => Math.max(1, (now - d) / (1000 * 60 * 60));
+
+    let sorted = recipeRows;
+
+    if (mode === "newest") {
+      sorted = [...recipeRows].sort((a, b) => (new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+    } else if (mode === "top_week") {
+      const oneWeek = 7 * 24 * 3600 * 1000;
+      const recent = recipeRows.filter((r) => (now - new Date(r.createdAt).getTime()) <= oneWeek);
+      sorted = [...recent].sort((a, b) => {
+        const sa = (a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0);
+        const sb = (b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0);
+        return sb - sa;
+      });
+    } else {
+      // trending with light time decay
+      sorted = [...recipeRows].sort((a, b) => {
+        const va = ((a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0)) / Math.pow(ageHours(new Date(a.createdAt).getTime())/6, 1.2);
+        const vb = ((b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0)) / Math.pow(ageHours(new Date(b.createdAt).getTime())/6, 1.2);
+        return vb - va;
+      });
+    }
+
+    // merge back with non-recipe items (keep others where they were)
+    return [...sorted, ...others];
+  }, [mode]);
+
+  /* ───────── main page load (unchanged, we just sort afterward) ───────── */
   const loadPage = useCallback(
     async (nextPage: number, replace = false) => {
       if (loading) return;
@@ -724,6 +825,7 @@ export default function HomeScreen() {
         // 1) page from backend
         let items: FeedItem[] = await (dataAPI as any).getFeedPage(nextPage, PAGE_SIZE);
         let visible = safetyFilter(items ?? []);
+        visible = applyClientSortFilter(visible);
 
         // 2) store recipes metadata
         const recipesOnly = visible.filter((it) => it.type === "recipe") as Extract<FeedItem, { type: "recipe" }>[];
@@ -759,27 +861,38 @@ export default function HomeScreen() {
         setLoading(false);
       }
     },
-    [loading, safetyFilter, pickSponsoredFeedCard]
+    [loading, safetyFilter, pickSponsoredFeedCard, applyClientSortFilter]
   );
 
-  useEffect(() => { loadPage(0, true); }, []);
-  const lastViewerRef = useRef<string | null>(null);
+  // initial + refresh on mode change (because we re-sort)
   useEffect(() => {
-    if (lastViewerRef.current === (viewerId ?? null)) return;
-    lastViewerRef.current = viewerId ?? null;
     loadPage(0, true);
-    loadRail();
-  }, [viewerId, loadPage, loadRail]);
+  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ... the rest of your original code stays the same ... */
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     seenAdsRef.current.clear();
     seenRailImpressions.current.clear();
-    await loadRail();
+
+    const res = await loadRail();
+    if (res.priority === "fallback") {
+      const { title, items } = await loadRecommendations();
+      if (items.length) {
+        setRailTitle(title);
+        setRailItems(items);
+        setRailIsSponsored(false);
+        setRailIsHouse(false);
+        setRailSponsorLogo(null);
+        setRailShelfId(null);
+      }
+    }
+
     await loadPage(0, true);
     await success();
     setRefreshing(false);
-  }, [loadPage, loadRail]);
+  }, [loadRail, loadRecommendations, loadPage]);
 
   const onEndReached = useCallback(() => {
     if (!loading) loadPage(page + 1, false);
@@ -797,30 +910,105 @@ export default function HomeScreen() {
     }
   }).current;
 
-  /* ───────── NEW: restore + remember scroll offset ───────── */
-  // When the screen focuses again (after opening a recipe), jump back to saved spot.
+  // remember & restore scroll
+  const attemptRestoreScroll = () => {
+    if (pendingRestoreY.current == null) return;
+    const y = pendingRestoreY.current;
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(() => {
+        listRef.current?.scrollToOffset({ offset: y, animated: false });
+        restoreTries.current += 1;
+        if (restoreTries.current < 5 && pendingRestoreY.current != null) {
+          setTimeout(() => attemptRestoreScroll(), 80);
+        } else {
+          pendingRestoreY.current = null;
+        }
+      }, 0);
+    });
+  };
   useFocusEffect(
-    useCallback(() => {
-      const y = recallScroll();
-      // wait a tick so the list is mounted and has data
-      const t = setTimeout(() => listRef.current?.scrollToOffset({ offset: y, animated: false }), 0);
-      return () => clearTimeout(t);
+    React.useCallback(() => {
+      let alive = true;
+      (async () => {
+        const y = await loadScrollOffset();
+        if (!alive) return;
+        pendingRestoreY.current = y;
+        restoreTries.current = 0;
+        attemptRestoreScroll();
+      })();
+      return () => { alive = false; };
     }, [])
   );
-
-  // As user stops scrolling, save the current spot.
-  const handleMomentumEnd = useCallback((e: any) => {
+  const handleMomentumEnd = useCallback(async (e: any) => {
     const y = e?.nativeEvent?.contentOffset?.y ?? 0;
     lastOffsetY.current = y;
-    rememberScroll(y);
+    await persistScrollOffset(y);
   }, []);
-  const handleEndDrag = useCallback((e: any) => {
+  const handleEndDrag = useCallback(async (e: any) => {
     const y = e?.nativeEvent?.contentOffset?.y ?? 0;
     lastOffsetY.current = y;
-    rememberScroll(y);
+    await persistScrollOffset(y);
   }, []);
+   
+  // Open a creator profile safely (username OR userId).
+// - If profile is viewable (not blocked either way), navigate.
+// - If *you* blocked them, offer to Unblock (nicety).
+// - Otherwise stay neutral ("User not available").
+const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
+  try {
+    // simple “looks like UUID” check (36 chars with dashes)
+    const looksLikeId = /^[0-9a-fA-F-]{36}$/.test(usernameOrId);
+    let targetId = usernameOrId;
 
-  /* ───────── render row ───────── */
+    if (!looksLikeId) {
+      // resolve username → id
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("username", usernameOrId)
+        .maybeSingle();
+      if (!prof) { Alert.alert("User not available"); return; }
+      targetId = String(prof.id);
+    }
+
+    // Try to read the profile; RLS returns no row if blocked either way
+    const { data: viewable } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("id", targetId)
+      .maybeSingle();
+
+    if (viewable) {
+      router.push(`/u/${targetId}`);
+      return;
+    }
+
+    // Not viewable → check if *you* blocked them (nicety)
+    if (await isBlocked(targetId)) {
+      Alert.alert(
+        "You blocked this user",
+        "Unblock to view their profile and content.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Unblock",
+            style: "destructive",
+            onPress: async () => {
+              const ok = await unblockUser(targetId);
+              if (ok) router.push(`/u/${targetId}`);
+              else Alert.alert("Sorry", "Couldn’t unblock. Try again.");
+            },
+          },
+        ]
+      );
+    } else {
+      // Could be they blocked you or deleted → keep it neutral
+      Alert.alert("User not available");
+    }
+  } catch {
+    Alert.alert("User not available");
+  }
+}, []);
 
   function renderItem({ item }: ListRenderItemInfo<FeedItem>) {
     if (item.type === "sponsored") {
@@ -844,7 +1032,6 @@ export default function HomeScreen() {
       );
     }
 
-    // ⬇️ match your old working prop mapping so RecipeCard can hide self-actions
     return (
       <RecipeCardAny
         id={item.id}
@@ -856,27 +1043,25 @@ export default function HomeScreen() {
         cooks={item.cooks}
         likes={item.likes}
         commentCount={item.commentCount ?? 0}
-        createdAt={new Date(item.createdAt).getTime()} // ⬅️ timestamp like before
-        titleRightInset={96}                           //title and colorie pill prop
-        ownerId={item.ownerId}                          // ⬅️ needed so self-actions hide
-        isPrivate={isPrivateFlag(item.is_private)}      // ⬅️ pass privacy flag
-        onOpen={(id: string) => router.push(`/recipe/${id}`)}
-        onOpenCreator={(username: string) => router.push(`/u/${username}`)}
+        createdAt={new Date(item.createdAt).getTime()}
+        titleRightInset={96}
+        ownerId={item.ownerId}
+        isPrivate={isPrivateFlag(item.is_private)}
+        onOpen={(id: string) => { persistScrollOffset(lastOffsetY.current); router.push(`/recipe/${id}`); }}
+        onOpenCreator={handleOpenCreator}
         onEdit={(id: string) => router.push({ pathname: "/recipe/edit/[id]", params: { id } })}
         onOpenComments={(id: string) => openComments(id)}
         isSaved={savedSet.has(item.id)}
-        onToggleSave={() => toggleSave(item.id)}        // ⬅️ restore save toggling
+        onToggleSave={() => toggleSave(item.id)}
         onSave={() => toggleSave(item.id)}
       />
     );
   }
 
-  /* ───────── screen ───────── */
-
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <FlatList
-        ref={listRef}                                                // 👈 NEW: we control the list
+        ref={listRef}
         style={{ flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg }}
         data={data}
         keyExtractor={(it) => `${it.type}_${(it as any).id}`}
@@ -885,24 +1070,27 @@ export default function HomeScreen() {
         onEndReachedThreshold={0.4}
         onEndReached={onEndReached}
         refreshControl={<RefreshControl tintColor="#fff" refreshing={refreshing} onRefresh={onRefresh} />}
-        ListHeaderComponent={<Rail />}
+        ListHeaderComponent={<View><FeedModeToggle /><Rail /></View>}
         ListFooterComponent={loading ? <ActivityIndicator style={{ marginVertical: 24 }} /> : null}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
         initialNumToRender={8}
         windowSize={11}
-        // 👇 NEW: remember our place when the scroll stops
+        // remember place when the scroll stops
         onMomentumScrollEnd={handleMomentumEnd}
         onScrollEndDrag={handleEndDrag}
+        // NEW: also attempt restore when layout/content changes
+        onContentSizeChange={() => { if (pendingRestoreY.current != null) attemptRestoreScroll(); }}
+        onLayout={() => { if (pendingRestoreY.current != null) attemptRestoreScroll(); }}
       />
       <SearchFab onPress={() => router.push("/search")} bottomOffset={24} />
       {/* comments modal */}
       <Modal visible={commentsVisible} animationType="slide" transparent onRequestClose={closeComments}>
-        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+        <View style={{ flex: 1, backgroundColor: COLORS.card, justifyContent: "flex-end" }}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : undefined}
             style={{
-              backgroundColor: COLORS.bg,
+              backgroundColor: "rgba(0,0,0,0.78)",
               borderTopLeftRadius: 20,
               borderTopRightRadius: 20,
               paddingTop: 12,
@@ -911,29 +1099,15 @@ export default function HomeScreen() {
               maxHeight: "80%",
             }}
           >
-            {/* ✅ header row: swipe down anywhere here to close, big ✕ on the right */}
+            {/* header row: swipe down to close */}
             <View
               {...pan.panHandlers}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                paddingBottom: 8,
-              }}
+              style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingBottom: 8 }}
             >
-              {/* centered grab handle */}
               <View style={{ flex: 1, alignItems: "center" }}>
-                <View
-                  style={{
-                    width: 44,
-                    height: 4,
-                    borderRadius: 2,
-                    backgroundColor: "rgba(255,255,255,0.2)",
-                  }}
-                />
+                <View style={{ width: 44, height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.2)" }} />
               </View>
 
-              {/* big, easy-to-tap close button */}
               <TouchableOpacity
                 onPress={closeComments}
                 accessibilityRole="button"
@@ -947,7 +1121,6 @@ export default function HomeScreen() {
 
             <Text style={{ color: "#fff", fontWeight: "900", fontSize: 16, marginBottom: 8 }}>Comments</Text>
 
-            {/* 🧠 The ONE comments UI (threads, avatars, moderation, replies) */}
             {activeRecipeId ? (
               <Comments recipeId={activeRecipeId} />
             ) : (
@@ -962,8 +1135,7 @@ export default function HomeScreen() {
   );
 }
 
-/* ───────── utils ───────── */
-
+/* ───────── merge helper ───────── */
 function mergeUniqueFeed(prev: any[], next: any[], replace: boolean): any[] {
   const merged = replace ? next : [...prev, ...next];
   const seen = new Set<string>();

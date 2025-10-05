@@ -4,6 +4,7 @@
 // - We now READ calories at mount AND LISTEN in real-time for changes to this recipe row,
 //   so when the detail page/server computes calories, the feed pill updates automatically.
 // - All your other UI (likes, cooks, save, comments) stays the same.
+// - ✅ NEW: Opening the creator profile is now *block-aware* with a friendly "Unblock?" prompt if you blocked them.
 
 import React, { useEffect, useMemo, useState, useCallback, memo } from "react";
 import {
@@ -32,7 +33,6 @@ async function getStorage(): Promise<StorageLike> {
 }
 const calKey = (id: string) => `mh:recipe:calpill:${id}`;
 
-
 import SwipeCard from "@/components/ui/SwipeCard";
 import HapticButton from "@/components/ui/HapticButton";
 import { COLORS, RADIUS } from "@/lib/theme";
@@ -43,6 +43,7 @@ import { useUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { Share } from "react-native";
 import { recipeUrl } from "@/lib/links";
+import { isBlocked, unblockUser } from "@/lib/blocking"; // 👈 NEW
 
 // 🎯 NEW: unify surface colors so big RecipeCard matches horizontal rail cards
 const SURFACE = "#0b1220";        // dark navy (same as rails)
@@ -97,7 +98,6 @@ function RecipeCard(props: Props) {
   } = props;
   const titleRightInset = props.titleRightInset ?? 66; // default keeps your current gap
 
-
   // 👤 who am I?
   const { userId } = useUserId();
   const isOwner = useMemo(() => !!userId && userId === props.ownerId, [userId, props.ownerId]);
@@ -146,15 +146,14 @@ function RecipeCard(props: Props) {
   }, [id, props]);
 
   // 📤 share (use https so everything becomes a real, tappable link)
-const share = useCallback(async () => {
-  const url = recipeUrl(id); // ex: https://messhall.app/r/ABC123
-  // 'subject' shows up in email/some apps; 'url' makes iOS treat it as a real link
-  await Share.share({
-    message: `${title} on MessHall\n${url}`,  // Android reads message
-    url,                                      // iOS attaches real link
-    subject: `${title} • MessHall`,
-  });
-}, [id, title]);
+  const share = useCallback(async () => {
+    const url = recipeUrl(id); // ex: https://messhall.app/r/ABC123
+    await Share.share({
+      message: `${title} on MessHall\n${url}`,
+      url,
+      subject: `${title} • MessHall`,
+    });
+  }, [id, title]);
 
   // 🔍 open the recipe (tap big card)
   const open = useCallback(async () => {
@@ -162,15 +161,78 @@ const share = useCallback(async () => {
     (onOpen ?? onOpenComments)?.(id);
   }, [id, onOpen, onOpenComments]);
 
-  // 👤 open the creator profile
-  const openCreator = useCallback(async () => {
-    if (!creator) return;
-    await tap();
-    if (typeof onOpenCreator === "function") {
-      onOpenCreator(creator);
-      return;
+  // 👤 open the creator profile (block-aware fallback)
+  const safeOpenCreator = useCallback(async () => {
+    try {
+      if (!creator) return;
+      // if parent provided a handler, use it (feed can override)
+      if (typeof onOpenCreator === "function") {
+        onOpenCreator(creator);
+        return;
+      }
+
+      // Try RLS-read by user id if we have it; else resolve username → id
+      let targetId: string | null = props.ownerId || null;
+      if (!targetId) {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("username", creator)
+          .maybeSingle();
+        targetId = prof?.id ? String(prof.id) : null;
+      }
+
+      // If we still don't know the id, try to push but guard with neutral message on failure
+      if (!targetId) {
+        const { data: viewable } = await supabase
+          .from("profiles")
+          .select("username")
+          .eq("username", creator)
+          .maybeSingle();
+        if (!viewable) {
+          Alert.alert("M.I.A");
+          return;
+        }
+        router.push({ pathname: "/u/[username]", params: { username: creator } });
+        return;
+      }
+
+      // RLS gate: no row → blocked either way (or deleted)
+      const { data: canSee } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("id", targetId)
+        .maybeSingle();
+
+      if (canSee) {
+        router.push({ pathname: "/u/[username]", params: { username: creator, uid: targetId } });
+        return;
+      }
+
+      // Nicety: if *I* blocked them, offer to unblock
+      if (await isBlocked(targetId)) {
+        Alert.alert(
+          "You blocked this user",
+          "Unblock to view their profile and content.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Unblock",
+              style: "destructive",
+              onPress: async () => {
+                const ok = await unblockUser(targetId!);
+                if (ok) router.push({ pathname: "/u/[username]", params: { username: creator, uid: targetId } });
+                else Alert.alert("Sorry", "Couldn’t unblock. Try again.");
+              },
+            },
+          ]
+        );
+      } else {
+        Alert.alert("M.I.A."); // they blocked you or user is gone
+      }
+    } catch {
+      Alert.alert("M.I.A.");
     }
-    router.push({ pathname: "/u/[username]", params: { username: creator, uid: props.ownerId } });
   }, [creator, onOpenCreator, props.ownerId]);
 
   // ❤️ like
@@ -253,37 +315,23 @@ const share = useCallback(async () => {
   // 🔥 FEED CALORIES (read + realtime subscribe)
   const [calTotal, setCalTotal] = useState<number | null>(null);
 
-// 0) read cached pill immediately (so it sticks across app restarts/logout)
-useEffect(() => {
-  let gone = false;
-  (async () => {
-    try {
-      const storage = await getStorage();
-      const raw = await storage.getItem(calKey(id));
-      if (!raw) return;
-      const obj = JSON.parse(raw) as { total?: number|null; perServing?: number|null };
-      if (!gone) {
-        setCalTotal(typeof obj.total === "number" ? obj.total : null);
-        setCalPerServ(typeof obj.perServing === "number" ? obj.perServing : null);
-
-
-;(async () => {
-  try {
-    const storage = await getStorage();
-    await storage.setItem(calKey(id), JSON.stringify({ total: t ?? null, perServing: p ?? null }));
-  } catch {}
-})();
-// cache latest values so pill sticks next launch
-try {
-  const storage = await getStorage();
-  await storage.setItem(calKey(id), JSON.stringify({ total: t ?? null, perServing: p ?? null }));
-} catch {}
-
-      }
-    } catch {}
-  })();
-  return () => { gone = true; };
-}, [id]);
+  // 0) read cached pill immediately (so it sticks across app restarts/logout)
+  useEffect(() => {
+    let gone = false;
+    (async () => {
+      try {
+        const storage = await getStorage();
+        const raw = await storage.getItem(calKey(id));
+        if (!raw) return;
+        const obj = JSON.parse(raw) as { total?: number|null; perServing?: number|null };
+        if (!gone) {
+          setCalTotal(typeof obj.total === "number" ? obj.total : null);
+          setCalPerServ(typeof obj.perServing === "number" ? obj.perServing : null);
+        }
+      } catch {}
+    })();
+    return () => { gone = true; };
+  }, [id]);
   const [calPerServ, setCalPerServ] = useState<number | null>(null);
 
   // 1) initial fetch (fast read)
@@ -301,6 +349,11 @@ try {
         const p = data?.calories_per_serving ?? null;
         setCalTotal(typeof t === "number" && t > 0 ? t : null);
         setCalPerServ(typeof p === "number" && p > 0 ? p : null);
+        // cache latest values so pill sticks next launch
+        try {
+          const storage = await getStorage();
+          await storage.setItem(calKey(id), JSON.stringify({ total: t ?? null, perServing: p ?? null }));
+        } catch {}
       } catch {}
     })();
     return () => {
@@ -316,11 +369,18 @@ try {
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "recipes", filter: `id=eq.${id}` },
-        (payload: any) => {
+        async (payload: any) => {
           const t = (payload?.new as any)?.calories_total;
           const p = (payload?.new as any)?.calories_per_serving;
-          setCalTotal(typeof t === "number" && t > 0 ? t : null);
-          setCalPerServ(typeof p === "number" && p > 0 ? p : null);
+          const T = typeof t === "number" && t > 0 ? t : null;
+          const P = typeof p === "number" && p > 0 ? p : null;
+          setCalTotal(T);
+          setCalPerServ(P);
+          // cache
+          try {
+            const storage = await getStorage();
+            await storage.setItem(calKey(id), JSON.stringify({ total: T, perServing: P }));
+          } catch {}
         }
       )
       .subscribe();
@@ -394,7 +454,7 @@ try {
 
           {/* ===== BYLINE ===== */}
           <View style={styles.row}>
-            <TouchableOpacity onPress={openCreator} activeOpacity={0.8} style={styles.creatorWrap}>
+            <TouchableOpacity onPress={safeOpenCreator} activeOpacity={0.8} style={styles.creatorWrap}>
               <AvatarTiny creator={creator} creatorAvatar={creatorAvatar} />
               <Text style={styles.creator} numberOfLines={1}>
                 {creator}
@@ -616,8 +676,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
-    
-    
   },
 
   imageWrap: { position: "relative", marginBottom: 8 },

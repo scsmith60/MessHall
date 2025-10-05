@@ -1,11 +1,10 @@
 // app/_layout.tsx
 //
 // 🧸 ELI5: This is the boss wrapper for MessHall.
-// What we fixed:
-// 1) We show a proper spinner while we check "are you logged in?" on very first app open.
-// 2) We added a tiny "watchdog" timer. If the first check is slow or stuck, we go to /login, no black screen.
-// 3) We added an Error Boundary. If a crash happens on start, you see a friendly message instead of a black screen.
-// 4) We kept your share-intent + push token + auth redirect logic the same.
+// What we changed now:
+// ✅ We made the Android status bar see-through (transparent + translucent)
+//    so your screen color shows to the very top (no mystery green strip).
+// We kept your startup guard, error boundary, push token, and share-intent logic.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { View, ActivityIndicator, Platform, Text, TouchableOpacity } from "react-native";
@@ -24,12 +23,11 @@ const Gate =
     (TutorialOverlay as any).default ??
     (({ children }: any) => <>{children}</>)) as React.ComponentType<any>;
 
-// 🎨 quick colors
+// 🎨 quick colors (bg is your screen background that will "shine" behind the status bar)
 const COLORS = { bg: "#0b1220", text: "#e5e7eb", sub: "#94a3b8", accent: "#53856b" };
 
 /* -----------------------------------------------------------
    🧸 helper: am I at an auth route?
-   (We use this to decide where to send the user.)
 ----------------------------------------------------------- */
 function useInAuthFlow() {
   const pathname = usePathname() || "";
@@ -93,9 +91,6 @@ async function registerForPushToken(): Promise<string | null> {
 
 /* -----------------------------------------------------------
    🆕 Share Intake via expo-share-intent (unchanged behavior)
-   ELI5:
-   - If someone shared a link to us (from TikTok, Safari, etc.)
-   - We open Capture tab with that link.
 ----------------------------------------------------------- */
 import { useShareIntent } from "expo-share-intent";
 
@@ -195,8 +190,16 @@ function InnerApp() {
 
   const content = (
     <>
-      <StatusBar style="light" />
+      {/* ⭐ NEW: Transparent & translucent status bar — removes the "green strip" */}
+      <StatusBar
+        style="light"                 // light icons
+        translucent                   // content can go under the bar
+        backgroundColor="transparent" // no solid color painted by Android
+      />
+
+      {/* Your routed screens */}
       <Slot />
+
       {/* ⏳ Overlay spinner while auth is loading (prevents half-ready UI) */}
       {loading && (
         <View
@@ -245,10 +248,6 @@ function InnerApp() {
 
 /* -----------------------------------------------------------
    RootLayout: first-boot guard + watchdog
-   LIKE I’M 5:
-   - We check, “do we already have a user?” (getSession)
-   - While we check, we show a spinner (not a black screen)
-   - If the check takes too long (e.g., phone sleepy), we go to /login so you’re never stuck.
 ----------------------------------------------------------- */
 export default function RootLayout() {
   const router = useRouter();
@@ -342,6 +341,7 @@ export default function RootLayout() {
 
   // ✅ Normal app once first check is done
   return (
+    // IMPORTANT: This root background fills behind the transparent status bar
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <AuthProvider>
         <RootErrorBoundary>

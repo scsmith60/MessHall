@@ -3,7 +3,9 @@
 //
 // WHAT THIS DOES (clean + no debug):
 // - Shows comments under a recipe, with parent → reply threads
-// - Reads from the best view first (visible_to_with_profiles), then falls back
+// - Tries the *RLS-safe* view first; if that view exists but returns 0,
+//   we DO NOT fall back (so blocked users stay invisible).
+//   We only fall back if a view is MISSING (SQL error).
 // - If we ever fall back to the raw table, we do a quick profiles lookup so
 //   replies still show the person's avatar + callsign (username)
 // - Lets you write comments and replies
@@ -12,10 +14,14 @@
 // - Realtime inserts/updates so new comments pop in
 // - Uses a FlatList so the comments are scrollable inside the modal
 //
-// NOTE: We keep all server names the same:
-// - Text comes from recipe_comments.body
-// - We try: recipe_comments_visible_to_with_profiles → recipe_comments_with_profiles → recipe_comments
-// - RPCs used: add_comment, block_user, unblock_user, mute_user_on_recipe, unmute_user_on_recipe, report_comment
+// IMPORTANT BLOCKING FIXES:
+// - Preload my blocked user IDs so the long-press menu shows "UNBLOCK USER"
+//   when I already blocked them.
+// - Extra local filter hides any incoming rows authored by blocked users
+//   (belt + suspenders; server RLS should already hide).
+//
+// Neutral text: when content isn't available, elsewhere we use
+// "M.I.A (missing in action)" to avoid leaking block info.
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
@@ -28,9 +34,10 @@ import {
   Image,
   Alert,
 } from "react-native";
-import { supabase } from "../lib/supabase";
+import { supabase } from "@/lib/supabase";
 import ThemedActionSheet, { SheetAction } from "./ui/ThemedActionSheet";
-import { tap } from "../lib/haptics";
+import { tap } from "@/lib/haptics";
+import { COLORS } from "@/lib/theme";
 
 /* -----------------------------
    "5m ago" helper (tiny clock)
@@ -53,7 +60,7 @@ function timeAgo(iso: string) {
 function Avatar({ uri, fallback }: { uri?: string | null; fallback: string }) {
   const letter = (fallback || "U").slice(0, 1).toUpperCase();
   if (uri && uri.trim().length > 0) {
-    return <Image source={{ uri }} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: "#0b1220" }} />;
+    return <Image source={{ uri }} style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: "rgba(255,255,255,0.06)" }} />;
   }
   return (
     <View
@@ -61,9 +68,9 @@ function Avatar({ uri, fallback }: { uri?: string | null; fallback: string }) {
         width: 28,
         height: 28,
         borderRadius: 14,
-        backgroundColor: "#0b1220",
+        backgroundColor: "rgba(255,255,255,0.06)",
         borderWidth: 1,
-        borderColor: "#243042",
+        borderColor: COLORS.border,
         alignItems: "center",
         justifyContent: "center",
       }}
@@ -132,7 +139,7 @@ export default function RecipeComments({
 
   // local block/mute flags for instant UI
   const [blockedIds, setBlockedIds] = useState<Set<string>>(new Set());
-  const isBlocked = (uid: string) => blockedIds.has(uid);
+  const isBlockedLocal = (uid: string) => blockedIds.has(uid);
   const markBlocked = (uid: string, v: boolean) =>
     setBlockedIds((prev) => {
       const n = new Set(prev);
@@ -161,13 +168,27 @@ export default function RecipeComments({
   }, [recipeId]);
 
   /* -----------------------------
+     PRELOAD my blocked ids (so menus say UNBLOCK when appropriate)
+  ----------------------------- */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data: list, error } = await supabase
+        .from("user_blocks")
+        .select("blocked_id");
+      if (!alive || error || !list) return;
+      setBlockedIds(new Set(list.map((r: any) => String(r.blocked_id))));
+    })();
+    return () => { alive = false; };
+  }, [recipeId]);
+
+  /* -----------------------------
      PROFILES ENRICHMENT (important fix)
      - If we fetch from the raw base table (C), there is no username/avatar.
      - So we collect missing user_ids and ask profiles for username+avatar,
        then merge those into our rows so replies look correct.
   ----------------------------- */
   const enrichMissingProfiles = useCallback(async (list: Row[]) => {
-    // which user_ids are missing username OR avatar_url?
     const need = Array.from(
       new Set(
         list
@@ -177,15 +198,13 @@ export default function RecipeComments({
     );
     if (!need.length) return list;
 
-    const { data: profs, error } = await supabase
+    const { data: profs } = await supabase
       .from("profiles")
       .select("id, username, avatar_url")
       .in("id", need);
 
-    if (error || !profs?.length) return list;
-
     const map = new Map<string, { username?: string | null; avatar_url?: string | null }>();
-    for (const p of profs) {
+    for (const p of profs || []) {
       map.set(String(p.id), { username: p.username ?? null, avatar_url: p.avatar_url ?? null });
     }
 
@@ -197,69 +216,77 @@ export default function RecipeComments({
   }, []);
 
   /* -----------------------------
-     Fetch page with fallbacks
-     A = visible_to_with_profiles  (preferred)
-     B = with_profiles             (fallback)
-     C = base table                (last resort, then we ENRICH)
+     Fetch page with SAFE fallback behavior
+     A = visible_to_with_profiles  (preferred; DO NOT FALL BACK if returns 0)
+     B = with_profiles             (fallback ONLY if A errors/missing)
+     C = base table                (last resort ONLY if B errors/missing)
   ----------------------------- */
   const fetchPage = useCallback(async () => {
     if (loading || !hasMore) return;
     setLoading(true);
 
+    // helper to run a source and return tri-state: { ok, rows }
     const run = async (from: "A" | "B" | "C") => {
-      let q;
-      if (from === "A") {
-        q = supabase.from("recipe_comments_visible_to_with_profiles").select("*").eq("recipe_id", recipeId);
-      } else if (from === "B") {
-        q = supabase.from("recipe_comments_with_profiles").select("*").eq("recipe_id", recipeId);
-      } else {
-        q = supabase.from("recipe_comments").select("*").eq("recipe_id", recipeId);
+      try {
+        let q;
+        if (from === "A") q = supabase.from("recipe_comments_visible_to_with_profiles").select("*").eq("recipe_id", recipeId);
+        else if (from === "B") q = supabase.from("recipe_comments_with_profiles").select("*").eq("recipe_id", recipeId);
+        else q = supabase.from("recipe_comments").select("*").eq("recipe_id", recipeId);
+
+        q = q.order("created_at", { ascending: false }).limit(pageSize);
+        if (lastCreatedAt.current) q = q.lt("created_at", lastCreatedAt.current);
+
+        const { data } = await q;
+        return { ok: true as const, rows: (data ?? []) as Row[] };
+      } catch {
+        // most likely the view doesn't exist → allow fallback
+        return { ok: false as const, rows: [] as Row[] };
       }
-      q = q.order("created_at", { ascending: false }).limit(pageSize);
-      if (lastCreatedAt.current) q = q.lt("created_at", lastCreatedAt.current);
-      const { data, error } = await q;
-      return { data: (data ?? []) as Row[], error, source: from };
     };
 
-    // Try A
-    let { data, error, source } = await run("A");
-    if (!error && data.length > 0) {
-      await commitRows(data, source);
+    // Try A (preferred). If it succeeds (even with 0 rows), we STOP.
+    const A = await run("A");
+    if (A.ok) {
+      await commitRows(A.rows, "A");
       return;
     }
 
-    // Try B
-    ({ data, error, source } = await run("B"));
-    if (!error && data.length > 0) {
-      await commitRows(data, source);
+    // Try B (only because A errored/missing)
+    const B = await run("B");
+    if (B.ok) {
+      await commitRows(B.rows, "B");
       return;
     }
 
-    // Try C
-    ({ data, error, source } = await run("C"));
-    if (!error && data.length > 0) {
-      // ⭐ Enrich with profiles so replies show names/avatars
-      const enriched = await enrichMissingProfiles(data);
-      await commitRows(enriched, source);
+    // Try C (only because A & B errored/missing)
+    const C = await run("C");
+    if (C.ok) {
+      const enriched = await enrichMissingProfiles(C.rows);
+      await commitRows(enriched, "C");
       return;
     }
 
-    // Nothing found
+    // if everything failed
     setHasMore(false);
     setLoading(false);
   }, [loading, hasMore, recipeId, enrichMissingProfiles]);
 
   const commitRows = async (list: Row[], _source: "A" | "B" | "C") => {
+    // extra local filter: hide comments authored by someone I blocked
+    const visibleList = list.filter((r) => !isBlockedLocal(r.user_id));
+
     const next = [...rows];
-    for (const r of list) {
+    for (const r of visibleList) {
       if (!idsRef.current.has(r.id)) {
         idsRef.current.add(r.id);
         next.push(r);
       }
     }
-    setRows(next);
-    lastCreatedAt.current = list[list.length - 1].created_at;
+    if (visibleList.length > 0) {
+      lastCreatedAt.current = visibleList[visibleList.length - 1].created_at;
+    }
     if (list.length < pageSize) setHasMore(false);
+    setRows(next);
     setLoading(false);
   };
 
@@ -283,7 +310,9 @@ export default function RecipeComments({
           const fresh = payload.new as Row;
           if (!fresh?.id || idsRef.current.has(fresh.id)) return;
 
-          // Try to read with profiles view; if not, enrich from profiles table
+          // If author is blocked, skip immediately (extra guard)
+          if (isBlockedLocal(fresh.user_id)) return;
+
           const viaView = await supabase
             .from("recipe_comments_with_profiles")
             .select("*")
@@ -319,6 +348,7 @@ export default function RecipeComments({
 
   /* -----------------------------
      Build threads (parents + replies)
+     NOTE: We define this ONCE. (Fix: no duplicate declarations.)
   ----------------------------- */
   const threads = useMemo(() => {
     const byParent: Record<string, Row[]> = {};
@@ -340,7 +370,7 @@ export default function RecipeComments({
     await tap();
     try {
       setText("");
-      const { data, error } = await supabase.rpc("add_comment", {
+      const { error } = await supabase.rpc("add_comment", {
         p_recipe_id: recipeId,
         p_parent_id: replyTo,
         p_body: body,
@@ -349,7 +379,8 @@ export default function RecipeComments({
       setReplyTo(null);
       // optimistic add is not needed; realtime will insert it quickly
     } catch (e: any) {
-      Alert.alert("Could not post", e?.message ?? "Unknown error");
+      // Neutral, no hints about blocking state
+      Alert.alert("M.I.A (missing in action)");
     } finally {
       setSending(false);
     }
@@ -365,6 +396,8 @@ export default function RecipeComments({
     if (error) Alert.alert("Error", error.message);
     else {
       markBlocked(uid, true);
+      // instantly hide their comments from the current list
+      setRows((prev) => prev.filter((r) => r.user_id !== uid));
       Alert.alert("Done", "User blocked.");
     }
   };
@@ -445,7 +478,11 @@ export default function RecipeComments({
           ]),
       });
     }
-    actions.push(isBlocked(r.user_id) ? { label: "UNBLOCK USER", onPress: () => doUnblock(r.user_id) } : { label: "BLOCK USER", onPress: () => doBlock(r.user_id) });
+    actions.push(
+      isBlockedLocal(r.user_id)
+        ? { label: "UNBLOCK USER", onPress: () => doUnblock(r.user_id) }
+        : { label: "BLOCK USER", onPress: () => doBlock(r.user_id) }
+    );
     actions.push({
       label: "REPORT",
       onPress: () =>
@@ -462,7 +499,11 @@ export default function RecipeComments({
         ]),
     });
     if (!isMine && isRecipeOwner) {
-      actions.push(isMuted(r.user_id) ? { label: "UNMUTE ON THIS RECIPE", onPress: () => doUnmute(r.user_id) } : { label: "MUTE ON THIS RECIPE", onPress: () => doMute(r.user_id) });
+      actions.push(
+        isMuted(r.user_id)
+          ? { label: "UNMUTE ON THIS RECIPE", onPress: () => doUnmute(r.user_id) }
+          : { label: "MUTE ON THIS RECIPE", onPress: () => doMute(r.user_id) }
+      );
     }
     openSheet("Comment options", actions);
   };
@@ -486,17 +527,16 @@ export default function RecipeComments({
 
     if (hidden) {
       return (
-        <View style={{ backgroundColor: "#0f172a", borderRadius: 12, padding: 10, opacity: 0.7 }}>
+        <View style={{ backgroundColor: "rgba(255,255,255,0.06)", borderRadius: 12, padding: 10, opacity: 0.7 }}>
           <Text style={{ color: "#94a3b8", fontStyle: "italic" }}>🗑️ Deleted by author</Text>
         </View>
       );
     }
 
-    // clean fallback for username if somehow still missing
     const name = row.username || (row.user_id ? row.user_id.slice(0, 6) : "user");
 
     return (
-      <TouchableOpacity onLongPress={onMenu} delayLongPress={300} activeOpacity={0.9} style={{ backgroundColor: "#0f172a", borderRadius: 12, padding: 10 }}>
+      <TouchableOpacity onLongPress={onMenu} delayLongPress={300} activeOpacity={0.9} style={{ backgroundColor: "rgba(255,255,255,0.06)", borderRadius: 12, padding: 10 }}>
         {/* header */}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 }}>
           <Avatar uri={row.avatar_url} fallback={name} />
@@ -523,7 +563,7 @@ export default function RecipeComments({
      Thread renderer (parent + its replies)
   ----------------------------- */
   const renderThreadView = ({ item }: { item: Row }) => {
-    const children = threads.byParent[item.id] ?? [];
+    const children = (threads.byParent[item.id] ?? []).filter((c) => !isBlockedLocal(c.user_id));
     return (
       <View key={item.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.06)" }}>
         <Bubble row={item} myId={myId} onReply={() => setReplyTo(item.id)} onMenu={() => openMenu(item, !!myId && item.user_id === myId)} />
@@ -539,7 +579,10 @@ export default function RecipeComments({
   /* -----------------------------
      List (always FlatList → scrollable inside modal)
   ----------------------------- */
-  const listData = threads.tops;
+  const listData = useMemo(
+    () => threads.tops.filter((t) => !isBlockedLocal(t.user_id)),
+    [threads, blockedIds]
+  );
   const keyExtractor = (i: Row) => i.id;
   const onEndReached = () => {
     if (!loading) fetchPage();
