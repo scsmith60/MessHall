@@ -1,20 +1,19 @@
 // lib/TitleSnap.tsx
-// Like I'm 5: this opens a small web window, looks for the big title text on TikTok,
-// grabs it, cleans it, gives it to us, and closes.
+// Like I'm 5: this opens a tiny web window, looks for the big title text on TikTok,
+// cleans it, gives it to us. In "silent" mode it shows NOTHING — just does the work.
 
-// 1) Imports to show a popup and WebView
 import React, { useMemo } from 'react';
 import { Modal, View, Text, ActivityIndicator, Pressable, StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-// 2) Little helper: remove URLs/hashtags/emojis and cut off where "Ingredients/Steps" begin
+// -- clean caption to a short title
 function captionToTitle(raw?: string) {
   if (!raw) return '';
   let s = String(raw)
     .replace(/\r|\t/g, ' ')
-    .replace(/https?:\/\/\S+/gi, '')          // remove links
-    .replace(/[#@][\w_]+/g, '')               // remove #tags/@users
-    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '') // remove emojis
+    .replace(/https?:\/\/\S+/gi, '')          // no links
+    .replace(/[#@][\w_]+/g, '')               // no #tags/@users
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '') // no emojis
     .replace(/\s{2,}/g, ' ')
     .trim();
 
@@ -22,17 +21,14 @@ function captionToTitle(raw?: string) {
   const m = s.match(cutWords);
   if (m && m.index! > 0) s = s.slice(0, m.index).trim();
 
-  // use first line / first sentence
-  s = (s.split('\n')[0] || s).trim();
-  const firstSentence = s.split(/(?<=\.)\s+/)[0];
+  s = (s.split('\n')[0] || s).trim();               // first line
+  const firstSentence = s.split(/(?<=\.)\s+/)[0];   // or first sentence
   if (firstSentence && firstSentence.length >= 6) s = firstSentence.trim();
 
-  // strip “ | SiteName” tails
   s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food Network|NYT Cooking).*/i, '');
   return s.replace(/\s{2,}/g, ' ').trim();
 }
 
-// 3) When a title is “bad” (too generic/numbery), we try snapping
 function isBadTitleCandidate(s?: string) {
   if (!s) return true;
   const t = s.trim();
@@ -45,60 +41,48 @@ function isBadTitleCandidate(s?: string) {
   return words.length < 2 || words.length > 14;
 }
 
-export function TitleSnap({
+export default function TitleSnap({
   visible,
   url,
   onFound,
   onClose,
+  silent = false, // 👈 new: run with **no overlay**
 }: {
   visible: boolean;
   url: string;
   onFound: (title: string) => void;
   onClose: () => void;
+  silent?: boolean;
 }) {
-  // 4) This tiny script runs *inside* TikTok page to read the title/caption
   const injectedJS = useMemo(() => `
 (function() {
   function send(kind, val){
     try { window.ReactNativeWebView.postMessage(kind + '|' + (val||'')); } catch(e) {}
   }
+  function textFrom(el){ return (el && (el.innerText || el.textContent || '')).trim(); }
 
-  function textFrom(el){
-    return (el && (el.innerText || el.textContent || '')).trim();
-  }
-
-  // A) try the big H1 (photo/video titles sometimes live here)
+  // A) H1 title blocks TikTok uses on photo/video pages
   var h1 = document.querySelector('h1[class*="H1PhotoTitle"], h1[class*="H1VideoTitle"]');
   if (h1) { send('TITLE', textFrom(h1)); return; }
 
-  // B) try data-e2e targets TikTok uses for desc/title
+  // B) common desc/title e2e hooks
   var el = document.querySelector('[data-e2e="search-video-title"],[data-e2e="new-desc-span"],[data-e2e="browse-video-desc"],[data-e2e="video-desc"]');
   if (!el) {
     var list = Array.from(document.querySelectorAll('[data-e2e]'));
     el = list.find(n => /desc|title/i.test(n.getAttribute('data-e2e')||''));
   }
 
-  // C) if we found the desc block, look around it (siblings/parent) for a short title-like string
+  // C) search around description for a short title-ish string
   if (el) {
     var host = el.offsetParent || el.parentElement || el;
     var candidates = [];
-
-    // the block itself
     candidates.push(textFrom(host));
-
-    // a few previous siblings (titles often sit right above the caption)
     var sib = host.previousElementSibling;
     for (var i=0;i<3 && sib;i++){ candidates.push(textFrom(sib)); sib = sib.previousElementSibling; }
-
-    // first child of parent (some layouts)
     var p = host.parentElement;
-    if (p && p.firstElementChild && p.firstElementChild !== host) {
-      candidates.push(textFrom(p.firstElementChild));
-    }
+    if (p && p.firstElementChild && p.firstElementChild !== host) { candidates.push(textFrom(p.firstElementChild)); }
 
-    // pick the shortest reasonable string (> 6 chars, < 120 chars)
-    var best = '';
-    var bestScore = -1;
+    var best = '', bestScore = -1;
     function score(s){
       if (!s) return -1;
       s = s.trim();
@@ -106,8 +90,7 @@ export function TitleSnap({
       if (/https?:\\/\\/|\\.(jpg|png|webp|gif|mp4)/i.test(s)) return -1;
       if (/^\\d{6,}$/.test(s)) return -1;
       var words = s.split(/\\s+/).length;
-      var sc = 100 - Math.abs(7 - words) * 5; // prefer 5–9 words
-      return sc;
+      return 100 - Math.abs(7 - words) * 5; // prefer ~5–9 words
     }
     candidates.forEach(function(c){
       var sc = score(c);
@@ -116,7 +99,7 @@ export function TitleSnap({
     if (best) { send('TITLE', best); return; }
   }
 
-  // D) last effort: look at React's internal props and pull children text near desc/title nodes
+  // D) last-ditch: poke React props looking for a string child
   var all = document.getElementsByTagName('*');
   outer: for (var i=0;i<all.length;i++){
     var node = all[i];
@@ -129,25 +112,14 @@ export function TitleSnap({
       }
     }
   }
-
-  // If we couldn't find anything, at least close nicely
   send('TITLE','');
 })();`, [url]);
 
   if (!visible) return null;
 
-  return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      {/* 5) Simple little card so user knows we’re working */}
-      <View style={S.backdrop}>
-        <View style={S.card}>
-          <Text style={S.h}>Finding title…</Text>
-          <ActivityIndicator />
-          <Pressable onPress={onClose} style={S.btn}><Text style={S.btnTxt}>Close</Text></Pressable>
-        </View>
-      </View>
-
-      {/* 6) The WebView shows TikTok quietly and runs our injected script */}
+  // 💡 SILENT: just the hidden WebView — no Modal, no overlay.
+  if (silent) {
+    return (
       <WebView
         source={{ uri: url }}
         injectedJavaScript={injectedJS}
@@ -156,17 +128,44 @@ export function TitleSnap({
           if (!data.startsWith('TITLE|')) return;
           const raw = data.slice(6).trim();
           const cleaned = captionToTitle(raw);
-          if (cleaned && !isBadTitleCandidate(cleaned)) {
-            onFound(cleaned);
-            onClose();
-          }
+          if (cleaned && !isBadTitleCandidate(cleaned)) onFound(cleaned);
+          onClose();
         }}
         javaScriptEnabled
         domStorageEnabled
         originWhitelist={['*']}
-        // pretend to be desktop Chrome (TikTok serves better HTML)
         userAgent={'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'}
-        style={{ width: 1, height: 1, opacity: 0 }} // hidden; we only need its DOM
+        style={{ width: 1, height: 1, opacity: 0 }}
+      />
+    );
+  }
+
+  // Normal (non-silent) — small helpful card
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <View style={S.backdrop}>
+        <View style={S.card}>
+          <Text style={S.h}>Finding title…</Text>
+          <ActivityIndicator />
+          <Pressable onPress={onClose} style={S.btn}><Text style={S.btnTxt}>Close</Text></Pressable>
+        </View>
+      </View>
+      <WebView
+        source={{ uri: url }}
+        injectedJavaScript={injectedJS}
+        onMessage={(e) => {
+          const data: string = e?.nativeEvent?.data || '';
+          if (!data.startsWith('TITLE|')) return;
+          const raw = data.slice(6).trim();
+          const cleaned = captionToTitle(raw);
+          if (cleaned && !isBadTitleCandidate(cleaned)) onFound(cleaned);
+          onClose();
+        }}
+        javaScriptEnabled
+        domStorageEnabled
+        originWhitelist={['*']}
+        userAgent={'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'}
+        style={{ width: 1, height: 1, opacity: 0 }}
       />
     </Modal>
   );
@@ -179,5 +178,3 @@ const S = StyleSheet.create({
   btn: { alignSelf:'flex-end', paddingHorizontal:10, paddingVertical:8 },
   btnTxt: { color:'#93c5fd', fontWeight:'600' },
 });
-
-export default TitleSnap;

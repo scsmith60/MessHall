@@ -579,6 +579,11 @@ export default function CaptureScreen() {
     }
   }, [hudVisible, pendingImportUrl]);
 
+  // 🧲 HUD “z-index key” — we bump this whenever a helper modal opens,
+  // so the HUD remounts LAST and stays on top like a blanket.
+  const [hudZKey, setHudZKey] = useState(0);
+  const bringHudToFront = useCallback(() => setHudZKey((k) => k + 1), []);
+
   // 🔍 open tiny web window to read caption + comments
   // ❗️FIX: DO NOT convert to /embed. Open the real page to expose SIGI/NEXT JSON and allow “see more” clicks.
   const scrapeTikTokDom = useCallback(async (rawUrl: string): Promise<{
@@ -594,6 +599,7 @@ export default function CaptureScreen() {
       // 2) open the full **desktop** page; TTDomScraper will handle viewports and "see more" clicks.
       setDomScraperUrl(finalUrl);
       setDomScraperVisible(true);
+      bringHudToFront(); // 🧒 tell the HUD to hop back on top
       domScraperResolverRef.current = (payload: any) => {
         if (!resolved) {
           resolved = true;
@@ -603,7 +609,7 @@ export default function CaptureScreen() {
         }
       };
     });
-  }, []);
+  }, [bringHudToFront]);
 
   // 📸 snap TikTok for preview/OCR (embed is ok for a *picture*)
   const autoSnapTikTok = useCallback(async (rawUrl: string, maxAttempts = SNAP_ATTEMPTS) => {
@@ -614,6 +620,7 @@ export default function CaptureScreen() {
     snapCancelledRef.current = false;
     setSnapUrl(target);
     setSnapVisible(true);
+    bringHudToFront(); // 🧒 HUD back on top when the snapper opens
     setImprovingSnap(true);
 
     let best: string | null = null;
@@ -646,7 +653,7 @@ export default function CaptureScreen() {
     setImprovingSnap(false);
     setTikTokShots([]);
     return best;
-  }, [getImageDims, setGoodPreview, validateOrRepairLocal, isValidCandidate]);
+  }, [getImageDims, setGoodPreview, validateOrRepairLocal, isValidCandidate, bringHudToFront]);
 
   const tryImageUrl = useCallback(async (rawUrl: string, originUrl: string) => {
     const absolute = absolutizeImageUrl(rawUrl, originUrl);
@@ -698,7 +705,7 @@ export default function CaptureScreen() {
           domPayload = await scrapeTikTokDom(url);
           const len = (domPayload?.text || "").length;
           dbg("📄 STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
-          // 👇 NEW: show the scraper’s internal trace so we know what hit (sigi/next/alt/dom) and if “see more” clicked
+          // 👇 extra trace to know where it came from and if “see more” was clicked
           if (domPayload?.debug) dbg("🧪 TTDOM DEBUG:", domPayload.debug);
         } catch (e) { dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e)); }
 
@@ -1069,8 +1076,15 @@ export default function CaptureScreen() {
           onResult={(payload) => { domScraperResolverRef.current?.(payload); setDomScraperVisible(false); }}
         />
 
-        {/* HUD */}
-        <MilitaryImportOverlay visible={hudVisible} phase={hudPhase} stageIndex={stageIndex} steps={IMPORT_STEPS} headline="SCANNING… STAND BY" />
+        {/* HUD — key={hudZKey} means “remount on demand” so it’s ALWAYS on top */}
+        <MilitaryImportOverlay
+          key={hudZKey}
+          visible={hudVisible}
+          phase={hudPhase}
+          stageIndex={stageIndex}
+          steps={IMPORT_STEPS}
+          headline="SCANNING… STAND BY"
+        />
 
         {/* duplicate popup */}
         <MissionAbortedPopup visible={abortVisible} onRequestClose={() => setAbortVisible(false)} text="MISSION ABORTED" />
