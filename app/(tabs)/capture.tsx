@@ -1,19 +1,7 @@
 // app/(tabs)/capture.tsx
-// 🧒 “Like I’m 5” notes:
-// - You paste or share a link (TikTok/YouTube/blog).
-// - We grab a pretty title + a good picture + ingredients + steps.
-// - If it’s TikTok and there’s no structured recipe, we peek at their caption
-//   (oEmbed/OG description) and try to guess ingredients + simple steps.
-// - We also support Share → MessHall handoff (prefill + auto-import).
-//
-// Nothing else you had was removed. This includes:
-//   1) stepsFromCaptionText helper
-//   2) captionText fallback in startImport
-//   3) resolveOg uses sharedUrl if the box is empty
-//   4) safe remote-image → local download on save
-//   5) duplicate detection, HUD, Food Network helpers, TikTok snapper
-//
-// This version only fixes a stray label and a bracket that caused a syntax error.
+// 🧒 ELI5: We paste a TikTok link, our robot opens it,
+// reads the caption + lots of comments, builds a recipe-looking text,
+// and gives that to the parser. If still weak, we OCR screenshots.
 
 import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import {
@@ -22,10 +10,10 @@ import {
   Image as RNImage, Animated, Easing, Dimensions, Modal, StyleSheet,
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
-
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Swipeable, RectButton } from "react-native-gesture-handler";
 import { useFocusEffect } from "@react-navigation/native";
+import WebView from "react-native-webview";
 
 import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
@@ -35,18 +23,16 @@ import { Image } from "expo-image";
 import { supabase } from "@/lib/supabase";
 import { fetchOgForUrl } from "@/lib/og";
 import { uploadFromUri } from "@/lib/uploads";
-import { fetchMeta } from "@/lib/fetch_meta";
-import { normalizeIngredientLines } from "@/lib/ingredients";
-import { captionToIngredientLines } from "@/lib/caption_to_ingredients";
+import { parseRecipeText } from "@/lib/unified_parser";
 
-import TikTokSnap, { tiktokOEmbedThumbnail } from "@/lib/tiktok";
-import TitleSnap from "@/lib/TitleSnap";
+import TikTokSnap from "@/lib/tiktok";
+import TTDomScraper from "@/components/TTDomScraper";
 
 import * as FileSystem from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Line, Circle } from "react-native-svg";
 
-/* ---------------------------- colors ---------------------------- */
+// -------------- theme --------------
 const COLORS = {
   bg: "#0B1120",
   card: "#111827",
@@ -60,32 +46,33 @@ const COLORS = {
 };
 const MESSHALL_GREEN = "#2FAE66";
 
-/* ---------------------------- timing & sizes ---------------------------- */
+// -------------- timings --------------
 const CAPTURE_DELAY_MS = 700;
 const BETWEEN_SHOTS_MS = 120;
 const SNAP_ATTEMPTS = 2;
-
-const IMPORT_HARD_TIMEOUT_MS = 20000;
+const IMPORT_HARD_TIMEOUT_MS = 35000;
 const ATTEMPT_TIMEOUT_FIRST_MS = 8000;
 const ATTEMPT_TIMEOUT_SOFT_MS = 2200;
-
 const MIN_IMG_W = 600, MIN_IMG_H = 600;
 const SOFT_MIN_W = 360, SOFT_MIN_H = 360;
 const MIN_LOCAL_BYTES = 30_000;
-const IMPROVEMENT_FACTOR = 1.12;
-
 const FOCUS_Y_DEFAULT = 0.4;
 
-/* ---------------------------- tiny helpers ---------------------------- */
+// -------------- tiny utils --------------
+// wait or give up
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return await Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
 }
+// get first url from a string
 function extractFirstUrl(s: string): string | null {
   const m = (s || "").match(/https?:\/\/[^\s"'<>]+/i);
   return m ? m[0] : null;
 }
 function ensureHttps(u: string) { return /^[a-z]+:\/\//i.test(u) ? u : `https://${u}`; }
-async function resolveFinalUrl(u: string) { try { const r = await fetch(u); if ((r as any)?.url) return (r as any).url as string; } catch {} return u; }
+async function resolveFinalUrl(u: string) {
+  try { const r = await fetch(u); if ((r as any)?.url) return (r as any).url as string; } catch {}
+  return u;
+}
 function canonicalizeUrl(u: string): string {
   try {
     const raw = ensureHttps(u.trim());
@@ -122,11 +109,9 @@ async function resolveTikTokEmbedUrl(rawUrl: string) {
   }
   return { embedUrl: id ? `https://www.tiktok.com/embed/v2/${id}` : null, finalUrl: final, id };
 }
-
-/* ---------------------------- title helpers ---------------------------- */
-type JsonLike = Record<string, any>;
 function decodeEntities(s: string) {
   return (s || "")
+    .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
@@ -135,13 +120,6 @@ function extractMetaContent(html: string, nameOrProp: string): string | null {
   const re = new RegExp(`<meta[^>]+(?:property|name)=["']${nameOrProp}["'][^>]*content=["']([^"']+)["'][^>]*>`, "i");
   const m = html.match(re);
   return m?.[1]?.trim() || null;
-}
-function extractTagText(html: string, tag: "h1" | "title"): string | null {
-  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i");
-  const m = html.match(re);
-  if (!m) return null;
-  const txt = m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  return txt || null;
 }
 function hostToBrand(host: string) {
   const h = host.toLowerCase().replace(/^www\./, "");
@@ -156,7 +134,7 @@ function cleanTitle(raw: string, url: string) {
   let s = decodeEntities((raw || "").trim());
   const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
   const brand = host ? hostToBrand(host) : "";
-  const splitters = [" | ", " - ", " • ", " — "];
+  const splitters = [" | ", " - ", " • ", " – "];
   for (const sp of splitters) {
     const parts = s.split(sp);
     if (parts.length > 1) {
@@ -164,12 +142,12 @@ function cleanTitle(raw: string, url: string) {
       if (brand && (last === brand || last.includes(brand))) { s = parts.slice(0, -1).join(sp).trim(); break; }
     }
   }
-  s = s.replace(/\s+[\-\|•—]\s*(tiktok|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
+  s = s.replace(/\s+[\-\|•–]\s*(tiktok|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
   s = s.replace(/\b\(?video\)?\b\s*$/i, "").trim();
   return s;
 }
 function isTikTokJunkTitle(s?: string | null) {
-  const t = (s || "").toLowerCase().replace(/[—–]/g, "-").replace(/\s+/g, " ").trim();
+  const t = (s || "").toLowerCase().replace(/[––]/g, "-").replace(/\s+/g, " ").trim();
   if (!t) return true;
   if (t === "tiktok") return true;
   if (t === "make your day") return true;
@@ -187,6 +165,101 @@ function isWeakTitle(t?: string | null) {
   if (/^\d{6,}$/.test(s)) return true;
   return false;
 }
+// 🧠 Find "Ingredients" and "Steps" inside one long TikTok caption
+function sectionizeCaption(raw: string) {
+  const s = (raw || "").replace(/\r/g, "\n");
+  const low = s.toLowerCase();
+  // find anchors
+  const iIdx = low.search(/\bingredients?\b/);
+  const sIdx = low.search(/\b(steps?|directions?|method)\b/);
+
+  let ing = "", steps = "", before = s.trim();
+
+  if (iIdx >= 0 && sIdx >= 0) {
+    if (iIdx < sIdx) {
+      ing = s.slice(iIdx, sIdx);
+      steps = s.slice(sIdx);
+    } else {
+      steps = s.slice(sIdx, iIdx);
+      ing = s.slice(iIdx);
+    }
+  } else if (iIdx >= 0) {
+    ing = s.slice(iIdx);
+  } else if (sIdx >= 0) {
+    steps = s.slice(sIdx);
+  }
+
+  if (!ing && !steps) return { before, ing: "", steps: "" };
+  return { before: s.slice(0, Math.min(...[iIdx, sIdx].filter(x => x >= 0))).trim(), ing, steps };
+}
+
+// 🔪 Turn “Ingredients 1 lb chicken 1 cup panko …” into line items
+function explodeIngredientsBlock(block: string) {
+  if (!block) return "";
+
+  let txt = block
+    .replace(/^\s*ingredients?:?/i, "")    // drop the heading
+    .replace(/[\u2022\u25CF\u25CB]/g, "•") // normalize bullets
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  // rule A: split on explicit bullets
+  txt = txt.replace(/\s*•\s*/g, "\n• ");
+
+  // rule B: split on ", " or "; " **when** there's a quantity/unit before it
+  txt = txt.replace(
+    /(\d+(?:\.\d+)?|[¼-¾½])\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b\s*[,;]\s*/gi,
+    "$&\n"
+  );
+
+  // rule C: split when a new quantity+unit appears without punctuation
+  txt = txt.replace(
+    /\s(?=(\d+(?:\/\d+)?(?:\.\d+)?|[¼-¾½])\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b)/gi,
+    "\n"
+  );
+
+  const lines = txt
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => (/^[-*•]/.test(l) ? l : `• ${l}`));
+
+  return ["Ingredients:", ...lines].join("\n");
+}
+
+// 🔧 Turn “Steps 1. Mix 2. Bake …” into numbered lines
+function explodeStepsBlock(block: string) {
+  if (!block) return "";
+
+  let txt = block
+    .replace(/^\s*(steps?|directions?|method):?/i, "")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+
+  // split on “1.” “2)” “3 -” etc
+  txt = txt.replace(/(?:\s*)(\d+)[\.\)\-]\s*/g, "\n$1. ");
+  // also split on bullets
+  txt = txt.replace(/\s*•\s*/g, "\n• ");
+
+  const lines = txt
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l, i) => (/^\d+\./.test(l) ? l : `${i + 1}. ${l}`));
+
+  return ["Steps:", ...lines].join("\n");
+}
+
+// 🧪 Build a recipe-looking text purely from CAPTION
+function captionToRecipeText(caption: string) {
+  const { before, ing, steps } = sectionizeCaption(caption);
+  const ingBlock = explodeIngredientsBlock(ing);
+  const stepBlock = explodeStepsBlock(steps);
+  const beforeBlock = before ? `Title/Captions:\n${before.trim()}` : "";
+  return [beforeBlock, ingBlock, stepBlock].filter(Boolean).join("\n\n").trim();
+}
+
 async function fetchWithUA(url: string, ms = 7000, as: "json" | "text" = "text"): Promise<any> {
   const headers: Record<string, string> = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
@@ -199,13 +272,13 @@ async function fetchWithUA(url: string, ms = 7000, as: "json" | "text" = "text")
 }
 async function getTikTokOEmbedTitle(url: string): Promise<string | null> {
   try {
-    const j: JsonLike = await fetchWithUA(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, 7000, "json");
+    const j: any = await fetchWithUA(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, 7000, "json");
     const t = j?.title && String(j.title).trim();
     return t && !isTikTokJunkTitle(t) ? t : null;
   } catch { return null; }
 }
 
-/* ---------------------------- image helpers ---------------------------- */
+// -------------- image helpers --------------
 function absolutizeImageUrl(candidate: string, pageUrl: string): string | null {
   if (!candidate) return null;
   try {
@@ -220,276 +293,26 @@ function absolutizeImageUrl(candidate: string, pageUrl: string): string | null {
     return new URL(candidate, base).toString();
   } catch { return null; }
 }
-function parseSrcset(srcset: string): { url: string; w: number }[] {
-  if (!srcset) return [];
-  return srcset
-    .split(",")
-    .map(part => part.trim())
-    .map(part => {
-      const m = part.match(/(\S+)\s+(\d+)w$/);
-      if (!m) return null;
-      return { url: m[1], w: parseInt(m[2], 10) };
-    })
-    .filter(Boolean) as { url: string; w: number }[];
-}
-function pickLargestFromSrcset(srcset: string): string | null {
-  const items = parseSrcset(srcset);
-  if (!items.length) return null;
-  items.sort((a,b) => b.w - a.w);
-  return items[0].url;
-}
-// gently upgrade Food Network CDN sizes
-function maybeUpgradeSndimg(u: string): string {
-  try {
-    const url = new URL(u);
-    if (!url.hostname.endsWith("sndimg.com")) return u;
-    url.pathname = url.pathname.replace(
-      /\/upload\/[^/]+\/v1\//,
-      "/upload/f_auto,q_auto,w_1280/v1/"
-    );
-    return url.toString();
-  } catch {
-    return u;
-  }
-}
-function extractJsonLdImages(html: string): string[] {
-  const out: string[] = [];
-  const scriptRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = scriptRe.exec(html))) {
-    try {
-      const block = JSON.parse(m[1]);
-      const push = (v: any) => {
-        if (!v) return;
-        if (typeof v === "string") out.push(v);
-        else if (Array.isArray(v)) v.forEach(push);
-        else if (typeof v === "object") {
-          if (typeof v.url === "string") out.push(v.url);
-          if (typeof v.contentUrl === "string") out.push(v.contentUrl);
-        }
-      };
-      const nodes = Array.isArray(block) ? block : [block];
-      nodes.forEach(node => {
-        if (node && node.image) push(node.image);
-        if (node && node["@type"] === "ImageObject" && (node.url || node.contentUrl)) push(node.url || node.contentUrl);
-      });
-    } catch {}
-  }
-  return out;
-}
-function extractAllImageCandidatesFromHtml(html: string, baseUrl: string): string[] {
-  const cands: string[] = [];
-
-  const grabMeta = (nameOrProp: string) => {
-    const re = new RegExp(`<meta[^>]+(?:property|name)=["']${nameOrProp}["'][^>]*content=["']([^"']+)["'][^>]*>`, "i");
-    const m = html.match(re);
-    return m?.[1]?.trim() || null;
-  };
-  const metaKeys = [
-    "og:image", "og:image:url", "og:image:secure_url",
-    "twitter:image", "twitter:image:src",
-    "parsely-image-url", "thumbnail", "sailthru.image.full"
-  ];
-  for (const k of metaKeys) {
-    const v = grabMeta(k);
-    if (v) cands.push(v);
-  }
-
-  const linkRe = /<link[^>]+rel=["']image_src["'][^>]*href=["']([^"']+)["'][^>]*>/i;
-  const lm = html.match(linkRe);
-  if (lm?.[1]) cands.push(lm[1]);
-
-  extractJsonLdImages(html).forEach(x => cands.push(x));
-
-  const imgRe = /<img[^>]+(?:src|data-src|data-original)=["']([^"']+)["'][^>]*>/ig;
-  let m: RegExpExecArray | null;
-  while ((m = imgRe.exec(html))) {
-    const src = m[1];
-    if (src) cands.push(src);
-  }
-
-  const imgSetRe = /<img[^>]+srcset=["']([^"']+)["'][^>]*>/ig;
-  while ((m = imgSetRe.exec(html))) {
-    const ss = m[1];
-    const big = pickLargestFromSrcset(ss);
-    if (big) cands.push(big);
-  }
-
-  const sourceSetRe = /<source[^>]+srcset=["']([^"']+)["'][^>]*>/ig;
-  while ((m = sourceSetRe.exec(html))) {
-    const ss = m[1];
-    const big = pickLargestFromSrcset(ss);
-    if (big) cands.push(big);
-  }
-
-  const seen = new Set<string>();
-  const abs = cands
-    .map(x => absolutizeImageUrl(x, baseUrl))
-    .filter((x): x is string => !!x)
-    .map(x => maybeUpgradeSndimg(x))
-    .filter(x => { if (seen.has(x)) return false; seen.add(x); return true; });
-
-  const looksBig = (u: string) => /\b(\d{3,}w|\d{3,}x\d{3,}|[._-]\d{3,}p)\b/i.test(u) ? 1 : 0;
-  const isFN = (u: string) => /foodnetwork|sndimg\.com/i.test(u) ? 1 : 0;
-  abs.sort((a,b) => (isFN(b) - isFN(a)) || (looksBig(b) - looksBig(a)));
-
-  return abs;
-}
 async function getAnyImageFromPage(url: string): Promise<string | null> {
   try {
     const html = await fetchWithUA(url, 12000, "text");
-    const cands = extractAllImageCandidatesFromHtml(html, url);
-    const looksBig = (u: string) => /\b(w[_=]?\d{3,}|[._-](\d{3,}x\d{3,}|\d{3,}p)\b)/i.test(u) ? 1 : 0;
-    cands.sort((a, b) => looksBig(b) - looksBig(a));
-    return cands[0] || null;
+    const og = extractMetaContent(html, "og:image") || extractMetaContent(html, "twitter:image");
+    if (og) return absolutizeImageUrl(og, url);
+    return null;
   } catch {
     return null;
   }
 }
-
-/* ---------------------------- ⭐ FOOD NETWORK SMART FETCH ---------------------------- */
-const FOODNETWORK_PROXY_URL = "";
-
-function isFoodNetworkUrl(u: string): boolean {
-  try { return new URL(u).hostname.replace(/^www\./, "").endsWith("foodnetwork.com"); }
-  catch { return /foodnetwork\.com/i.test(u); }
-}
-function buildFNAmpCandidates(input: string): string[] {
-  const out: string[] = [];
-  try {
-    const u = new URL(ensureHttps(input));
-    const ampRef = new URL(u); ampRef.searchParams.set("ref", "amp"); out.push(ampRef.toString());
-    const ampDot = new URL(u);
-    if (ampDot.pathname.endsWith(".html")) ampDot.pathname = ampDot.pathname.replace(/\.html$/, ".amp");
-    else if (!ampDot.pathname.endsWith(".amp") && !/\.[a-z]{2,5}$/i.test(ampDot.pathname)) ampDot.pathname += ".amp";
-    out.push(ampDot.toString());
-  } catch {}
-  return out;
-}
-async function fetchFoodNetworkHtmlSmart(pageUrl: string): Promise<{ html: string; from: string } | null> {
-  const tries = [pageUrl, ...buildFNAmpCandidates(pageUrl)];
-  for (const href of tries) {
-    try {
-      const html = await fetchWithUA(href, 12000, "text");
-      if (html && !/Access Denied/i.test(html)) return { html, from: href };
-    } catch {}
-  }
-  if (FOODNETWORK_PROXY_URL) {
-    for (const href of tries) {
-      try {
-        const prox = `${FOODNETWORK_PROXY_URL}?url=${encodeURIComponent(href)}`;
-        const res = (await withTimeout(fetch(prox), 12000)) as Response;
-        if (res.ok) {
-          const html = await res.text();
-          if (html && !/Access Denied/i.test(html)) return { html, from: href };
-        }
-      } catch {}
-    }
-  }
-  try {
-    const mirror = `https://r.jina.ai/http://www.foodnetwork.com${new URL(pageUrl).pathname}`;
-    const res = (await withTimeout(fetch(mirror), 12000)) as Response;
-    if (res.ok) {
-      const html = await res.text();
-      if (html) return { html, from: "mirror" };
-    }
-  } catch {}
-  return null;
-}
-function parseRecipeLdFromHtml(html: string) {
-  const blocks = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
-  const objs: any[] = [];
-  for (const m of blocks) {
-    try {
-      const json = JSON.parse(m[1]);
-      const list = Array.isArray(json) ? json : [json];
-      for (const node of list) {
-        const graph = Array.isArray(node?.['@graph']) ? node['@graph'] : [node];
-        for (const item of graph) objs.push(item);
-      }
-    } catch {}
-  }
-  const recipe = objs.find((n) => {
-    const t = n?.['@type'];
-    return t === 'Recipe' || (Array.isArray(t) && t.includes('Recipe'));
-  });
-  if (!recipe) return null;
-
-  const rawInstr = recipe.recipeInstructions ?? [];
-  const steps: string[] = Array.isArray(rawInstr)
-    ? rawInstr.map((s: any) =>
-        typeof s === "string" ? s :
-        typeof s?.text === "string" ? s.text :
-        typeof s?.name === "string" ? s.name : ""
-      ).filter(Boolean)
-    : [];
-
-  const imgVal = recipe.image;
-  let image: string | null = null;
-  if (typeof imgVal === "string") image = imgVal;
-  else if (Array.isArray(imgVal)) image = imgVal.find((v: any) => typeof v === "string") || null;
-  else if (imgVal && typeof imgVal === "object") image = imgVal.url || imgVal['@id'] || null;
-
-  return {
-    title: (recipe.name ?? "").toString(),
-    image,
-    ingredients: Array.isArray(recipe.recipeIngredient) ? recipe.recipeIngredient.filter(Boolean) : [],
-    steps
-  };
-}
-async function getFoodNetworkBits(pageUrl: string) {
-  const fetched = await fetchFoodNetworkHtmlSmart(pageUrl);
-  if (!fetched) return null;
-
-  const parsed = parseRecipeLdFromHtml(fetched.html);
-  if (!parsed) {
-    const title = cleanTitle(
-      extractMetaContent(fetched.html, "og:title") || extractMetaContent(fetched.html, "twitter:title") || "",
-      pageUrl
-    );
-    const image = absolutizeImageUrl(
-      extractMetaContent(fetched.html, "og:image") || extractMetaContent(fetched.html, "twitter:image") || "",
-      pageUrl
-    );
-    return { title, image, ingredients: [], steps: [] };
-  }
-  return {
-    title: parsed.title ? cleanTitle(parsed.title, pageUrl) : "",
-    image: parsed.image ? absolutizeImageUrl(parsed.image, pageUrl) : null,
-    ingredients: parsed.ingredients || [],
-    steps: parsed.steps || [],
-  };
-}
-async function getFoodNetworkBestImage(pageUrl: string): Promise<string | null> {
-  const fetched = await fetchFoodNetworkHtmlSmart(pageUrl);
-  if (!fetched) return null;
-
-  const node = parseRecipeLdFromHtml(fetched.html);
-  if (node?.image) {
-    const u = absolutizeImageUrl(node.image, pageUrl);
-    if (u) return maybeUpgradeSndimg(u);
-  }
-  const og = extractMetaContent(fetched.html, "og:image") || extractMetaContent(fetched.html, "twitter:image");
-  if (og) {
-    const u = absolutizeImageUrl(og, pageUrl);
-    if (u) return maybeUpgradeSndimg(u);
-  }
-  const all = extractAllImageCandidatesFromHtml(fetched.html, pageUrl);
-  if (all.length) return all[0];
-  return null;
-}
-
-/* ---------------------------- local image helpers ---------------------------- */
 async function getLocalDimensions(uri: string): Promise<{ w: number; h: number }> {
   try { const r = await ImageManipulator.manipulateAsync(uri, [], { compress: 0, format: ImageManipulator.SaveFormat.JPEG }); return { w: r.width ?? 0, h: r.height ?? 0 }; }
   catch { return { w: 0, h: 0 }; }
 }
-async function ensureMinLocalImage(uri: string, wantW = MIN_IMG_W, wantH = MIN_IMG_H): Promise<string | null> {
+async function ensureMinLocalImage(uri: string): Promise<string | null> {
   const { w, h } = await getLocalDimensions(uri);
   if (!w || !h) return null;
-  if (w >= wantW && h >= wantH) return uri;
+  if (w >= MIN_IMG_W && h >= MIN_IMG_H) return uri;
   if (w >= SOFT_MIN_W && h >= SOFT_MIN_H) {
-    const scale = Math.max(wantW / w, wantH / h);
+    const scale = Math.max(MIN_IMG_W / w, MIN_IMG_H / h);
     const newW = Math.round(w * scale), newH = Math.round(h * scale);
     try {
       const out = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: newW, height: newH } }], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG });
@@ -498,59 +321,14 @@ async function ensureMinLocalImage(uri: string, wantW = MIN_IMG_W, wantH = MIN_I
   }
   return null;
 }
-
-/* ---------------------------- ⭐ NEW: safe remote → local download for uploads ---------------------------- */
-function makeProxiedUrl(u: string): string | null {
-  try {
-    const noScheme = u.replace(/^https?:\/\//i, "");
-    return `https://images.weserv.nl/?url=${encodeURIComponent(noScheme)}&w=1280&output=jpg`;
-  } catch { return null; }
-}
 async function downloadRemoteToLocalImage(url: string, referer?: string): Promise<string | null> {
-  const bufToB64 = (ab: ArrayBuffer) => {
-    const cs = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const by = new Uint8Array(ab);
-    let out = "";
-    for (let i = 0; i < by.length; i += 3) {
-      const a = by[i], b = i + 1 < by.length ? by[i + 1] : 0, c = i + 2 < by.length ? by[i + 2] : 0;
-      const t = (a << 16) | (b << 8) | c;
-      out += cs[(t >> 18) & 63] + cs[(t >> 12) & 63] + (i + 1 < by.length ? cs[(t >> 6) & 63] : "=") + (i + 2 < by.length ? cs[t & 63] : "=");
-    }
-    return out;
-  };
-  const isFN = (u: string) => {
-    try { const h = new URL(u).hostname.toLowerCase(); return h.includes("sndimg.com") || h.includes("foodnetwork.com"); }
-    catch { return /sndimg\.com|foodnetwork\.com/i.test(u); }
-  };
   const stripQuery = (u: string) => { try { const x = new URL(u); x.search = ""; return x.toString(); } catch { return u; } };
-  const stripRendSuffix = (u: string) => u.replace(/(\.(?:jpg|jpeg|png))(?:\.rend\.[^/?#]+\.suffix\/[^/?#]+)$/i, "$1");
-
-  const candidates: string[] = [];
-  candidates.push(url);
-  const sr = stripRendSuffix(url); if (!candidates.includes(sr)) candidates.push(sr);
-  const qless = stripQuery(url); if (!candidates.includes(qless)) candidates.push(qless);
-  const qless2 = stripQuery(sr); if (!candidates.includes(qless2)) candidates.push(qless2);
-
+  const candidates: string[] = [url, stripQuery(url)];
   const origin = (() => { try { return referer ? new URL(referer).origin : undefined; } catch { return undefined; } })();
   const headerSets: Record<string, string>[] = [
-    {
-      "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
-      "Accept": "image/avif,image/webp,image/jpeg,image/*,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9",
-      ...(referer ? { Referer: referer } : {}),
-      ...(origin ? { Origin: origin } : {}),
-    },
-    {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-      "Accept": "image/*,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9",
-      "Referer": "https://www.foodnetwork.com/",
-      "Origin": "https://www.foodnetwork.com",
-    },
-    { "User-Agent": "Mozilla/5.0", "Accept": "image/*,*/*;q=0.8" },
+    { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15", "Accept": "image/avif,image/webp,image/jpeg,image/*,*/*;q=0.8", ...(referer ? { Referer: referer } : {}), ...(origin ? { Origin: origin } : {}) },
+    { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*;q=0.8" },
   ];
-
-  // Try with FileSystem.downloadAsync first
   for (const cand of candidates) {
     for (const headers of headerSets) {
       const dst = FileSystem.cacheDirectory + `dl_${Date.now()}_${Math.random().toString(36).slice(2)}.img`;
@@ -558,78 +336,97 @@ async function downloadRemoteToLocalImage(url: string, referer?: string): Promis
         const res = await FileSystem.downloadAsync(cand, dst, { headers });
         if (res.status >= 200 && res.status < 300) {
           const out = await ImageManipulator.manipulateAsync(res.uri, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
-          const ok = await ensureMinLocalImage(out.uri, MIN_IMG_W, MIN_IMG_H);
+          const ok = await ensureMinLocalImage(out.uri);
           return ok || out.uri;
         }
       } catch {}
       try { await FileSystem.deleteAsync(dst, { idempotent: true }); } catch {}
     }
   }
-
-  // Fetch → write file fallback
-  for (const cand of candidates) {
-    for (const headers of headerSets) {
-      try {
-        const r = await fetch(cand, { headers });
-        if (!r.ok) continue;
-        const ab = await r.arrayBuffer();
-        const dst = FileSystem.cacheDirectory + `dl_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`;
-        await FileSystem.writeAsStringAsync(dst, bufToB64(ab), { encoding: FileSystem.EncodingType.Base64 });
-        const out = await ImageManipulator.manipulateAsync(dst, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
-        const ok = await ensureMinLocalImage(out.uri, MIN_IMG_W, MIN_IMG_H);
-        return ok || out.uri;
-      } catch {}
-    }
-  }
-
-  // Public proxy (last resort, FN only)
-  if (isFN(url)) {
-    for (const cand of candidates) {
-      const alt = makeProxiedUrl(cand);
-      if (!alt) continue;
-      try {
-        const dst = FileSystem.cacheDirectory + `dl_${Date.now()}_${Math.random().toString(36).slice(2)}.img`;
-        const res = await FileSystem.downloadAsync(alt, dst);
-        if (res.status >= 200 && res.status < 300) {
-          const out = await ImageManipulator.manipulateAsync(dst, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
-          const ok = await ensureMinLocalImage(out.uri, MIN_IMG_W, MIN_IMG_H);
-          return ok || out.uri;
-        }
-      } catch {}
-    }
-  }
-
   return null;
 }
 
-/* ---------------------------- 🆕 make steps from caption text ---------------------------- */
-function stepsFromCaptionText(raw?: string | null): string[] {
-  const txt = (raw || "").replace(/\r/g, "").trim();
-  if (!txt) return [];
-
-  // Prefer numbered/bulleted lines
-  const numbered: string[] = [];
-  txt.split("\n").forEach((line) => {
-    const l = line.trim();
-    if (/^\s*(?:\d+[\)\.\-:]|\-\s|\•\s)\s+/.test(l)) {
-      numbered.push(l.replace(/^\s*(?:\d+[\)\.\-:]|\-\s|\•\s)\s+/, "").trim());
-    }
-  });
-  if (numbered.length >= 2) return numbered;
-
-  // Otherwise split into short sentences; keep “command” ones
-  const sentences = txt
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .filter((s) => s.length <= 140);
-
-  const VERBS = /(mix|stir|add|combine|bake|boil|simmer|fry|whisk|chop|slice|marinate|season|serve|heat|preheat|pour|fold|knead|rest|cool|blend|pulse)\b/i;
-  const candidates = sentences.filter((s) => VERBS.test(s));
-  return candidates.length >= 2 ? candidates : [];
+// -------------- OCR --------------
+async function ocrImageToText(localUri: string): Promise<string | null> {
+  try {
+    const prepped = await ImageManipulator.manipulateAsync(localUri, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
+    const path = `ocr/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+    let publicUrl: string | null = null;
+    try { publicUrl = await uploadFromUri({ uri: prepped.uri, storageBucket: "tmp-uploads", path, contentType: "image/jpeg" }); }
+    catch { publicUrl = null; }
+    if (!publicUrl) return null;
+    const { data, error } = await (supabase as any).functions.invoke("ocr", { body: { url: publicUrl } });
+    if (error) return null;
+    const text = (data && (data.text || data.ocr || data.result)) ? String(data.text || data.ocr || data.result) : "";
+    return text.trim() || null;
+  } catch { return null; }
 }
 
-/* ---------------------------- screen state & UI ---------------------------- */
+// -------------- NEW: comment scoring & fusion --------------
+// 🧠 score how “ingredienty/stepy” a comment looks
+function scoreRecipeComment(s: string) {
+  let sc = 0;
+  const low = s.toLowerCase();
+  if (/ingredients?|what you need|for the (?:dough|sauce|filling)|shopping list/.test(low)) sc += 600;
+  if (/directions?|steps?|method|how to/.test(low)) sc += 320;
+  if (/[0-9½¼¾]/.test(s)) sc += 160;
+  if (/(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre)/i.test(s)) sc += 220;
+  if (/^(\s*[-*•]|\s*\d+\.)/m.test(s)) sc += 120;
+  const lines = s.split(/\r?\n/).length; sc += Math.min(lines, 40) * 6;
+  const L = s.length; if (L > 80) sc += 40; if (L > 240) sc += 30; if (L > 900) sc -= 120;
+  return sc;
+}
+// 🚿 clean up comments (strip “log in/open app” cruft)
+function isJunkComment(s: string) {
+  const low = s.toLowerCase();
+  if (low.length < 8) return true;
+  return /log\s*in|sign\s*in|open app|download|scan the qr|p_search_score|search_video/.test(low);
+}
+function normalizeLines(s: string) {
+  // turn inline “1) mix 2) bake” into newline list, keep bullets
+  let t = s
+    .replace(/\r/g, "\n")
+    .replace(/[\u2022\u25CF\u25CB]/g, "•")
+    .replace(/(?:\s*[,;]\s*)(?=(?:\d+[\.)]|[-*•]))/g, "\n")
+    .replace(/(\d+)[\)\.]\s*/g, "$1. ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return t;
+}
+// 🍱 build a “recipe-like” text from caption + top comments
+function fuseCaptionAndComments(caption: string, comments: string[], topN = 5) {
+  const good = comments.filter((c) => c && !isJunkComment(c)).map((c) => normalizeLines(c));
+  const ranked = good.sort((a, b) => scoreRecipeComment(b) - scoreRecipeComment(a));
+  const picked = ranked.slice(0, Math.min(topN, ranked.length));
+  // separate likely ingredients from likely steps
+  const ing: string[] = [], stp: string[] = [];
+  for (const c of picked) {
+    const lower = c.toLowerCase();
+    const looksIng = /ingredients?|what you need|cups?|tsp|tbsp|oz|gram|ml|^[-*•]|\d+\s*(?:cup|tsp|tbsp|oz|g|ml)/im.test(lower);
+    const looksSteps = /steps?|directions?|method|\d+\./im.test(lower);
+    if (looksIng && !looksSteps) ing.push(c);
+    else if (looksSteps && !looksIng) stp.push(c);
+    else {
+      // ambiguous: send to bucket with better score bias
+      (scoreRecipeComment(c) >= 400 ? ing : stp).push(c);
+    }
+  }
+
+  const cap = (caption || "").trim();
+  const capBlock = cap ? `Title/Captions:\n${normalizeLines(cap)}\n` : "";
+
+  const glue = [
+    capBlock,
+    ing.length ? `Ingredients:\n${ing.join("\n")}` : "",
+    stp.length ? `\n\nSteps:\n${stp.join("\n")}` : "",
+  ].filter(Boolean).join("\n");
+
+  // last polish: ensure each list item is on its own line
+  return normalizeLines(glue);
+}
+
+// -------------- screen state --------------
 type ImageSourceState =
   | { kind: "none" }
   | { kind: "url-og"; url: string; resolvedImageUrl: string }
@@ -637,6 +434,8 @@ type ImageSourceState =
   | { kind: "camera"; localUri: string };
 
 export default function CaptureScreen() {
+  const [debugLog, setDebugLog] = useState<string>("");
+  const [showDebug, setShowDebug] = useState(false);
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
   const [timeMinutes, setTimeMinutes] = useState("");
@@ -645,33 +444,48 @@ export default function CaptureScreen() {
   const [steps, setSteps] = useState<string[]>([""]);
   const [img, setImg] = useState<ImageSourceState>({ kind: "none" });
 
-  // HUD
+  const dbg = useCallback((...args: any[]) => {
+    try {
+      const line = args.map((a) => typeof a === "string" ? a : (()=>{ try { return JSON.stringify(a); } catch { return String(a); } })()).join(" ");
+      setDebugLog((prev) => (prev ? prev + "\n" : "") + line);
+      console.log("[IMPORT]", line);
+    } catch {}
+  }, []);
+  const safeErr = useCallback((e: any): string => {
+    try {
+      if (!e) return "unknown";
+      if (typeof e === "string") return e;
+      if (e instanceof Error && e.message) return e.message;
+      const msg = (e?.message || e?.toString?.() || JSON.stringify(e));
+      return typeof msg === "string" ? msg : "unknown";
+    } catch { return "unknown"; }
+  }, []);
+
   const [hudVisible, setHudVisible] = useState(false);
   const [hudPhase, setHudPhase] = useState<"scanning" | "acquired">("scanning");
-  const IMPORT_STEPS = ["Importing photo", "Reading title", "Parsing ingredients", "Parsing steps"];
+  const IMPORT_STEPS = ["Importing photo", "Reading content", "Parsing ingredients", "Parsing steps"];
   const [stageIndex, setStageIndex] = useState(0);
   const bumpStage = useCallback((n: number) => setStageIndex((s) => (n > s ? n : s)), []);
   const [saving, setSaving] = useState(false);
 
-  // TikTok snapper (fixed: removed stray label)
   const [snapVisible, setSnapVisible] = useState(false);
   const [snapUrl, setSnapUrl] = useState("");
   const [snapReloadKey, setSnapReloadKey] = useState(0);
   const [snapResnapKey, setSnapResnapKey] = useState(0);
   const [improvingSnap, setImprovingSnap] = useState(false);
+  const [tiktokShots, setTikTokShots] = useState<string[]>([]);
 
-  // TitleSnap (optional)
-  const [titleSnapVisible, setTitleSnapVisible] = useState(false);
-  const [queuedTitleSnapUrl, setQueuedTitleSnapUrl] = useState<string | null>(null);
+  const [domScraperVisible, setDomScraperVisible] = useState(false);
+  const [domScraperUrl, setDomScraperUrl] = useState("");
+  const domScraperResolverRef = useRef<((payload: any) => void) | null>(null);
 
-  // import control
+  const [snapFocusY, setSnapFocusY] = useState(FOCUS_Y_DEFAULT);
+  const [snapZoom, setSnapZoom] = useState(1.2);
+
   const [pendingImportUrl, setPendingImportUrl] = useState<string | null>(null);
   const [abortVisible, setAbortVisible] = useState(false);
-
-  // pretty success dialog
   const [okModalVisible, setOkModalVisible] = useState(false);
 
-  // refs
   const snapResolverRef = useRef<null | ((uri: string) => void)>(null);
   const snapRejectRef = useRef<null | ((e: any) => void)>(null);
   const snapCancelledRef = useRef(false);
@@ -680,23 +494,14 @@ export default function CaptureScreen() {
   const lastResolvedUrlRef = useRef<string>("");
   const lastGoodPreviewRef = useRef<string>("");
 
-  // Share → MessHall: normalize sharedUrl to a plain string
   const { sharedUrl: sharedParam } = useLocalSearchParams<{ sharedUrl?: string | string[] }>();
-  const sharedRaw = React.useMemo(
-    () => (Array.isArray(sharedParam) ? sharedParam[0] : sharedParam) || "",
-    [sharedParam]
-  );
+  const sharedRaw = useMemo(() => (Array.isArray(sharedParam) ? sharedParam[0] : sharedParam) || "", [sharedParam]);
 
-  // Prefill field + auto-import when a valid shared link arrives
   useEffect(() => {
     if (sharedRaw && /^https?:\/\//i.test(sharedRaw)) {
       setPastedUrl((prev) => (prev?.trim() ? prev : sharedRaw.trim()));
-      setTimeout(() => {
-        // eslint-disable-next-line @typescript-eslint/no-use-before-define
-        resolveOg();
-      }, 0);
+      setTimeout(() => { resolveOg(); }, 0);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sharedRaw]);
 
   const getImageDims = useCallback(async (uri: string) => {
@@ -709,11 +514,10 @@ export default function CaptureScreen() {
       const info = await FileSystem.getInfoAsync(uri);
       if (!info.exists || (info.size ?? 0) < MIN_LOCAL_BYTES) {
         const resaved = await ImageManipulator.manipulateAsync(uri, [], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }).catch(() => null);
-        if (!resaved?.uri) return null;
-        uri = resaved.uri;
+        if (resaved?.uri) uri = resaved.uri; else return null;
       }
     } catch { return null; }
-    return await ensureMinLocalImage(uri, MIN_IMG_W, MIN_IMG_H);
+    return await ensureMinLocalImage(uri);
   }, []);
   const isValidCandidate = useCallback(async (uri: string): Promise<{ ok: boolean; useUri?: string }> => {
     if (!uri) return { ok: false };
@@ -741,7 +545,6 @@ export default function CaptureScreen() {
     if (img.kind === "picker" || img.kind === "camera") return img.localUri;
     return "";
   }, [img]);
-
   const setGoodPreview = useCallback((uri: string, originUrl: string) => {
     bumpStage(1);
     if (uri.startsWith("http")) setImg({ kind: "url-og", url: originUrl, resolvedImageUrl: uri });
@@ -751,15 +554,6 @@ export default function CaptureScreen() {
     gotSomethingForRunRef.current = true;
   }, [bumpStage]);
 
-  const maybeUpgradePreview = useCallback(async (candidate: string, originUrl: string) => {
-    const test = await isValidCandidate(candidate);
-    if (!test.ok || !test.useUri) return;
-    const cur = currentPreviewUri();
-    if (!cur) return setGoodPreview(test.useUri, originUrl);
-    const [a, b] = await Promise.all([getImageDims(cur), getImageDims(test.useUri)]);
-    if (b.w * b.h > a.w * a.h * IMPROVEMENT_FACTOR) setGoodPreview(test.useUri, originUrl);
-  }, [currentPreviewUri, getImageDims, isValidCandidate, setGoodPreview]);
-
   const hardResetImport = useCallback(() => {
     snapCancelledRef.current = false;
     snapResolverRef.current = null;
@@ -767,9 +561,9 @@ export default function CaptureScreen() {
     setHudVisible(false);
     setHudPhase("scanning");
     setSnapVisible(false);
-    setTitleSnapVisible(false);
-    setQueuedTitleSnapUrl(null);
+    setDomScraperVisible(false);
     setImprovingSnap(false);
+    setTikTokShots([]);
     setAbortVisible(false);
     setStageIndex(0);
   }, []);
@@ -785,6 +579,33 @@ export default function CaptureScreen() {
     }
   }, [hudVisible, pendingImportUrl]);
 
+  // 🔍 open tiny web window to read caption + comments
+  // ❗️FIX: DO NOT convert to /embed. Open the real page to expose SIGI/NEXT JSON and allow “see more” clicks.
+  const scrapeTikTokDom = useCallback(async (rawUrl: string): Promise<{
+    text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string;
+  } | null> => {
+    // 1) follow any short link (vm.tiktok.com)
+    const finalUrl = await resolveFinalUrl(ensureHttps(rawUrl.trim()));
+    return new Promise((resolve) => {
+      let resolved = false;
+      const timeout = setTimeout(() => {
+        if (!resolved) { resolved = true; setDomScraperVisible(false); resolve(null); }
+      }, 16000);
+      // 2) open the full **desktop** page; TTDomScraper will handle viewports and "see more" clicks.
+      setDomScraperUrl(finalUrl);
+      setDomScraperVisible(true);
+      domScraperResolverRef.current = (payload: any) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          setDomScraperVisible(false);
+          resolve(payload || null);
+        }
+      };
+    });
+  }, []);
+
+  // 📸 snap TikTok for preview/OCR (embed is ok for a *picture*)
   const autoSnapTikTok = useCallback(async (rawUrl: string, maxAttempts = SNAP_ATTEMPTS) => {
     const { embedUrl, finalUrl } = await resolveTikTokEmbedUrl(rawUrl);
     const target = embedUrl || ensureHttps(rawUrl);
@@ -823,6 +644,7 @@ export default function CaptureScreen() {
     }
 
     setImprovingSnap(false);
+    setTikTokShots([]);
     return best;
   }, [getImageDims, setGoodPreview, validateOrRepairLocal, isValidCandidate]);
 
@@ -842,6 +664,7 @@ export default function CaptureScreen() {
     return false;
   }, [isValidCandidate, bumpStage]);
 
+  // ----------------- THE BOSS: unified import -----------------
   const startImport = useCallback(async (url: string) => {
     const runId = ++importRunIdRef.current;
     gotSomethingForRunRef.current = false;
@@ -858,131 +681,128 @@ export default function CaptureScreen() {
     try {
       lastResolvedUrlRef.current = url;
 
-      // Try to get a decent title early
-      const best = await getTikTokOEmbedTitle(url);
-      if (best && isWeakTitle(title)) setTitle(cleanTitle(best, url));
+      // STEP 0: try oEmbed title
+      try {
+        const best = await getTikTokOEmbedTitle(url);
+        if (best && isWeakTitle(title)) setTitle(cleanTitle(best, url));
+        dbg("🪪 STEP 0 oEmbed title:", best ? "got" : "none");
+      } catch (e) { dbg("⚠️ STEP 0 oEmbed title failed:", safeErr(e)); }
 
       if (isTikTokLike(url)) {
-        const shot = await autoSnapTikTok(url, SNAP_ATTEMPTS);
-        if (shot) success = true;
-      }
+        dbg("🎯 TikTok detected — unified import path begins");
 
-      // Fetch OG + meta (parallel)
-      const metaP = fetchMeta(url);
-      const ogP = fetchOgForUrl(url);
-      setStageIndex((s) => Math.max(s, 2));
-
-      const [metaRes, ogRes] = await Promise.allSettled([metaP, ogP]);
-      const meta = metaRes.status === "fulfilled" ? metaRes.value : null;
-      const og   = ogRes.status === "fulfilled" ? ogRes.value   : null;
-
-      // Title: pick a nice candidate
-      const candidate = cleanTitle((meta?.title || og?.title || ""), url);
-      if (candidate && !isTikTokJunkTitle(candidate) && isWeakTitle(title)) setTitle(candidate);
-
-      // Build a caption fallback (for TikTok/others without recipe structure)
-      let captionText: string | null =
-        (meta?.caption && String(meta.caption)) ||
-        (og?.description && String(og.description)) ||
-        null;
-
-      if (isTikTokLike(url) && !captionText) {
+        // STEP 1: DOM scrape
+        let domPayload: { text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string } | null = null;
         try {
-          const oe = await fetchWithUA(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, 7000, "json");
-          const t = oe?.title && String(oe.title).trim();
-          if (t) captionText = t;
-        } catch {}
-      }
+          bumpStage(1);
+          domPayload = await scrapeTikTokDom(url);
+          const len = (domPayload?.text || "").length;
+          dbg("📄 STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
+          // 👇 NEW: show the scraper’s internal trace so we know what hit (sigi/next/alt/dom) and if “see more” clicked
+          if (domPayload?.debug) dbg("🧪 TTDOM DEBUG:", domPayload.debug);
+        } catch (e) { dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e)); }
 
-      // ---------- Ingredients ----------
-      if (meta?.ingredients?.length) {
-        const parsed = normalizeIngredientLines(meta.ingredients);
-        const canon = parsed.map((p) => p.canonical).filter(Boolean);
-        if (canon.length) setIngredients(canon);
-      } else if (meta?.caption) {
-        const guess = captionToIngredientLines(meta.caption);
-        if (guess.length) setIngredients(guess);
-      } else if (captionText) {
-        const guess = captionToIngredientLines(captionText);
-        if (guess.length) setIngredients(guess);
-      }
-      setStageIndex((s) => Math.max(s, 3));
-
-      // ---------- Steps ----------
-      if (meta?.steps?.length) {
-        setSteps(meta.steps.filter(Boolean));
-      } else if (captionText) {
-        const maybe = stepsFromCaptionText(captionText);
-        if (maybe.length) setSteps(maybe);
-      }
-      setStageIndex((s) => Math.max(s, 4));
-
-      // FOOD NETWORK deep helpers
-      if (isFoodNetworkUrl(url)) {
+        // STEP 2: PARSE — caption first (photos often hold full recipe here)
         try {
-          const fn = await getFoodNetworkBits(url);
-          if (fn) {
-            if (fn.title && isWeakTitle(title)) setTitle(fn.title);
+          const cap = (domPayload?.caption || "").trim();
+          const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
 
-            const haveIngredients = !!(meta?.ingredients?.length || ingredients.some((v) => (v || "").trim()));
-            if (!haveIngredients && fn.ingredients?.length) {
-              const parsed = normalizeIngredientLines(fn.ingredients);
-              const canon = parsed.map((p) => p.canonical).filter(Boolean);
-              if (canon.length) setIngredients(canon);
-            }
+          // A) build clean recipe text from CAPTION
+          const capRecipe = captionToRecipeText(cap);
 
-            const haveSteps = !!(meta?.steps?.length || steps.some((v) => (v || "").trim()));
-            if (!haveSteps && fn.steps?.length) {
-              setSteps(fn.steps);
-            }
+          // B) parse caption text
+          let parsed = parseRecipeText(capRecipe);
+          dbg("📊 STEP 2A parse(CAPTION) conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
 
-            if (!gotSomethingForRunRef.current && fn.image) {
-              const used = await tryImageUrl(fn.image, url);
-              if (used) success = true;
+          // C) if still weak, fuse top comments and reparse
+          if ((parsed.ingredients.length < 3 || parsed.steps.length < 1) && comments.length) {
+            const fusion = fuseCaptionAndComments(cap, comments, 5);
+            const parsed2 = parseRecipeText(fusion);
+            dbg("📊 STEP 2B parse(CAPTION+COMMENTS) conf:", parsed2.confidence, "ing:", parsed2.ingredients.length, "steps:", parsed2.steps.length);
+            if ((parsed2.ingredients.length + parsed2.steps.length) > (parsed.ingredients.length + parsed.steps.length)) {
+              parsed = parsed2;
             }
           }
 
-          if (!success && !gotSomethingForRunRef.current) {
-            const bestImg = await getFoodNetworkBestImage(url);
-            if (bestImg) {
-              const used = await tryImageUrl(bestImg, url);
-              if (used) success = true;
+          if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
+            if (parsed.ingredients.length) setIngredients(parsed.ingredients);
+            if (parsed.steps.length) setSteps(parsed.steps);
+            bumpStage(2);
+            dbg("✅ STEP 2 caption-based parse worked");
+            success = true;
+          } else {
+            dbg("ℹ️ STEP 2 caption parse still weak; will try OCR next");
+          }
+        } catch (e) {
+          dbg("❌ STEP 2 (parse) failed:", safeErr(e));
+        }
+
+        // STEP 3: OCR fallback
+        try {
+          if (!success || (ingredients.every(v => !v.trim()))) {
+            bumpStage(2);
+            dbg("📸 STEP 3 trying screenshot + OCR");
+            const shot = await autoSnapTikTok(url, 2);
+            if (shot) {
+              const ocrText = await ocrImageToText(shot);
+              dbg("🔍 STEP 3 OCR text length:", ocrText ? ocrText.length : 0);
+              if (ocrText && ocrText.length > 50) {
+                const parsed = parseRecipeText(ocrText);
+                dbg("📊 STEP 3 OCR parse conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+                if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
+                  if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) setIngredients(parsed.ingredients);
+                  if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
+                  bumpStage(3);
+                  dbg("✅ STEP 3 OCR gave usable content");
+                  success = true;
+                }
+              }
             }
           }
-        } catch {}
+        } catch (e) { dbg("⚠️ STEP 3 (OCR) failed:", safeErr(e)); }
+
+        // STEP 4: OG/Meta as last resort for text
+        try {
+          if (!success || ingredients.every(v => !v.trim())) {
+            bumpStage(3);
+            dbg("🌐 STEP 4 trying OG/Meta description");
+            const og = await fetchOgForUrl(url);
+            if (og?.description) {
+              const parsed = parseRecipeText(og.description);
+              dbg("📊 STEP 4 OG parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+              if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
+                if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) setIngredients(parsed.ingredients);
+                if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
+                dbg("✅ STEP 4 got usable content from OG description");
+                success = true;
+              }
+            }
+          }
+        } catch (e) { dbg("⚠️ STEP 4 (OG/Meta) failed:", safeErr(e)); }
+
+        // STEP 5: image preview fallback
+        try {
+          bumpStage(4);
+          if (!gotSomethingForRunRef.current) {
+            const imgUrl = await getAnyImageFromPage(url);
+            if (imgUrl) await tryImageUrl(imgUrl, url);
+            dbg("🖼️ STEP 5 image fallback:", !!imgUrl);
+          }
+        } catch (e) { dbg("⚠️ STEP 5 (image fallback) failed:", safeErr(e)); }
+
+      } else {
+        // non-TikTok path
+        const og = await fetchOgForUrl(url);
+        if (og?.title && isWeakTitle(title)) setTitle(cleanTitle(og.title, url));
+        if (og?.image) await tryImageUrl(og.image, url);
       }
 
-      // Generic image fallbacks
-      if (!success && !gotSomethingForRunRef.current) {
-        let used = false;
-
-        if (meta?.image) used = await tryImageUrl(meta.image, url);
-        if (!used && Array.isArray((meta as any)?.images)) {
-          for (const u of (meta as any).images) { if (await tryImageUrl(u, url)) { used = true; break; } }
-        }
-        if (!used && og?.image) used = await tryImageUrl(og.image, url);
-
-        if (!used && isTikTokLike(url)) {
-          const thumb = await withTimeout(tiktokOEmbedThumbnail(url), 2000).catch(() => null);
-          if (thumb) used = await tryImageUrl(thumb, url);
-        }
-
-        if (!used && isFoodNetworkUrl(url)) {
-          const fnImg = await getAnyImageFromPage(url);
-          if (fnImg) used = await tryImageUrl(fnImg, url);
-        }
-
-        if (!used) {
-          const fromPage = await getAnyImageFromPage(url);
-          if (fromPage) used = await tryImageUrl(fromPage, url);
-        }
-
-        if (used) success = true;
-      }
     } catch (e: any) {
+      const msg = safeErr(e);
+      dbg("❌ Import error:", msg);
       if (!gotSomethingForRunRef.current) setImg({ kind: "none" });
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Import error", e?.message || "Could not read that webpage.");
+      Alert.alert("Import error", msg || "Could not read that webpage.");
     } finally {
       clearTimeout(watchdog);
       if (success || gotSomethingForRunRef.current) {
@@ -991,23 +811,20 @@ export default function CaptureScreen() {
         await new Promise((r) => setTimeout(r, 800));
       }
       setHudVisible(false);
-      setTitleSnapVisible(false);
+      setDomScraperVisible(false);
       setSnapVisible(false);
     }
-  }, [autoSnapTikTok, tryImageUrl, title, hardResetImport, ingredients, steps]);
+  }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
 
-  // resolveOg: fall back to sharedRaw if the text box is empty.
+  // -------------- import button flow --------------
   const resolveOg = useCallback(async () => {
     hardResetImport();
-
     const candidateInput = (pastedUrl?.trim() || "") || (sharedRaw?.trim() || "");
     const url = extractFirstUrl(candidateInput);
-
     if (!url || !/^https?:\/\//i.test(url)) {
       setImg({ kind: "none" });
       return Alert.alert("Link error", "Please paste a full link that starts with http(s)://");
     }
-
     const isDup = await checkDuplicateSourceUrl(url);
     if (isDup) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -1015,26 +832,18 @@ export default function CaptureScreen() {
       setTimeout(() => setAbortVisible(false), 1700);
       return;
     }
-
     setStageIndex(0);
     setHudPhase("scanning");
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-    if (isTikTokLike(url) && isWeakTitle(title)) {
-      setQueuedTitleSnapUrl(url);
-      setTitleSnapVisible(true);
-    }
-    if (isTikTokLike(url)) {
-      const { embedUrl } = await resolveTikTokEmbedUrl(url);
-      setSnapUrl(embedUrl || ensureHttps(url));
-      setSnapVisible(true);
-    }
-
     setHudVisible(true);
     setPendingImportUrl(url);
-  }, [title, hardResetImport, pastedUrl, sharedRaw]);
+  }, [pastedUrl, sharedRaw, hardResetImport]);
 
-  const onPaste = useCallback(async () => { const t = await Clipboard.getStringAsync(); if (t) setPastedUrl(t.trim()); }, []);
+  const onPaste = useCallback(async () => {
+    const t = await Clipboard.getStringAsync();
+    if (t) setPastedUrl(t.trim());
+  }, []);
+
   const pickOrCamera = useCallback(async () => {
     Alert.alert("Add Photo", "Choose where to get your picture", [
       { text: "Camera", onPress: async () => {
@@ -1072,11 +881,10 @@ export default function CaptureScreen() {
       const recipeId = created?.id as string;
       if (!recipeId) throw new Error("Could not create recipe.");
 
-      // Safe: if preview is a remote URL, pull it to local first
       let uploadUri = previewUri;
       if (uploadUri && uploadUri.startsWith("http")) {
         const local = await downloadRemoteToLocalImage(uploadUri, lastResolvedUrlRef.current || undefined);
-        if (!local) throw new Error("Failed to download remote image (status 403)");
+        if (!local) throw new Error("Failed to download remote image");
         uploadUri = local;
       }
 
@@ -1124,17 +932,16 @@ export default function CaptureScreen() {
   }, [hardResetImport]);
   useFocusEffect(useCallback(() => { return () => { resetForm(); }; }, [resetForm]));
 
+  // -------------- RENDER --------------
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "bottom"]}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 160 }}>
           <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: "900", marginBottom: 16 }}>Add Recipe</Text>
 
-          {/* Title */}
           <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
           <TextInput value={title} onChangeText={setTitle} placeholder="My Tasty Pizza" placeholderTextColor="#64748b" style={{ color: "white", backgroundColor: COLORS.sunken, borderRadius: 12, padding: 12, marginBottom: 12 }} />
 
-          {/* Import */}
           <View style={{ backgroundColor: COLORS.card, borderRadius: 14, borderColor: COLORS.border, borderWidth: 1, padding: 12, marginBottom: 12 }}>
             <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Import from a link (YouTube/TikTok/blog)…</Text>
             <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -1155,9 +962,17 @@ export default function CaptureScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Preview */}
+            <TouchableOpacity onPress={() => setShowDebug((v)=>!v)} style={{ marginTop: 8, alignSelf: "flex-end" }}>
+              <Text style={{ color: COLORS.sub, textDecorationLine: "underline" }}>{showDebug ? "Hide debug" : "Show debug"}</Text>
+            </TouchableOpacity>
+            {showDebug && (
+              <View style={{ marginTop: 8, backgroundColor: "#0f172a", borderColor: COLORS.border, borderWidth: 1, borderRadius: 10, padding: 8 }}>
+                <Text style={{ color: "#94a3b8", fontSize: 12 }} selectable numberOfLines={16}>{debugLog || "No debug yet."}</Text>
+              </View>
+            )}
+
             <View style={{ marginTop: 10 }}>
-              {!hudVisible ? (() => {
+              {(() => {
                 const uri = currentPreviewUri();
                 return uri ? (
                   <>
@@ -1169,23 +984,21 @@ export default function CaptureScreen() {
                     <Text style={{ color: COLORS.sub }}>No imported image yet</Text>
                   </View>
                 );
-              })() : null}
+              })()}
             </View>
           </View>
 
-          {/* Add your own photo */}
           <TouchableOpacity onPress={pickOrCamera} style={{ backgroundColor: COLORS.card, padding: 12, borderRadius: 12, alignItems: "center", marginBottom: 12 }}>
             <Text style={{ color: COLORS.text, fontWeight: "800" }}>Add/Choose Photo…</Text>
           </TouchableOpacity>
 
-          {/* Ingredients */}
           <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "900", marginBottom: 8 }}>Ingredients</Text>
           <View style={{ backgroundColor: COLORS.card, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, marginBottom: 12 }}>
             {ingredients.map((ing, i) => (
               <Swipeable key={`ing-${i}`} renderRightActions={() => renderRightActions(() => setIngredients((a) => a.filter((_, idx) => idx !== i)))} overshootRight={false} friction={2}>
                 <View style={styles.row}>
                   <Text style={styles.rowIndex}>{i + 1}.</Text>
-                  <TextInput value={ing} onChangeText={(v) => setIngredients((a) => a.map((x, idx) => (idx === i ? v : x)))} placeholder="2 cups flour…" placeholderTextColor="#64748b" style={styles.rowInput} />
+                  <TextInput value={ing} onChangeText={(v) => setIngredients((a) => a.map((x, idx) => (idx === i ? v : x)))} placeholder="1 lb sausage…" placeholderTextColor="#64748b" style={styles.rowInput} />
                 </View>
                 {i !== ingredients.length - 1 && <View style={styles.thinLine} />}
               </Swipeable>
@@ -1195,14 +1008,13 @@ export default function CaptureScreen() {
             <Text style={{ color: COLORS.text, fontWeight: "800" }}>+ Add Ingredient</Text>
           </TouchableOpacity>
 
-          {/* Steps */}
           <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "900", marginBottom: 8 }}>Steps</Text>
           <View style={{ backgroundColor: COLORS.card, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, marginBottom: 12 }}>
             {steps.map((st, i) => (
               <Swipeable key={`step-${i}`} renderRightActions={() => renderRightActions(() => setSteps((a) => a.filter((_, idx) => idx !== i)))} overshootRight={false} friction={2}>
                 <View style={styles.row}>
                   <Text style={styles.rowIndex}>{i + 1}.</Text>
-                  <TextInput value={st} onChangeText={(t) => setSteps((a) => a.map((x, idx) => (idx === i ? t : x)))} placeholder="Mix everything…" placeholderTextColor="#64748b" multiline style={[styles.rowInput, { minHeight: 60 }]} />
+                  <TextInput value={st} onChangeText={(t) => setSteps((a) => a.map((x, idx) => (idx === i ? t : x)))} placeholder="Brown sausage, then…" placeholderTextColor="#64748b" multiline style={[styles.rowInput, { minHeight: 60 }]} />
                 </View>
                 {i !== steps.length - 1 && <View style={styles.thinLine} />}
               </Swipeable>
@@ -1213,7 +1025,6 @@ export default function CaptureScreen() {
           </TouchableOpacity>
         </ScrollView>
 
-        {/* Save bar */}
         <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 12, backgroundColor: COLORS.bg, borderTopWidth: 1, borderColor: COLORS.border }}>
           <TouchableOpacity onPress={onSave} disabled={saving} style={{ backgroundColor: saving ? "#475569" : COLORS.green, paddingVertical: 14, borderRadius: 12, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, opacity: saving ? 0.7 : 1 }}>
             {saving && <ActivityIndicator size="small" color="#fff" />}
@@ -1221,22 +1032,25 @@ export default function CaptureScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* TikTok snapper */}
+        {/* TikTok snapper (embed is fine only for screenshots) */}
         <TikTokSnap
           url={snapUrl}
           visible={snapVisible}
           reloadKey={snapReloadKey}
           resnapKey={snapResnapKey}
-          zoom={1.2}
-          focusY={FOCUS_Y_DEFAULT}
+          zoom={snapZoom}
+          focusY={snapFocusY}
           captureDelayMs={CAPTURE_DELAY_MS}
           onCancel={() => {
             snapCancelledRef.current = true;
             setSnapVisible(false);
             setImprovingSnap(false);
+            setTikTokShots([]);
             if (snapRejectRef.current) { snapRejectRef.current(new Error("snap-cancelled")); snapRejectRef.current = null; }
           }}
           onFound={async (uri) => {
+            setTikTokShots((prev)=> (prev.includes(uri) ? prev : [...prev, uri]));
+            console.log("📸 snap onFound", uri);
             gotSomethingForRunRef.current = true;
             const fixed = await validateOrRepairLocal(uri);
             if (fixed) setGoodPreview(fixed, lastResolvedUrlRef.current);
@@ -1247,15 +1061,12 @@ export default function CaptureScreen() {
           }}
         />
 
-        {/* TitleSnap (optional) */}
-        <TitleSnap
-          visible={titleSnapVisible}
-          url={queuedTitleSnapUrl || ""}
-          onFound={(good) => {
-            if (good && !isTikTokJunkTitle(good) && isWeakTitle(title)) setTitle(cleanTitle(good, queuedTitleSnapUrl || ""));
-            setTitleSnapVisible(false); setQueuedTitleSnapUrl(null);
-          }}
-          onClose={() => { setTitleSnapVisible(false); setQueuedTitleSnapUrl(null); }}
+        {/* DOM Scraper — returns caption + comments */}
+        <TTDomScraper
+          visible={domScraperVisible}
+          url={domScraperUrl}
+          onClose={() => setDomScraperVisible(false)}
+          onResult={(payload) => { domScraperResolverRef.current?.(payload); setDomScraperVisible(false); }}
         />
 
         {/* HUD */}
@@ -1271,7 +1082,7 @@ export default function CaptureScreen() {
   );
 }
 
-/* ---------------------------- list row styles ---------------------------- */
+// -------------- styles for list rows --------------
 const styles = StyleSheet.create({
   swipeRightActionContainer: { justifyContent: "center", alignItems: "flex-end" },
   swipeDeleteButton: { backgroundColor: COLORS.red, paddingHorizontal: 16, justifyContent: "center", alignItems: "center", minWidth: 88, borderTopRightRadius: 12, borderBottomRightRadius: 12 },
@@ -1282,7 +1093,7 @@ const styles = StyleSheet.create({
   thinLine: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.border, marginHorizontal: 10 },
 });
 
-/* ---------------------------- HUD + dialogs (unchanged) ---------------------------- */
+// -------------- HUD + dialogs (unchanged visuals) --------------
 function useLoop(duration = 1200, delay = 0) {
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -1325,6 +1136,7 @@ const { width: SCREEN_W } = Dimensions.get("window");
 const RADAR_SIZE = Math.min(SCREEN_W * 0.8, 340);
 const BLIP_COUNT = 7;
 type HUDPhase = "scanning" | "acquired";
+
 function MilitaryImportOverlay({
   visible,
   phase = "scanning",
@@ -1337,8 +1149,6 @@ function MilitaryImportOverlay({
   const spinStyle = useSpin(2000);
   const centerPulse = useLoop(1400, 0);
   const blipAnims = useBlipAnims(BLIP_COUNT, 200);
-  const progressPct = Math.max(0, Math.min(stageIndex / steps.length, 1)) * 100;
-
   const acquiredAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (visible && phase === "acquired") {
@@ -1351,15 +1161,12 @@ function MilitaryImportOverlay({
   }, [visible, phase, acquiredAnim]);
   const acquiredScale = acquiredAnim.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.06] });
   const acquiredOpacity = acquiredAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
-
   if (!visible) return null;
-
   return (
     <Modal visible animationType="none" transparent statusBarTranslucent presentationStyle="overFullScreen" hardwareAccelerated>
       <View style={hudBackdrop.backdrop}>
         <View style={hudBackdrop.card}>
           <Text style={hudBackdrop.headline}>{phase === "acquired" ? "LOCK CONFIRMED" : headline}</Text>
-
           <View style={hudBackdrop.radarWrap}>
             <Svg width={RADAR_SIZE} height={RADAR_SIZE}>
               <Circle cx={RADAR_SIZE / 2} cy={RADAR_SIZE / 2} r={RADAR_SIZE * 0.48} stroke="rgba(47,174,102,0.18)" strokeWidth={1} fill="none" />
@@ -1368,12 +1175,10 @@ function MilitaryImportOverlay({
               <Line x1={RADAR_SIZE * 0.1} y1={RADAR_SIZE / 2} x2={RADAR_SIZE * 0.9} y2={RADAR_SIZE / 2} stroke="rgba(47,174,102,0.18)" strokeWidth={1} />
               <Line x1={RADAR_SIZE / 2} y1={RADAR_SIZE * 0.1} x2={RADAR_SIZE / 2} y2={RADAR_SIZE * 0.9} stroke="rgba(47,174,102,0.18)" strokeWidth={1} />
             </Svg>
-
             <Animated.View style={[hudBackdrop.beamPivot, spinStyle]}>
               <View style={hudBackdrop.beamArm} />
               <View style={hudBackdrop.beamGlow} />
             </Animated.View>
-
             {Array.from({ length: BLIP_COUNT }).map((_, i) => {
               const r = (RADAR_SIZE / 2) * (0.22 + (i / BLIP_COUNT) * 0.65);
               const theta = (Math.PI * 2 * (i + 1)) / BLIP_COUNT;
@@ -1384,17 +1189,14 @@ function MilitaryImportOverlay({
               const opacity = a.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] });
               return (<Animated.View key={`blip-${i}`} style={{ position: "absolute", left: x - 6, top: y - 6, width: 12, height: 12, borderRadius: 6, backgroundColor: "rgba(47,174,102,0.9)", opacity, transform: [{ scale }] }} />);
             })}
-
             <Animated.View style={[hudBackdrop.centerDot, { transform: [{ scale: centerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.2] }) }] }]} />
-
             {phase === "acquired" && (
               <Animated.View style={[hudBackdrop.acquiredWrap, { opacity: acquiredOpacity, transform: [{ scale: acquiredScale }] }]}>
                 <Text style={hudBackdrop.acquiredText}>TARGET ACQUIRED</Text>
               </Animated.View>
             )}
           </View>
-
-          <View style={[hudBackdrop.stepsBox, phase === "acquired" && { opacity: 0.5 }]}>
+          <View style={hudBackdrop.stepsBox}>
             {steps.map((label, i) => {
               const done = i < stageIndex, active = i === stageIndex;
               return (
@@ -1407,7 +1209,7 @@ function MilitaryImportOverlay({
               );
             })}
           </View>
-          <View style={hudBackdrop.progressOuter}><View style={[hudBackdrop.progressInner, { width: `${progressPct}%` }]} /></View>
+          <View style={hudBackdrop.progressOuter}><View style={[hudBackdrop.progressInner, { width: `${Math.max(0, Math.min(stageIndex / steps.length, 1)) * 100}%` }]} /></View>
         </View>
       </View>
     </Modal>
@@ -1432,7 +1234,7 @@ const hudBackdrop = StyleSheet.create({
   progressInner: { height: "100%", backgroundColor: MESSHALL_GREEN },
 });
 
-/* ---------------------------- mini red "aborted" pill ---------------------------- */
+// mini red pill
 function MissionAbortedPopup({ visible, text = "MISSION ABORTED", onRequestClose }: { visible: boolean; text?: string; onRequestClose: () => void; }) {
   const opacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.9)).current;
@@ -1468,21 +1270,15 @@ const abortStyles = StyleSheet.create({
   pillText: { color: COLORS.red, fontSize: 18, fontWeight: "900", letterSpacing: 1.2, textAlign: "center" },
 });
 
-/* ---------------------------- pretty success dialog ---------------------------- */
+// success dialog
 function ThemedDialog({
   visible,
   title = "Saved!",
   message = "Your recipe is safely stored.",
   onClose,
-}: {
-  visible: boolean;
-  title?: string;
-  message?: string;
-  onClose: () => void;
-}) {
+}: { visible: boolean; title?: string; message?: string; onClose: () => void; }) {
   const opacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.96)).current;
-
   useEffect(() => {
     if (visible) {
       Animated.parallel([
@@ -1496,25 +1292,17 @@ function ThemedDialog({
       ]).start();
     }
   }, [visible, opacity, scale]);
-
   if (!visible) return null;
-
   return (
     <Modal transparent statusBarTranslucent animationType="none" onRequestClose={onClose}>
       <TouchableWithoutFeedback onPress={onClose}>
         <Animated.View style={[dialogStyles.backdrop, { opacity }]}>
-          <TouchableWithoutFeedback onPress={() => { /* block taps inside card */ }}>
+          <TouchableWithoutFeedback onPress={() => {}}>
             <Animated.View style={[dialogStyles.card, { transform: [{ scale }] }]}>
-              <View style={dialogStyles.checkCircle}>
-                <Text style={{ color: "#0B1120", fontWeight: "900", fontSize: 18 }}>✓</Text>
-              </View>
-
+              <View style={dialogStyles.checkCircle}><Text style={{ color: "#0B1120", fontWeight: "900", fontSize: 18 }}>✓</Text></View>
               <Text style={dialogStyles.title}>{title}</Text>
               {!!message && <Text style={dialogStyles.message}>{message}</Text>}
-
-              <TouchableOpacity onPress={onClose} style={dialogStyles.okBtn}>
-                <Text style={dialogStyles.okText}>OK</Text>
-              </TouchableOpacity>
+              <TouchableOpacity onPress={onClose} style={dialogStyles.okBtn}><Text style={dialogStyles.okText}>OK</Text></TouchableOpacity>
             </Animated.View>
           </TouchableWithoutFeedback>
         </Animated.View>
@@ -1524,32 +1312,15 @@ function ThemedDialog({
 }
 const dialogStyles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center", padding: 20 },
-  card: {
-    width: "92%",
-    maxWidth: 420,
-    backgroundColor: COLORS.card,
-    borderRadius: 16,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: "rgba(47,174,102,0.25)",
-    shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 12,
-    alignItems: "center",
-  },
-  checkCircle: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: MESSHALL_GREEN, alignItems: "center", justifyContent: "center", marginBottom: 8,
-  },
+  card: { width: "92%", maxWidth: 420, backgroundColor: COLORS.card, borderRadius: 16, padding: 18, borderWidth: 1, borderColor: "rgba(47,174,102,0.25)", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 18, shadowOffset: { width: 0, height: 12 }, elevation: 12, alignItems: "center" },
+  checkCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: MESSHALL_GREEN, alignItems: "center", justifyContent: "center", marginBottom: 8 },
   title: { color: "#e2e8f0", fontSize: 20, fontWeight: "900", marginTop: 2, textAlign: "center" },
   message: { color: "#b6c2d0", fontSize: 14, marginTop: 6, textAlign: "center" },
   okBtn: { marginTop: 14, backgroundColor: MESSHALL_GREEN, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 22 },
   okText: { color: "#0B1120", fontSize: 14, fontWeight: "900", letterSpacing: 0.3 },
 });
 
-/* ---------------------------- duplicate detection ---------------------------- */
+// -------------- duplicate detection --------------
 async function buildDuplicateCandidatesFromRaw(raw: string): Promise<string[]> {
   const ensured = ensureHttps(raw.trim());
   const finalResolved = await resolveFinalUrl(ensured);
