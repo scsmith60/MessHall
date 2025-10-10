@@ -1,14 +1,11 @@
 // lib/unified_parser.ts
 //
-// 🧒 what this file does (like I'm 5)
-// 1) We split the big caption into Ingredients and Instructions.
-// 2) We make tiny cleanups so things look nice:
-//    - Ingredients: remove emojis (🍗🧂), bullets (• - *), tidy spaces.
-//    - Steps: remove leading numbers (1. 2) 3.), bullets, and chop off hashtag tails.
-//    - We also break inline "1. 2) 3." into new lines (steps) so each becomes one row.
-// 3) We return { ingredients[], steps[], confidence, debug }.
-//
-// NOTE: This keeps your working logic. We only added gentle cleanup helpers.
+// 🧒 like I'm 5:
+// - We find Ingredients and Steps.
+// - We clean silly stuff (emojis, bullets, numbers, hashtags).
+// - We fix a wrap bug: "8x" on one line + "inch ..." on next line -> glued together.
+// - NEW: If one step is a big long paragraph, we split it into little steps
+//        at sentence breaks and cooking words (Melt, Bring, Pour, Sprinkle, etc).
 
 export type ParseResult = {
   ingredients: string[];
@@ -17,72 +14,62 @@ export type ParseResult = {
   debug?: string;
 };
 
-// ---------- helpers ----------
-
-// non-breaking spaces that sneak in
-const NBSP_RE = /\u00A0/g;
-
-// "emoji" range (kept friendly: remove food/face/etc. from output lines)
+// ---------- tiny helpers (just cleaning gunk) ----------
+const NBSP_RE = /\u00A0/g;     // non-breaking space
+const MULT_SIGN_RE = /\u00D7/g; // “×” -> "x"
 const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu;
 
-// bullets we want to trim from the start of a line
-const LEAD_BULLET_RE = /^\s*(?:[•\-*]\s+)+/;
-
-// step numbers like "1.", "2)", "10." at the beginning of a line
-const LEAD_NUM_RE = /^\s*\d{1,2}[.)]\s+/;
-
-// simple hashtag tail at end of a line: " ... #tag #tag2"
+const LEAD_BULLET_RE = /^\s*(?:[•\-*]\s+)+/;     // • - *
+const LEAD_NUM_RE = /^\s*\d{1,2}[.)]\s+/;        // "1. " or "2) "
 const TRAIL_HASHTAGS_RE = /\s*(?:#[\p{L}\p{N}_-]+(?:\s+#[\p{L}\p{N}_-]+)*)\s*$/u;
 
 function softClean(s: string): string {
   return (s || "")
     .replace(NBSP_RE, " ")
+    .replace(MULT_SIGN_RE, "x") // 9×13 -> 9x13
     .replace(/\r/g, "\n")
     .trim();
 }
+function stripEmojis(s: string) { return s.replace(EMOJI_RE, ""); }
+function stripLeadBullets(s: string) { return s.replace(LEAD_BULLET_RE, ""); }
+function stripLeadNumbers(s: string) { return s.replace(LEAD_NUM_RE, ""); }
+function stripTrailHashtags(s: string) { return s.replace(TRAIL_HASHTAGS_RE, ""); }
+function tidySpaces(s: string) { return s.replace(/\s+/g, " ").trim(); }
 
-// removes emoji anywhere in a line (ingredients look cleaner)
-function stripEmojis(s: string): string {
-  return s.replace(EMOJI_RE, "");
-}
-
-// removes bullets at the start: "• ½ cup..."  -> "½ cup..."
-function stripLeadBullets(s: string): string {
-  return s.replace(LEAD_BULLET_RE, "");
-}
-
-// removes leading numbers: "1. Mix …" or "2) Stir …" -> "Mix …"
-function stripLeadNumbers(s: string): string {
-  return s.replace(LEAD_NUM_RE, "");
-}
-
-// removes trailing hashtags: "Serve hot! #yum #dinner" -> "Serve hot!"
-function stripTrailHashtags(s: string): string {
-  return s.replace(TRAIL_HASHTAGS_RE, "");
-}
-
-// final tidy: collapse spaces
-function tidySpaces(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
-}
-
-// chop off when hashtags or "less" sections begin (caption tail)
 function stripTailNoise(s: string): string {
   const m = s.match(/(\n\s*#|\n\s*less\b)/i);
   return m ? s.slice(0, m.index) : s;
 }
-
 function uniqueNonEmpty(arr: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const x of arr) {
-    const t = x.trim();
-    if (t && !seen.has(t)) { seen.add(t); out.push(t); }
-  }
+  const seen = new Set<string>(); const out: string[] = [];
+  for (const x of arr) { const t = x.trim(); if (t && !seen.has(t)) { seen.add(t); out.push(t); } }
   return out;
 }
 
-// ---------- section detection ----------
+// ---------- fix split pan sizes like "8x\ninch" (glue lines) ----------
+function fixWrappedPanSizes(text: string): string {
+  const lines = text.split("\n");
+  const fixed: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const cur = lines[i] ?? "";
+    const next = lines[i + 1] ?? "";
+
+    const endsWithLooseX = /\b\d+\s*x\s*$/i.test(cur);
+    const nextLooksLikeDimension =
+      /^(?:[-–—]?\s*)?(?:inch|in\.)\b/i.test(next) || /^\s*\d+\s*x\s*\d+/i.test(next);
+
+    if (endsWithLooseX && nextLooksLikeDimension) {
+      fixed.push(cur.replace(/\s*$/, "") + " " + next.replace(/^\s*/, ""));
+      i += 1;
+      continue;
+    }
+    fixed.push(cur);
+  }
+  return fixed.join("\n");
+}
+
+// ---------- find sections (Ingredients / Steps headers) ----------
 const ING_RE = /\b(ingredients?|what you need|you(?:'|’)ll need)\b[:\-–—]?\s*/i;
 const STEP_HDR_RE = /\b(instructions?|directions?|steps?|method)\b[:\-–—]?\s*/i;
 
@@ -91,10 +78,7 @@ function splitSections(raw: string) {
   const iIng = lower.search(ING_RE);
   const iStep = lower.search(STEP_HDR_RE);
 
-  let before = raw;
-  let ingPart = "";
-  let stepPart = "";
-
+  let before = raw, ingPart = "", stepPart = "";
   if (iIng >= 0) ingPart = raw.slice(iIng);
   if (iStep >= 0) stepPart = raw.slice(iStep);
 
@@ -104,92 +88,148 @@ function splitSections(raw: string) {
   return { before, ingPart, stepPart, iIng, iStep };
 }
 
-// ---------- inline numbered steps → new lines (only in step part) ----------
+// ---------- normalize step area (turn inline "1. 2.)" into new lines) ----------
 const INLINE_NUM = /(\s)(\d{1,2}[.)]\s+)/g;
 const INLINE_BULLET = /(\s)([-*•]\s+)/g;
-
 function normalizeStepArea(s: string): string {
   if (!s) return "";
-  // add a newline before each inline number/bullet
   s = s.replace(INLINE_NUM, "\n$2");
   s = s.replace(INLINE_BULLET, "\n$2");
-  // collapse extra newlines
   s = s.replace(/\n{2,}/g, "\n");
   return s.trim();
 }
 
-// ---------- line classifiers (unchanged, but friendly) ----------
+// ---------- line looks-like rules ----------
 const UNIT_WORD = /(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|ml|l|g|gram|kg|lb|pound|stick|clove|cloves|pinch|dash)\b/i;
 const FRACTIONS = /[¼½¾⅓⅔⅛⅜⅝⅞]/;
 
 function looksLikeIngredient(line: string): boolean {
-  const t = line.trim();
-  if (!t) return false;
-  // quantities: "1", "1/2", "½", "2-3", "1–2"
+  const t = line.trim(); if (!t) return false;
   const qty = /^(\d+(\s*[-–]\s*\d+)?|\d+\s*\/\s*\d+|[¼½¾⅓⅔⅛⅜⅝⅞])\b/.test(t);
   return qty || UNIT_WORD.test(t) || FRACTIONS.test(t);
 }
-
 function looksLikeStep(line: string): boolean {
-  const t = line.trim();
-  if (!t) return false;
+  const t = line.trim(); if (!t) return false;
   if (/^\d{1,2}[.)]\s+/.test(t)) return true;
   if (/^\s*[-*•]\s+/.test(t)) return true;
   if (/\.\s*$/.test(t)) return true;
-  // common cooking verbs
-  if (/^(cut|slice|dice|mix|stir|whisk|combine|add|bake|fry|air\s*fry|preheat|heat|cook|season|coat|marinate|pour|fold|serve|flip|shake|toss|garnish)\b/i.test(t)) return true;
-  return false;
+  if (/^(cut|slice|dice|mix|stir|whisk|combine|add|bake|fry|air\s*fry|preheat|heat|cook|season|coat|marinate|pour|fold|serve|flip|shake|toss|garnish|line|melt|bring|remove|sprinkle|spread|chill|cut)\b/i.test(t)) return true;
+  return true; // be generous: anything in steps area can be a step seed
 }
 
-// ---------- per-line cleanup for UI ----------
-
-// Ingredients: remove emojis + bullets; tidy spaces.
+// ---------- clean lines for UI ----------
 function cleanIngredientLine(line: string): string {
   return tidySpaces(stripLeadBullets(stripEmojis(line)));
 }
-
-// Steps: remove numeric index + bullets + trailing hashtags + emojis; tidy spaces.
 function cleanStepLine(line: string): string {
-  const stripped = stripTrailHashtags(
-    stripLeadBullets(
-      stripLeadNumbers(
-        stripEmojis(line)
-      )
-    )
-  );
+  const stripped = stripTrailHashtags(stripLeadBullets(stripLeadNumbers(stripEmojis(line))));
   return tidySpaces(stripped);
 }
 
-// ---------- main parse ----------
+// ---------- merge orphan "8x" + "inch ..." after splitting ----------
+function mergeOrphanPanSizeSteps(steps: string[]): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < steps.length) {
+    const cur = steps[i];
+    const next = steps[i + 1] ?? "";
+
+    const endsWithLooseX = /\b\d+\s*x$/i.test(cur);
+    const nextStartsWithInchOrDim = /^(?:inch|in\.)\b/i.test(next) || /^\d+\s*x\s*\d+/i.test(next);
+
+    if (endsWithLooseX && nextStartsWithInchOrDim) {
+      out.push((cur + " " + next).trim());
+      i += 2;
+    } else {
+      out.push(cur);
+      i += 1;
+    }
+  }
+  return out;
+}
+
+// ---------- NEW: explode long paragraphs into mini steps ----------
+/**
+ * 👶 what this does:
+ * If a step is a big wall of text, we slice it into smaller steps using:
+ *  - sentence ends: a period followed by a capital letter
+ *  - cooking cue words: Melt, Bring, Remove, Pour, Sprinkle, Spread, Let sit, Chill, Cut, etc.
+ */
+const COOKING_CUES = [
+  "Preheat","Heat","Melt","Whisk","Stir","Mix","Combine","Bring","Simmer","Boil","Reduce",
+  "Add","Fold","Pour","Spread","Sprinkle","Season","Coat","Cook","Bake","Fry","Air fry",
+  "Remove","Transfer","Let sit","Rest","Chill","Refrigerate","Cool","Cut","Slice","Serve","Garnish","Line"
+];
+
+const cueRegex = new RegExp(
+  // split if we see a period and then a cue word, or a start-of-line cue (capital/lower)
+  String.raw`(?<=\.)\s+(?=(?:${COOKING_CUES.join("|")})\b)|\s+(?=(?:${COOKING_CUES.join("|")})\b)`,
+  "g"
+);
+
+function explodeCompoundSteps(steps: string[]): string[] {
+  const out: string[] = [];
+  for (const s of steps) {
+    // skip tiny lines
+    const base = s.trim();
+    if (!base) continue;
+
+    // First split on clear sentence ends (". " + Capital)
+    let parts = base.split(/(?<=\.)\s+(?=[A-Z])/g);
+
+    // For each sentence, also split on cooking cues inside
+    const finer: string[] = [];
+    for (const p of parts) {
+      const trimmed = p.trim();
+      if (!trimmed) continue;
+
+      // if still long and has multiple cues, break it more
+      if (trimmed.length > 140 || COOKING_CUES.some(c => new RegExp(`\\b${c}\\b`, "i").test(trimmed))) {
+        const sub = trimmed.split(cueRegex).map(x => x.trim()).filter(Boolean);
+        finer.push(...sub);
+      } else {
+        finer.push(trimmed);
+      }
+    }
+
+    // push cleaned chunks
+    for (const f of finer) {
+      // don’t leave trailing periods-only chunks
+      const cleaned = f.replace(/^\d+[.)]\s*/, "").trim();
+      if (cleaned) out.push(cleaned);
+    }
+  }
+  return out;
+}
+
+// ---------- main function ----------
 export function parseRecipeText(input: string): ParseResult {
   if (!input) return { ingredients: [], steps: [], confidence: "low", debug: "empty" };
 
-  // light clean
+  // clean + early noise trim
   let raw = softClean(input);
-
-  // stop early noise (#hashtags tail)
   raw = stripTailNoise(raw);
 
-  // split into sections by headers
+  // glue "8x" + "inch" wraps
+  raw = fixWrappedPanSizes(raw);
+
+  // split by sections
   const { ingPart, stepPart, iIng, iStep } = splitSections(raw);
 
-  // INGRIDIENTS
-  let ingBlob = "";
-  if (iIng >= 0) ingBlob = stripTailNoise(ingPart.replace(ING_RE, ""));
-  else ingBlob = raw; // heuristic fallback
+  // ingredients blob (fallback to whole text if no header)
+  let ingBlob = iIng >= 0 ? stripTailNoise(ingPart.replace(ING_RE, "")) : raw;
 
-  // STEPS
-  let stepBlob = "";
-  if (iStep >= 0) stepBlob = stripTailNoise(stepPart.replace(STEP_HDR_RE, ""));
+  // steps blob
+  let stepBlob = iStep >= 0 ? stripTailNoise(stepPart.replace(STEP_HDR_RE, "")) : "";
 
-  // IMPORTANT: normalize ONLY the step area
+  // normalize only the steps area
   stepBlob = normalizeStepArea(stepBlob);
 
-  // break into lines
+  // lines
   const ingLinesRaw = ingBlob.split(/\n+/).map(s => s.trim()).filter(Boolean);
   const stepLinesRaw = stepBlob.split(/\n+/).map(s => s.trim()).filter(Boolean);
 
-  // classify
+  // classify + clean
   const ingredients = uniqueNonEmpty(
     ingLinesRaw.filter(looksLikeIngredient).map(cleanIngredientLine)
   ).slice(0, 60);
@@ -198,14 +238,24 @@ export function parseRecipeText(input: string): ParseResult {
     stepLinesRaw.filter(looksLikeStep).map(cleanStepLine)
   );
 
-  // fallback: try latter half if we somehow missed step header
+  // merge 8x + inch orphans
+  if (steps.length >= 2) steps = mergeOrphanPanSizeSteps(steps);
+
+  // 🌟 NEW: break big paragraphs into mini steps
+  if (steps.length) steps = explodeCompoundSteps(steps);
+
+  // fallback if we somehow got nothing
   if (!steps.length) {
     const tail = normalizeStepArea(raw.slice(Math.floor(raw.length * 0.4)));
     const tailLines = tail.split(/\n+/).map(s => s.trim()).filter(Boolean);
     steps = uniqueNonEmpty(tailLines.filter(looksLikeStep).map(cleanStepLine));
+    if (steps.length >= 2) {
+      steps = mergeOrphanPanSizeSteps(steps);
+      steps = explodeCompoundSteps(steps);
+    }
   }
 
-  // confidence heuristic
+  // confidence feel
   let confidence: "low" | "medium" | "high" = "low";
   if (ingredients.length >= 5 && steps.length >= 3) confidence = "high";
   else if (ingredients.length >= 3 || steps.length >= 2) confidence = "medium";
