@@ -146,8 +146,46 @@ function cleanTitle(raw: string, url: string) {
   s = s.replace(/\b\(?video\)?\b\s*$/i, "").trim();
   return s;
 }
+// ------------------------------
+// 🍭 Title helpers (fixed)
+// ------------------------------
+
+/** Turn a TikTok caption into a short, pretty recipe title */
+function captionToNiceTitle(raw?: string): string {
+  if (!raw) return "";
+  let s = String(raw)
+    .replace(/\r|\t/g, " ")
+    .replace(/https?:\/\/\S+/gi, "")                  // drop links
+    .replace(/[#@][\w_]+/g, "")                       // drop #tags/@users
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "") // drop emojis
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  // Cut off when the caption starts listing sections like Ingredients, Directions, etc.
+  const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal)/i;
+  const m = s.match(cutWords);
+  if (m && m.index! > 0) s = s.slice(0, m.index).trim();
+
+  // Prefer first line or first sentence that’s at least a few chars
+  const firstLine = (s.split("\n")[0] || s).trim();
+  const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
+  if (firstSentence && firstSentence.length >= 6) s = firstSentence.trim();
+  else s = firstLine;
+
+  // Trim trailing site names like " | TikTok"
+  s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
+
+  // Remove a dangling single period, e.g. "Title ."
+  s = s.replace(/\s*\.$/, "");
+
+  // Normalize dashes and spaces
+  s = s.replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
+  return s;
+}
+
+/** Decide if a TikTok-ish title is junk */
 function isTikTokJunkTitle(s?: string | null) {
-  const t = (s || "").toLowerCase().replace(/[––]/g, "-").replace(/\s+/g, " ").trim();
+  const t = (s || "").toLowerCase().trim();
   if (!t) return true;
   if (t === "tiktok") return true;
   if (t === "make your day") return true;
@@ -155,6 +193,8 @@ function isTikTokJunkTitle(s?: string | null) {
   if (t.includes("tiktok") && t.includes("make your day")) return true;
   return false;
 }
+
+/** Decide if current title is too weak to keep */
 function isWeakTitle(t?: string | null) {
   const s = (t || "").trim();
   if (!s) return true;
@@ -163,8 +203,11 @@ function isWeakTitle(t?: string | null) {
   if (lower === "food network" || lower === "allrecipes" || lower === "youtube") return true;
   if (s.length < 4) return true;
   if (/^\d{6,}$/.test(s)) return true;
+  // If it starts directly with "Ingredients:" it's not a real title
+  if (/^\s*ingredients?:/i.test(s)) return true;
   return false;
 }
+
 // 🧠 Find "Ingredients" and "Steps" inside one long TikTok caption
 function sectionizeCaption(raw: string) {
   const s = (raw || "").replace(/\r/g, "\n");
@@ -707,7 +750,16 @@ export default function CaptureScreen() {
           dbg("📄 STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
           // 👇 extra trace to know where it came from and if “see more” was clicked
           if (domPayload?.debug) dbg("🧪 TTDOM DEBUG:", domPayload.debug);
-        } catch (e) { dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e)); }
+        
+          // 👉 NEW: try to set a nice title from the TikTok caption if ours is weak
+          try {
+            const capTitle = captionToNiceTitle(domPayload?.caption || "");
+            if (capTitle && isWeakTitle(title)) {
+              setTitle(cleanTitle(capTitle, url));
+              dbg("🪪 TITLE from caption:", capTitle);
+            }
+          } catch {}
+} catch (e) { dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e)); }
 
         // STEP 2: PARSE — caption first (photos often hold full recipe here)
         try {
