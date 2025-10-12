@@ -35,11 +35,11 @@ import Svg, { Line, Circle } from "react-native-svg";
 // -------------- theme --------------
 const COLORS = {
   bg: "#0B1120",
-  card: "#111827",
+  card: "#0E1726",
   sunken: "#1F2937",
   text: "#E5E7EB",
-  sub: "#9CA3AF",
-  accent: "#60A5FA",
+  sub: "#A8B3BA",
+  accent: "#22c55e",
   green: "#22c55e",
   red: "#EF4444",
   border: "#243042",
@@ -1198,9 +1198,10 @@ function useSpin(duration = 1800) {
   const deg = v.current!.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
   return { transform: [{ rotate: deg }] } as const;
 }
-const { width: SCREEN_W } = Dimensions.get("window");
-const RADAR_SIZE = Math.min(SCREEN_W * 0.8, 340);
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
+const RADAR_SIZE = Math.min(SCREEN_W * 0.95, 460);
 const BLIP_COUNT = 7;
+const HUD_CARD_MIN_H = Math.min(SCREEN_H * 0.86, 760);
 type HUDPhase = "scanning" | "acquired";
 
 function MilitaryImportOverlay({
@@ -1283,9 +1284,29 @@ function MilitaryImportOverlay({
 }
 const hudBackdrop = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.65)", alignItems: "center", justifyContent: "center", padding: 16 },
-  card: { width: "100%", maxWidth: 540, backgroundColor: COLORS.bg, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: "rgba(147,197,114,0.15)" },
+  card: {
+    width: "100%",
+    maxWidth: 540,
+    backgroundColor: COLORS.bg,
+    borderRadius: 16,
+    padding: 20,
+    paddingBottom: 28,
+    borderWidth: 1,
+    borderColor: "rgba(147,197,114,0.15)",
+    minHeight: HUD_CARD_MIN_H, // 👈 gives the card extra height
+  },
   headline: { color: "#d1fae5", fontSize: 18, textAlign: "center", letterSpacing: 1, marginBottom: 12 },
-  radarWrap: { alignSelf: "center", width: RADAR_SIZE, height: RADAR_SIZE, alignItems: "center", justifyContent: "center", marginBottom: 12, overflow: "hidden", borderRadius: RADAR_SIZE / 2, backgroundColor: "rgba(20,31,25,0.35)" },
+  radarWrap: {
+    alignSelf: "center",
+    width: RADAR_SIZE,
+    height: RADAR_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
+    marginVertical: 16,        // 👈 was marginBottom: 12
+    overflow: "hidden",
+    borderRadius: RADAR_SIZE / 2,
+    backgroundColor: "rgba(20,31,25,0.35)",
+  },
   beamPivot: { position: "absolute", left: 0, top: 0, width: RADAR_SIZE, height: RADAR_SIZE },
   beamArm: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 1, width: RADAR_SIZE / 2, height: 2, backgroundColor: "rgba(47,174,102,0.9)" },
   beamGlow: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 8, width: RADAR_SIZE / 2, height: 16, backgroundColor: "rgba(47,174,102,0.12)" },
