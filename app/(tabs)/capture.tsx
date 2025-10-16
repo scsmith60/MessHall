@@ -59,7 +59,7 @@ const MIN_LOCAL_BYTES = 30_000;
 const FOCUS_Y_DEFAULT = 0.4;
 
 // -------------- tiny utils --------------
-// wait or give up
+// wait || give up
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return await Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
 }
@@ -151,37 +151,92 @@ function cleanTitle(raw: string, url: string) {
 // ------------------------------
 
 /** Turn a TikTok caption into a short, pretty recipe title */
+
+// Turns a TikTok caption into a short, neat title candidate (kid-friendly)
 function captionToNiceTitle(raw?: string): string {
   if (!raw) return "";
   let s = String(raw)
-    .replace(/\r|\t/g, " ")
-    .replace(/https?:\/\/\S+/gi, "")                  // drop links
-    .replace(/[#@][\w_]+/g, "")                       // drop #tags/@users
-    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "") // drop emojis
-    .replace(/\s{2,}/g, " ")
+    .replace(/\r|\t/g, " ")                         // make spaces normal
+    .replace(/https?:\/\/\S+/gi, "")                // remove links
+    .replace(/[#@][\w_]+/g, "")                     // remove #tags and @users
+    // ✅ SAFE EMOJI REMOVER (no \u{...}): surrogate pairs + misc symbols — keep on ONE LINE
+    .replace(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF])/g, "")
+    .replace(/\s{2,}/g, " ")                        // squash extra spaces
     .trim();
 
-  // Cut off when the caption starts listing sections like Ingredients, Directions, etc.
+  // stop before sections like "Ingredients", "Instructions", etc.
   const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal)/i;
   const m = s.match(cutWords);
   if (m && m.index! > 0) s = s.slice(0, m.index).trim();
 
-  // Prefer first line or first sentence that’s at least a few chars
+  // first sentence if present, else first line
   const firstLine = (s.split("\n")[0] || s).trim();
   const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
-  if (firstSentence && firstSentence.length >= 6) s = firstSentence.trim();
-  else s = firstLine;
+  s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
 
-  // Trim trailing site names like " | TikTok"
+  // trim site tails and tidy punctuation
   s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
-
-  // Remove a dangling single period, e.g. "Title ."
   s = s.replace(/\s*\.$/, "");
-
-  // Normalize dashes and spaces
   s = s.replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
+
+  return s; // ← important semicolon so the chain ends here
+}
+/** 🧼 normalizeDishTitle: trim hype and keep only the dish name.
+ *  Example: "Smoky Poblano Chicken & Black Bean Soup Dive into..." 
+ *           -> "Smoky Poblano Chicken and Black Bean Soup"
+ */
+function normalizeDishTitle(input: string): string {
+  if (!input) return "";
+  let s = String(input);
+
+  // Friendlier: replace ampersand
+  s = s.replace(/&/g, " and ");
+
+  // Cut off common promo/lead-in phrases that come after the dish name
+  s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
+
+  // Remove anything after exclamation || question marks
+  s = s.replace(/\s*[!?].*$/, "");
+
+  // Remove site tails like " | TikTok"
+  s = s.replace(/\s*[|•–—-]\s*(?:tiktok|youtube|instagram|pinterest).*$/i, "");
+
+  // If multiple sentences, keep just the first
+  const firstSentence = s.split(/(?<=\.)\s+/)[0];
+  s = firstSentence || s;
+
+  // Tidy whitespace and trailing dot
+  s = s.replace(/\s{2,}/g, " ").replace(/\s+\.$/, "").trim();
+
   return s;
 }
+/** 🛡️ safeSetTitle: only accept strong, cleaned titles and remember strongest. */
+function safeSetTitle(
+  candidate: string | null | undefined,
+  url: string,
+  current: string,
+  dbg?: (...args:any[])=>void,
+  source = "candidate"
+) {
+  const raw = (candidate ?? "").trim();
+  if (!raw) return;
+  const cleaned = normalizeDishTitle(cleanTitle(raw, url));
+  if (isWeakTitle(cleaned)) { dbg?.("🛡️ TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
+  const prev = (strongTitleRef.current || "").trim();
+  if (!prev || cleaned.length > prev.length) {
+    strongTitleRef.current = cleaned;
+    dbg?.("🛡️ TITLE strongest updated:", source, JSON.stringify(cleaned));
+  }
+  if (!isWeakTitle(current) && current.trim().length >= cleaned.length) {
+    dbg?.("🛡️ TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
+    return;
+  }
+  setTitle(cleaned);
+  dbg?.("🛡️ TITLE set:", source, JSON.stringify(cleaned));
+}
+
+
+
 
 /** Decide if a TikTok-ish title is junk */
 function isTikTokJunkTitle(s?: string | null) {
@@ -249,7 +304,7 @@ function explodeIngredientsBlock(block: string) {
   // rule A: split on explicit bullets
   txt = txt.replace(/\s*•\s*/g, "\n• ");
 
-  // rule B: split on ", " or "; " **when** there's a quantity/unit before it
+  // rule B: split on ", " || "; " **when** there's a quantity/unit before it
   txt = txt.replace(
     /(\d+(?:\.\d+)?|[¼-¾½])\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b\s*[,;]\s*/gi,
     "$&\n"
@@ -481,6 +536,8 @@ export default function CaptureScreen() {
   const [showDebug, setShowDebug] = useState(false);
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
+  // 🛡️ strongest good title during this import run
+  const strongTitleRef = useRef<string>("");
   const [timeMinutes, setTimeMinutes] = useState("");
   const [servings, setServings] = useState("");
   const [ingredients, setIngredients] = useState<string[]>([""]);
@@ -602,6 +659,11 @@ export default function CaptureScreen() {
     snapResolverRef.current = null;
     snapRejectRef.current = null;
     setHudVisible(false);
+      // 🧲 post-close restore
+      setTimeout(() => {
+        const best = (strongTitleRef.current || '').trim();
+        if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore after close:', JSON.stringify(best)); setTitle(best); }
+      }, 0);
     setHudPhase("scanning");
     setSnapVisible(false);
     setDomScraperVisible(false);
@@ -734,7 +796,7 @@ export default function CaptureScreen() {
       // STEP 0: try oEmbed title
       try {
         const best = await getTikTokOEmbedTitle(url);
-        if (best && isWeakTitle(title)) setTitle(cleanTitle(best, url));
+        if (best && isWeakTitle(title)) safeSetTitle(best, url, title, dbg, 'oembed');
         dbg("🪪 STEP 0 oEmbed title:", best ? "got" : "none");
       } catch (e) { dbg("⚠️ STEP 0 oEmbed title failed:", safeErr(e)); }
 
@@ -753,13 +815,14 @@ export default function CaptureScreen() {
         
           // 👉 NEW: try to set a nice title from the TikTok caption if ours is weak
           try {
-            const capTitle = captionToNiceTitle(domPayload?.caption || "");
-            if (capTitle && isWeakTitle(title)) {
-              setTitle(cleanTitle(capTitle, url));
-              dbg("🪪 TITLE from caption:", capTitle);
+            const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
+            const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
+            if (capTitle) {
+              setTitle(capTitle);
+              strongTitleRef.current = capTitle;
+              dbg("🪪 TITLE from caption (final):", capTitle);
             }
-          } catch {}
-} catch (e) { dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e)); }
+          } catch {}} catch (e) { dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e)); }
 
         // STEP 2: PARSE — caption first (photos often hold full recipe here)
         try {
@@ -826,6 +889,9 @@ export default function CaptureScreen() {
             bumpStage(3);
             dbg("🌐 STEP 4 trying OG/Meta description");
             const og = await fetchOgForUrl(url);
+
+            /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
+
             if (og?.description) {
               const parsed = parseRecipeText(og.description);
               dbg("📊 STEP 4 OG parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
@@ -838,8 +904,7 @@ export default function CaptureScreen() {
             }
           }
         } catch (e) { dbg("⚠️ STEP 4 (OG/Meta) failed:", safeErr(e)); }
-
-        // STEP 5: image preview fallback
+// STEP 5: image preview fallback
         try {
           bumpStage(4);
           if (!gotSomethingForRunRef.current) {
@@ -852,7 +917,7 @@ export default function CaptureScreen() {
       } else {
         // non-TikTok path
         const og = await fetchOgForUrl(url);
-        if (og?.title && isWeakTitle(title)) setTitle(cleanTitle(og.title, url));
+        if (og?.title && isWeakTitle(title)) safeSetTitle(og?.title ?? og.title, url, title, dbg, 'og:title');
         if (og?.image) await tryImageUrl(og.image, url);
       }
 
@@ -863,13 +928,23 @@ export default function CaptureScreen() {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("Import error", msg || "Could not read that webpage.");
     } finally {
-      clearTimeout(watchdog);
+      // 🧲 Final guard: restore strongest good title if something clobbered it
+      try {
+        const best = (strongTitleRef.current || '').trim();
+        if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore strongest:', JSON.stringify(best)); setTitle(best); }
+      } catch {}
+clearTimeout(watchdog);
       if (success || gotSomethingForRunRef.current) {
         setHudPhase("acquired");
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         await new Promise((r) => setTimeout(r, 800));
       }
       setHudVisible(false);
+      // 🧲 post-close restore
+      setTimeout(() => {
+        const best = (strongTitleRef.current || '').trim();
+        if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore after close:', JSON.stringify(best)); setTitle(best); }
+      }, 0);
       setDomScraperVisible(false);
       setSnapVisible(false);
     }
@@ -973,7 +1048,13 @@ export default function CaptureScreen() {
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("Save failed", e?.message ?? "Please try again.");
-    } finally { setSaving(false); }
+    } finally {
+      // 🧲 Final guard: restore strongest good title if something clobbered it
+      try {
+        const best = (strongTitleRef.current || '').trim();
+        if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore strongest:', JSON.stringify(best)); setTitle(best); }
+      } catch {}
+setSaving(false); }
   }, [title, timeMinutes, servings, ingredients, steps, previewUri]);
 
   const renderRightActions = (onDelete: () => void) => (
