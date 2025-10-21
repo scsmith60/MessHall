@@ -481,12 +481,35 @@ function keepRealIngredients(lines: string[]): string[] {
 
     // drop lone handles/hashtags
     if (/^[@#][\w._-]+$/.test(s)) return false;
+    if (inlineHashtag.test(s)) return false;
+    if (inlineHandle.test(s)) return false;
+    if (/https?:\/\//i.test(s)) return false;
+
+    // drop obvious serving/yield callouts
+    if (TITLE_SERVING_TOKEN.test(s)) return false;
+    if (/\bmakes\b/i.test(s) && (/[0-9]/.test(s) || servingWords.test(s))) return false;
+
+    // drop prep/cook time callouts that sneak in with the caption
+    if (/\b(prep|cook|total)\s*time\b/i.test(s)) return false;
+
+    // drop "Step" headers or instruction labels
+    if (TITLE_STEP_TOKEN.test(s) || /^step\b/i.test(s)) return false;
+
+    // drop lines that look like instructions (verbs + cues) without a clear measurement
+    if (IG_STEP_VERB_START.test(s)) return false;
+    if (IG_STEP_VERB.test(s) && (!unitWord.test(s) || IG_STEP_CUE.test(s))) return false;
 
     // drop obvious serving/yield callouts
     if (/\b(serves?|servings?|serving size|makes|feeds|yield|yields)\b/i.test(s)) return false;
 
     // drop obvious full-sentence chatter that has no qty nor unit
     if (/[.?!…]$/.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
+
+    // drop promo chatter that sometimes sneaks in
+    if (/\bmore\b.*\brecipes\b/i.test(s)) return false;
+    if (/\bdelicious\s+food\b/i.test(s)) return false;
+    if (/\bchance\s+to\s+be\s+featured\b/i.test(s)) return false;
+    if (/\bfeature[ds]?\b/i.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
 
     return true;
   });
@@ -1253,11 +1276,7 @@ try {
             try {
               const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
               const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
-              if (capTitle) {
-                setTitle(capTitle);
-                strongTitleRef.current = capTitle;
-                dbg("🪪 TITLE from caption (final):", capTitle);
-              }
+              if (capTitle) safeSetTitle(capTitle, url, title, dbg, "tiktok:caption");
             } catch {}
           } catch (e) {
             dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e));
@@ -1332,6 +1351,10 @@ try {
               const og = await fetchOgForUrl(url);
 
               /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
+
+              if (og?.title && isWeakTitle(title)) {
+                safeSetTitle(og.title, url, title, dbg, "tiktok:og:title");
+              }
 
               if (og?.description) {
                 const parsed = parseRecipeText(og.description);
