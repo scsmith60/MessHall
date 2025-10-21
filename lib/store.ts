@@ -3,7 +3,7 @@
 export type RecipeCore = {
   id: string;
   title: string;
-  image: string;
+  image: string | null;
   creator: string;
   knives: number;
   cooks: number;

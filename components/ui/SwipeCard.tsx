@@ -7,7 +7,7 @@ import { COLORS, RADIUS, SPACING } from '../../lib/theme';
 import { success } from '../../lib/haptics';
 
 type Props = {
-  title: string;
+  title?: string;
   onSave?: () => void;
   onShare?: () => void;
   children?: React.ReactNode; // recipe preview, etc.
@@ -31,7 +31,9 @@ export default function SwipeCard({ title, onSave, onShare, children }: Props) {
   return (
     <Swipeable ref={ref} renderLeftActions={Left} renderRightActions={Right} overshootLeft={false} overshootRight={false}>
       <View style={styles.card}>
-        <Text style={styles.title}>{title}</Text>
+        {typeof title === 'string' && title.length > 0 && (
+          <Text style={styles.title}>{title}</Text>
+        )}
         {children}
       </View>
     </Swipeable>

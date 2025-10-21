@@ -10,6 +10,7 @@ const COLORS = {
   bg: "#0f172a",
   text: "#e5e7eb",
   sub: "#9ca3af",
+  subtext: "#9ca3af",
   field: "#1f2937",
   green: "#22c55e",
   greenDim: "#16a34a",
@@ -104,10 +105,10 @@ export default function Verify() {
         Verify Your Email
       </Text>
 
-      <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Email</Text>
+      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Email</Text>
       <TextInput
         placeholder="you@example.com"
-        placeholderTextColor={COLORS.sub}
+        placeholderTextColor={COLORS.subtext}
         autoCapitalize="none"
         keyboardType="email-address"
         value={email}
@@ -115,10 +116,10 @@ export default function Verify() {
         style={{ backgroundColor: COLORS.field, color: COLORS.text, padding: 14, borderRadius: 10, marginBottom: 12 }}
       />
 
-      <Text style={{ color: COLORS.sub, marginBottom: 6 }}>6-digit code</Text>
+      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>6-digit code</Text>
       <TextInput
         placeholder="123456"
-        placeholderTextColor={COLORS.sub}
+        placeholderTextColor={COLORS.subtext}
         keyboardType="number-pad"
         value={code}
         onChangeText={handleCodeChange}
@@ -152,7 +153,7 @@ export default function Verify() {
 
       <TouchableOpacity onPress={resend} disabled={busy} style={{ marginTop: 16, alignItems: "center" }}>
         <Text style={{ color: COLORS.text, fontWeight: "700" }}>Resend Code</Text>
-        {resent && <Text style={{ color: COLORS.sub, marginTop: 4 }}>Check your inbox.</Text>}
+        {resent && <Text style={{ color: COLORS.subtext, marginTop: 4 }}>Check your inbox.</Text>}
       </TouchableOpacity>
     </View>
   );

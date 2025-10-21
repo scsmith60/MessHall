@@ -27,6 +27,7 @@ const COLORS = {
   bg: "#0f172a",
   text: "#e5e7eb",
   sub: "#9ca3af",
+  subtext: "#9ca3af",
   field: "#1f2937",
   green: M_GREEN,      // logo green
   greenDim: M_GREEN_DIM,
@@ -151,7 +152,7 @@ export default function SignUp() {
       {/* ======================= Tab Switcher ======================= */}
       <View style={{ flexDirection: "row", gap: 24, justifyContent: "center", marginBottom: 16 }}>
         <Link href="/login">
-          <Text style={{ color: COLORS.sub, fontWeight: "600" }}>Login</Text>
+          <Text style={{ color: COLORS.subtext, fontWeight: "600" }}>Login</Text>
         </Link>
         <Text style={{ color: COLORS.text, fontWeight: "700", borderBottomColor: COLORS.green, borderBottomWidth: 2 }}>
           Sign Up
@@ -161,7 +162,7 @@ export default function SignUp() {
       {/* ============================ Email ========================= */}
       <TextInput
         placeholder="Email"
-        placeholderTextColor={COLORS.sub}
+        placeholderTextColor={COLORS.subtext}
         autoCapitalize="none"
         keyboardType="email-address"
         value={email}
@@ -178,7 +179,7 @@ export default function SignUp() {
       {/* ========================== Password ======================== */}
       <TextInput
         placeholder="Password (min 6)"
-        placeholderTextColor={COLORS.sub}
+        placeholderTextColor={COLORS.subtext}
         secureTextEntry
         value={password}
         onChangeText={setPassword}
@@ -194,7 +195,7 @@ export default function SignUp() {
       {/* =========================== Username ======================= */}
       <TextInput
         placeholder="Username (your public @name)"
-        placeholderTextColor={COLORS.sub}
+        placeholderTextColor={COLORS.subtext}
         autoCapitalize="none"
         value={username}
         onChangeText={setUsername}
@@ -211,14 +212,14 @@ export default function SignUp() {
         {checking ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <ActivityIndicator />
-            <Text style={{ color: COLORS.sub }}>Checking username…</Text>
+            <Text style={{ color: COLORS.subtext }}>Checking username…</Text>
           </View>
         ) : available === true ? (
           <Text style={{ color: COLORS.green, fontWeight: "700" }}>✓ Username is available</Text>
         ) : available === false ? (
           <Text style={{ color: COLORS.red, fontWeight: "700" }}>✗ Username is taken</Text>
         ) : (
-          <Text style={{ color: COLORS.sub }}>Tip: 3+ characters. We turn spaces into underscores.</Text>
+          <Text style={{ color: COLORS.subtext }}>Tip: 3+ characters. We turn spaces into underscores.</Text>
         )}
       </View>
 
@@ -241,7 +242,7 @@ export default function SignUp() {
 
       {/* -------------------- Bottom link -------------------- */}
       <View style={{ flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 }}>
-        <Text style={{ color: COLORS.sub }}>Already have an account?</Text>
+        <Text style={{ color: COLORS.subtext }}>Already have an account?</Text>
         <Link href="/login">
           <Text style={{ color: COLORS.green, fontWeight: "700" }}>Login.</Text>
         </Link>

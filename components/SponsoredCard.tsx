@@ -14,7 +14,7 @@ import { Image, Linking, Text, TouchableOpacity, View } from "react-native";
 import { COLORS, RADIUS } from "../lib/theme";
 
 // 📝 click/impression logger (it does RPC first, then direct insert fallback)
-import { logAdEvent } from "../lib/ads";
+import { logAdEvent } from "@/lib/ads/logAdEvent";
 
 // 🔌 used only for the last-resort direct insert path (should almost never run)
 import { supabase } from "../lib/supabase";

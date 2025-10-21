@@ -325,7 +325,6 @@ export default function TikTokSnap({
               androidLayerType="software"
               setSupportMultipleWindows={false}
               originWhitelist={["*"]}
-              useWebKit
               startInLoadingState
             />
           </View>

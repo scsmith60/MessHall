@@ -41,6 +41,7 @@ const COLORS = {
   sunken: "#1F2937",
   text: "#E5E7EB",
   sub: "#A8B3BA",
+  subtext: "#A8B3BA",
   accent: "#22c55e",
   green: "#22c55e",
   red: "#EF4444",
@@ -173,8 +174,8 @@ export default function CaptureScreen() {
       .replace(/\s{2,}/g, " ")                        // squash extra spaces
       .trim();
 
-    // stop before sections like "Ingredients", "Instructions", etc.
-    const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal)/i;
+    // stop before sections like "Ingredients", "Instructions", etc. or lead-ins
+    const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal|for\s+the\b|you'?ll\s+need)/i;
     const m = s.match(cutWords);
     if (m && m.index! > 0) s = s.slice(0, m.index).trim();
 
@@ -214,7 +215,8 @@ export default function CaptureScreen() {
     const firstSentence = s.split(/(?<=\.)\s+/)[0];
     s = firstSentence || s;
 
-    // Tidy whitespace and trailing dot
+    // Tidy whitespace and trailing dot; strip quotes
+    s = s.replace(/[“”"']/g, "");
     s = s.replace(/\s{2,}/g, " ").replace(/\s+\.$/, "").trim();
 
     return s;
@@ -265,6 +267,9 @@ export default function CaptureScreen() {
     if (isTikTokJunkTitle(s)) return true;
     const lower = s.toLowerCase();
     if (lower === "food network" || lower === "allrecipes" || lower === "youtube") return true;
+    // reject generic, non-dish phrases
+    if (/^(delicious|tasty|yummy|good|amazing)\s+(food|recipe|dish)$/i.test(s)) return true;
+    if (/(^|\b)(delicious|tasty|yummy|good|amazing)\b/.test(lower) && /(\bfood\b|\brecipe\b|\bdish\b)/.test(lower) && s.length <= 24) return true;
     if (s.length < 4) return true;
     if (/^\d{6,}$/.test(s)) return true;
     // If it starts directly with "Ingredients:" it's not a real title
@@ -278,7 +283,7 @@ export default function CaptureScreen() {
     const low = s.toLowerCase();
     // find anchors
     const iIdx = low.search(/\bingredients?\b/);
-    const sIdx = low.search(/\b(steps?|directions?|method)\b/);
+    const sIdx = low.search(/\b(steps?|directions?|method|instructions?)\b/);
 
     let ing = "", steps = "", before = s.trim();
 
@@ -291,7 +296,24 @@ export default function CaptureScreen() {
         ing = s.slice(iIdx);
       }
     } else if (iIdx >= 0) {
-      ing = s.slice(iIdx);
+      // Extract consecutive bullet/number lines after the Ingredients header as the ingredient block.
+      const after = s.slice(iIdx).replace(/^\s*ingredients?:?\s*/i, "");
+      const lines = after.split(/\n+/);
+      const ingLines: string[] = [];
+      let cut = lines.length;
+      for (let i = 0; i < lines.length; i++) {
+        const l = (lines[i] || '').trim();
+        if (!l) { // blank line — check if next lines look like steps and cut
+          const next = (lines.slice(i+1).find(x => x.trim().length>0) || '').trim();
+          if (/^(steps?|directions?|method|instructions?)\b/i.test(next) || /^(Melt|Add|Heat|Cook|Whisk|Stir|Bring|Simmer|Boil|Turn up|Combine|Once|Preheat|Mix)\b/i.test(next)) { cut = i+1; break; }
+          continue;
+        }
+        if (/^(?:[\-\*•]\s+|\d+[\.)]\s+)/.test(l)) { ingLines.push(l); continue; }
+        if (/(cup|tsp|tbsp|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|salt|pepper)/i.test(l)) { ingLines.push(l); continue; }
+        cut = i; break;
+      }
+      ing = ingLines.join("\n");
+      steps = lines.slice(cut).join("\n");
     } else if (sIdx >= 0) {
       steps = s.slice(sIdx);
     }
@@ -716,14 +738,6 @@ function keepRealIngredients(lines: string[]): string[] {
     snapResolverRef.current = null;
     snapRejectRef.current = null;
     setHudVisible(false);
-      // 🧲 post-close restore
-      setTimeout(() => {
-        const best = (strongTitleRef.current || '').trim();
-        if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore after close:', JSON.stringify(best)); setTitle(best); }
-      }, 0);
-    setHudPhase("scanning");
-    setSnapVisible(false);
-    setDomScraperVisible(false);
     setImprovingSnap(false);
     setTikTokShots([]);
     setAbortVisible(false);
@@ -811,6 +825,17 @@ function keepRealIngredients(lines: string[]): string[] {
       gotSomethingForRunRef.current = true;
       return true;
     }
+    // Relaxed fallback: even if we couldn't pre-download/validate, allow Image to try loading the remote URL.
+    try {
+      if (/^https?:\/\//i.test(absolute)) {
+        bumpStage(1);
+        setImg({ kind: "url-og", url: originUrl, resolvedImageUrl: absolute });
+        lastGoodPreviewRef.current = absolute;
+        lastResolvedUrlRef.current = originUrl;
+        gotSomethingForRunRef.current = true;
+        return true;
+      }
+    } catch {}
     return false;
   }, [isValidCandidate, bumpStage]);
 
@@ -969,13 +994,58 @@ try {
   const capRaw = (igDom?.text || igDom?.caption || "").trim();
   const capReady = preCleanIgCaptionForParsing(capRaw);
 
+  // Fallback title logic: if the chosen title is weak/generic, derive from caption or text before Ingredients
+  try {
+    const currentTitle = (title || "").trim();
+    const fromCaption = normalizeDishTitle(cleanTitle(captionToNiceTitle(capReady), url));
+    if (isWeakTitle(currentTitle) && !isWeakTitle(fromCaption)) {
+      setTitle(fromCaption);
+      strongTitleRef.current = fromCaption;
+      dbg("dY�� TITLE fallback from caption:", fromCaption);
+    } else if (isWeakTitle(currentTitle)) {
+      const segT = sectionizeCaption(capReady);
+      if ((segT.before || '').trim().length > 0) {
+        const fromBefore = normalizeDishTitle(cleanTitle(captionToNiceTitle(segT.before), url));
+        if (!isWeakTitle(fromBefore)) {
+          setTitle(fromBefore);
+          strongTitleRef.current = fromBefore;
+          dbg("dY�� TITLE fallback from before-ingredients:", fromBefore);
+        }
+      }
+    }
+  } catch {}
+
   // Parse
   const parsed = parseRecipeText(capReady);
+  // If no steps detected, try parsing just the steps area when present
+  try {
+    const seg = sectionizeCaption(capReady);
+    if (parsed.steps.length < 1 && (seg.steps || '').trim().length > 0) {
+      const parsedStepsOnly = parseRecipeText(seg.steps);
+      if (parsedStepsOnly.steps.length > 0) {
+        parsed.steps = parsedStepsOnly.steps;
+      }
+    }
+  } catch {}
   // Drop IG boilerplate accidentally parsed as ingredients + chatter lines
   parsed.ingredients = keepRealIngredients(
     parsed.ingredients.filter((l:string) => !/^\s*\d[\d,\.\s]*\s+(likes?|comments?)\b/i.test(l))
   );
   dbg("📊 Instagram parse conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+
+  // Move any step-like lines that slipped into ingredients
+  try {
+    const stepVerb = /(\bMelt\b|\bAdd\b|\bHeat\b|\bCook\b|\bWhisk\b|\bStir\b|\bBring\b|\bSimmer\b|\bBoil\b|\bTurn\s+up\b|\bCombine\b|\bOnce\b|\bPreheat\b|\bMix\b)/i;
+    const newIngs: string[] = [];
+    const moved: string[] = [];
+    for (const line of (parsed.ingredients || [])) {
+      const t = (line || '').trim();
+      if (!t) continue;
+      if (stepVerb.test(t) || /^[A-Za-z]{3,}\.?$/.test(t)) moved.push(t); else newIngs.push(t);
+    }
+    if (moved.length) parsed.steps = [...(parsed.steps || []), ...moved];
+    parsed.ingredients = newIngs;
+  } catch {}
 
   if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
   if (parsed.steps.length >= 1) setSteps(parsed.steps);
@@ -1197,11 +1267,6 @@ try {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         Alert.alert("Import error", msg || "Could not read that webpage.");
       } finally {
-        // 🧲 Final guard: restore strongest good title if something clobbered it
-        try {
-          const best = (strongTitleRef.current || '').trim();
-          if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore strongest:', JSON.stringify(best)); setTitle(best); }
-        } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
         clearTimeout(watchdog);
         if (success || gotSomethingForRunRef.current) {
           setHudPhase("acquired");
@@ -1209,12 +1274,6 @@ try {
           await new Promise((r) => setTimeout(r, 800));
         }
         setHudVisible(false);
-        // 🧲 post-close restore
-        setTimeout(() => {
-          const best = (strongTitleRef.current || '').trim();
-          if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore after close:', JSON.stringify(best)); setTitle(best); }
-        }, 0);
-        setDomScraperVisible(false);
         setSnapVisible(false);
       }
   }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
@@ -1318,11 +1377,6 @@ try {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert("Save failed", e?.message ?? "Please try again.");
     } finally {
-      // 🧲 Final guard: restore strongest good title if something clobbered it
-      try {
-        const best = (strongTitleRef.current || '').trim();
-        if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore strongest:', JSON.stringify(best)); setTitle(best); }
-      } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
       setSaving(false);
     }
   }, [title, timeMinutes, servings, ingredients, steps, previewUri]);
@@ -1353,13 +1407,13 @@ try {
           <TextInput value={title} onChangeText={setTitle} placeholder="My Tasty Pizza" placeholderTextColor="#64748b" style={{ color: "white", backgroundColor: COLORS.sunken, borderRadius: 12, padding: 12, marginBottom: 12 }} />
 
           <View style={{ backgroundColor: COLORS.card, borderRadius: 14, borderColor: COLORS.border, borderWidth: 1, padding: 12, marginBottom: 12 }}>
-            <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Import from a link (YouTube/TikTok/blog)…</Text>
+            <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Import from a link (YouTube/TikTok/blog)…</Text>
             <View style={{ flexDirection: "row", alignItems: "center" }}>
               <TextInput
                 value={pastedUrl}
                 onChangeText={setPastedUrl}
                 placeholder="Paste page URL…"
-                placeholderTextColor={COLORS.sub}
+                placeholderTextColor={COLORS.subtext}
                 autoCapitalize="none"
                 autoCorrect={false}
                 style={{ flex: 1, color: COLORS.text, backgroundColor: COLORS.sunken, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, marginRight: 8 }}
@@ -1373,7 +1427,7 @@ try {
             </View>
 
             <TouchableOpacity onPress={() => setShowDebug((v)=>!v)} style={{ marginTop: 8, alignSelf: "flex-end" }}>
-              <Text style={{ color: COLORS.sub, textDecorationLine: "underline" }}>{showDebug ? "Hide debug" : "Show debug"}</Text>
+              <Text style={{ color: COLORS.subtext, textDecorationLine: "underline" }}>{showDebug ? "Hide debug" : "Show debug"}</Text>
             </TouchableOpacity>
             {showDebug && (
               <View style={{ marginTop: 8, backgroundColor: "#0f172a", borderColor: COLORS.border, borderWidth: 1, borderRadius: 10, padding: 8 }}>
@@ -1387,11 +1441,11 @@ try {
                 return uri ? (
                   <>
                     <Image source={{ uri }} style={{ width: "100%", height: 220, borderRadius: 12 }} contentFit="cover" />
-                    {improvingSnap && <Text style={{ color: COLORS.sub, marginTop: 6, textAlign: "center" }}>Improving image…</Text>}
+                    {improvingSnap && <Text style={{ color: COLORS.subtext, marginTop: 6, textAlign: "center" }}>Improving image…</Text>}
                   </>
                 ) : (
                   <View style={{ height: 220, borderRadius: 12, backgroundColor: COLORS.sunken, borderWidth: 1, borderColor: COLORS.border, alignItems: "center", justifyContent: "center" }}>
-                    <Text style={{ color: COLORS.sub }}>No imported image yet</Text>
+                    <Text style={{ color: COLORS.subtext }}>No imported image yet</Text>
                   </View>
                 );
               })()}
@@ -1515,7 +1569,7 @@ const styles = StyleSheet.create({
   swipeDeleteButton: { backgroundColor: COLORS.red, paddingHorizontal: 16, justifyContent: "center", alignItems: "center", minWidth: 88, borderTopRightRadius: 12, borderBottomRightRadius: 12 },
   swipeDeleteText: { color: "#fff", fontWeight: "700" },
   row: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 10, paddingHorizontal: 10 },
-  rowIndex: { color: COLORS.sub, width: 22, textAlign: "right", marginRight: 6 },
+  rowIndex: { color: COLORS.subtext, width: 22, textAlign: "right", marginRight: 6 },
   rowInput: { flex: 1, color: COLORS.text, backgroundColor: COLORS.sunken, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, fontSize: 16, borderWidth: 1, borderColor: COLORS.border },
   thinLine: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.border, marginHorizontal: 10 },
 });
@@ -1830,3 +1884,15 @@ async function checkDuplicateSourceUrl(rawUrl: string): Promise<boolean> {
     return !!(data && data.length);
   } catch (e) { return false; }
 }
+
+
+
+
+
+
+
+
+
+
+
+

@@ -21,6 +21,7 @@ import {
   FlatList,
   Alert,
   Share, // native share sheet
+  type TextStyle,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../../lib/supabase";
@@ -198,9 +199,9 @@ export default function OwnerCreatorApprovals() {
     borderRadius: 999,
     backgroundColor: on ? "#22c55e" : "#1f2937",
   });
-  const chipText = (on: boolean) => ({
+  const chipText = (on: boolean): TextStyle => ({
     color: on ? "#001018" : "#e5e7eb",
-    fontWeight: "900",
+    fontWeight: "900" as TextStyle["fontWeight"],
   });
 
   return (

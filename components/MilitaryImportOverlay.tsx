@@ -171,16 +171,16 @@ export default function MilitaryImportOverlay({
 
               {/* Little blips (animated via opacity & scale) */}
               {blips.map((b) => {
-                const scale = b.a.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1.4] });
+                const rAnim = b.a.interpolate({ inputRange: [0, 1], outputRange: [3, 6] });
                 const opacity = b.a.interpolate({ inputRange: [0, 1], outputRange: [0.25, 1] });
                 return (
                   <AnimatedCircle
                     key={b.key}
                     cx={b.x}
                     cy={b.y}
-                    r={4}
+                    r={rAnim as any}
                     fill={MESSHALL_GREEN}
-                    style={{ opacity, transform: [{ scale }] }}
+                    opacity={opacity as any}
                   />
                 );
               })}

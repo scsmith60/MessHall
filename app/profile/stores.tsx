@@ -71,7 +71,7 @@ export default function StorePrefsScreen() {
       }}
     >
       <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: "900" }}>Store Preferences</Text>
-      <Text style={{ color: COLORS.sub }}>Connect your stores and pick a default for “Send to Cart”.</Text>
+      <Text style={{ color: COLORS.subtext }}>Connect your stores and pick a default for “Send to Cart”.</Text>
 
       {rows.map((r) => {
         const info = getProviderRegistry()[r.provider];
@@ -101,7 +101,7 @@ export default function StorePrefsScreen() {
 
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 }}>
         <View style={[styles.defaultDot, styles.defaultDotOn]} />
-        <Text style={{ color: COLORS.sub }}>= Default store</Text>
+        <Text style={{ color: COLORS.subtext }}>= Default store</Text>
       </View>
     </View>
   );

@@ -144,7 +144,7 @@ const PlannerSlots: React.FC<Props> = ({
         body: `Start now to eat by ${hhmm(readyAt)}.`,
         data: { slotId: slot.id, slotName, readyAt: readyAt.toISOString(), dateISO: date.toISOString() },
       },
-      trigger: { date: startAt },
+      trigger: { date: startAt } as any,
     });
   };
 

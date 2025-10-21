@@ -5,7 +5,13 @@
 
 import { router } from "expo-router";
 import * as Linking from "expo-linking";
-import ShareMenu, { ShareData, ShareMenuReactView } from "react-native-share-menu";
+// Optional dependency; load dynamically to avoid type/build errors when not installed
+let ShareMenu: any = null;
+type ShareData = any;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  ShareMenu = require("react-native-share-menu");
+} catch {}
 
 // Tiny helper to find the first http(s) link in a text blob
 function extractFirstUrl(s?: string | null): string | null {
@@ -48,7 +54,7 @@ function pickUrlFromShare(data?: ShareData | null): string | null {
  */
 export function registerShareIntake() {
   // A) If the app was opened from a share (cold start), handle it
-  ShareMenu.getInitialShare().then((share) => {
+  ShareMenu?.getInitialShare?.().then((share: ShareData) => {
     const url = pickUrlFromShare(share);
     if (url) {
       // go to Capture with the URL so it can auto-import
@@ -59,7 +65,7 @@ export function registerShareIntake() {
   });
 
   // B) If the app is already open when a user shares, handle that too
-  ShareMenu.addNewShareListener((share) => {
+  ShareMenu?.addNewShareListener?.((share: ShareData) => {
     const url = pickUrlFromShare(share);
     if (url) {
       router.push({ pathname: "/(tabs)/capture", params: { sharedUrl: url } });

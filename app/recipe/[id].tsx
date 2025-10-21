@@ -873,7 +873,7 @@ export default function RecipeDetail() {
             </View>
           ) : null}
           <View style={{ flex: 1 }} />
-          <Text style={{ color: COLORS.sub }}>{timeAgo(model.createdAt)}</Text>
+          <Text style={{ color: COLORS.subtext }}>{timeAgo(model.createdAt)}</Text>
         </View>
 
         {/* Context chips */}

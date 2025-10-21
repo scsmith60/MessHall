@@ -34,6 +34,7 @@ const COLORS = {
   bg: "#0f172a",
   text: "#e5e7eb",
   sub: "#9ca3af",
+  subtext: "#9ca3af",
   field: "#1f2937",
   green: M_GREEN,
   greenDim: M_GREEN_DIM,
@@ -126,7 +127,7 @@ export default function Login() {
           <Text style={{ color: COLORS.text, fontSize: 28, fontWeight: "800" }}>
             Welcome to MessHall
           </Text>
-          <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+          <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
             Sign in to cook, share, and shop.
           </Text>
         </View>
@@ -144,7 +145,7 @@ export default function Login() {
         >
           {/* Identifier (email or username) */}
           <View style={{ gap: 6 }}>
-            <Text style={{ color: COLORS.sub, fontSize: 12 }}>
+            <Text style={{ color: COLORS.subtext, fontSize: 12 }}>
               Email or Username
             </Text>
             <TextInput
@@ -170,7 +171,7 @@ export default function Login() {
 
           {/* Password */}
           <View style={{ gap: 6 }}>
-            <Text style={{ color: COLORS.sub, fontSize: 12 }}>Password</Text>
+            <Text style={{ color: COLORS.subtext, fontSize: 12 }}>Password</Text>
             <TextInput
               value={password}
               onChangeText={setPassword}
@@ -200,7 +201,7 @@ export default function Login() {
                 trackColor={{ false: "#283548", true: COLORS.greenDim }}
                 thumbColor={show ? COLORS.green : "#94a3b8"}
               />
-              <Text style={{ color: COLORS.sub }}>Show password</Text>
+              <Text style={{ color: COLORS.subtext }}>Show password</Text>
             </View>
           </View>
 
@@ -246,7 +247,7 @@ export default function Login() {
           >
             <Text
               style={{
-                color: COLORS.sub,
+                color: COLORS.subtext,
                 textDecorationLine: "underline",
                 fontSize: 13,
               }}
@@ -274,7 +275,7 @@ export default function Login() {
           </TouchableOpacity>
 
           {/* --------------- Divider text --------------- */}
-          <Text style={{ color: COLORS.sub, textAlign: "center", marginTop: 8 }}>
+          <Text style={{ color: COLORS.subtext, textAlign: "center", marginTop: 8 }}>
             or continue with
           </Text>
 
@@ -320,7 +321,7 @@ export default function Login() {
         {/* ---------- BOTTOM LINKS ---------- */}
         <View style={{ alignItems: "center", marginTop: 16, gap: 8 }}>
           <View style={{ flexDirection: "row", gap: 6 }}>
-            <Text style={{ color: COLORS.sub }}>Don’t have an account?</Text>
+            <Text style={{ color: COLORS.subtext }}>Don’t have an account?</Text>
             {/* NOTE: If your project uses /sign-in instead of /signup, change this href accordingly */}
             <Link href="/signup">
               <Text style={{ color: COLORS.green, fontWeight: "700" }}>
@@ -328,7 +329,7 @@ export default function Login() {
               </Text>
             </Link>
           </View>
-          <Text style={{ color: COLORS.sub }}>Terms & Privacy</Text>
+          <Text style={{ color: COLORS.subtext }}>Terms & Privacy</Text>
         </View>
       </View>
     </KeyboardAvoidingView>

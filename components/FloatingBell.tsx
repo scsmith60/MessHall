@@ -28,8 +28,20 @@ import {
   markNotificationRead,
   markAllNotificationsRead,
   subscribeToNotifications,
-  type NotificationItem,
 } from "@/lib/data";
+
+// Local minimal type for notifications to avoid coupling to lib/data export types
+type NotificationItem = {
+  id: string;
+  isRead?: boolean;
+  recipeId?: string | null;
+  actorAvatar?: string | null;
+  actorUsername?: string | null;
+  type?: string | null;
+  title?: string | null;
+  body?: string | null;
+  createdAt: string;
+};
 
 // 🎨 Theme bits
 const COLORS = {
@@ -93,7 +105,7 @@ export default function FloatingBell() {
       refreshCount();
       if (open) refreshList();
     });
-    return off;
+    return () => { try { (off as any)(); } catch {} };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, open]);
 

@@ -441,10 +441,9 @@ export default function SearchScreen() {
         knives={item.knives}
         cooks={item.cooks}
         likes={item.likes}
-        comments={item.commentCount}
+        commentCount={item.commentCount}
         createdAt={item.createdAtMs}
         ownerId={item.ownerId}
-        viewerId={viewerId ?? ""}
         isSaved={isSaved}
         onToggleSave={() => toggleSave(item.id)}
         onSave={() => toggleSave(item.id)}
@@ -529,11 +528,13 @@ export default function SearchScreen() {
         contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: 160 }}
         ItemSeparatorComponent={() => <View style={{ height: SPACING.lg }} />}
         ListEmptyComponent={
-          !loading && (
-            <Text style={{ color: "#94a3b8", textAlign: "center", marginTop: 32 }}>
-              No recipes yet. Try different chips or words.
-            </Text>
-          )
+          loading
+            ? undefined
+            : (
+                <Text style={{ color: "#94a3b8", textAlign: "center", marginTop: 32 }}>
+                  No recipes yet. Try different chips or words.
+                </Text>
+              )
         }
       />
 

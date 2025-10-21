@@ -407,7 +407,7 @@ export default function PlannerScreen() {
   }, [recipeId]);
 
   // ── Swipe left/right to jump weeks (vertical scroll still works) ──
-  const onPanEnd = (e: PanGestureHandlerStateChangeEvent) => {
+  const onPanEnd = (e: any) => {
     const dx = e.nativeEvent.translationX;
     if (dx > 80) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

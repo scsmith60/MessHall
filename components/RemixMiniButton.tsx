@@ -29,8 +29,7 @@ export default function RemixMiniButton({ parentId }: { parentId: string }) {
         flexDirection: "row",
         gap: 6,
       }}
-      accessibilityRole="button"
-      accessibilityLabel="Remix this recipe"
+      
     >
       <Ionicons name="git-branch-outline" size={14} color="#CFF8D6" />
       <Text style={{ color: "#CFF8D6", fontWeight: "900", fontSize: 13 }}>

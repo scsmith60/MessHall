@@ -69,7 +69,7 @@ export function IngredientPicker({
         return (
           <View key={it.id}>
             <Swipeable
-              ref={(r) => (rowRefs[it.id] = r)}
+              ref={(r) => { rowRefs[it.id] = r; }}
               friction={2}
               leftThreshold={28}
               rightThreshold={28}

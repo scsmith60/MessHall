@@ -151,7 +151,7 @@ function RecipeCard(props: Props) {
     await Share.share({
       message: `${title} on MessHall\n${url}`,
       url,
-      subject: `${title} • MessHall`,
+      title: `${title} – MessHall`,
     });
   }, [id, title]);
 
@@ -487,14 +487,14 @@ function RecipeCard(props: Props) {
 
             {/* ❤️ like btn */}
             {!isOwner && (
-              <HapticButton onPress={toggleLike} style={[styles.likeBtn, liked && styles.likeBtnActive]}>
+              <HapticButton onPress={toggleLike} style={([styles.likeBtn, liked ? styles.likeBtnActive : undefined] as any)}>
                 <Ionicons
                   name={liked ? "heart" : "heart-outline"}
                   size={16}
                   color={liked ? COLORS.accent : COLORS.text}
                   style={{ marginRight: 6 }}
                 />
-                <Text style={[styles.likeText, liked && { color: COLORS.accent, fontWeight: "800" }]}>
+                <Text style={[styles.likeText, liked ? { color: COLORS.accent, fontWeight: "800" } : undefined]}>
                   Like
                 </Text>
               </HapticButton>
@@ -504,7 +504,7 @@ function RecipeCard(props: Props) {
             {!isOwner && (
               <HapticButton
                 onPress={props.onToggleSave}
-                style={[styles.saveBtn, props.isSaved && styles.saveBtnActive]}
+                style={([styles.saveBtn, props.isSaved ? styles.saveBtnActive : undefined] as any)}
               >
                 <Ionicons
                   name={props.isSaved ? "bookmark" : "bookmark-outline"}
@@ -513,10 +513,10 @@ function RecipeCard(props: Props) {
                   style={{ marginRight: 6 }}
                 />
                 <Text
-                  style={[
-                    styles.saveText,
-                    props.isSaved && { color: "#CFF8D6", fontWeight: "800" },
-                  ]}
+                style={([
+                  styles.saveText,
+                  props.isSaved ? { color: "#CFF8D6", fontWeight: "800" } : undefined,
+                  ] as any)}
                 >
                   {props.isSaved ? "Saved" : "Save"}
                 </Text>
@@ -531,12 +531,12 @@ function RecipeCard(props: Props) {
                 <HapticButton
                   onPress={toggleCooked}
                   disabled={savingCook}
-                  style={[
-                    styles.cookedButton,
-                    cooked && styles.cookedButtonActive,
-                    savingCook && { opacity: 0.7 },
-                  ]}
-                >
+                style={([
+                  styles.cookedButton,
+                  cooked ? styles.cookedButtonActive : undefined,
+                  savingCook ? { opacity: 0.7 } : undefined,
+                ] as any)}
+              >
                   {savingCook ? (
                     <>
                       <ActivityIndicator />

@@ -128,7 +128,7 @@ export function extractRecipeFromJsonLd(html: string): {
             const cook = parseDuration(item.cookTime || "");
             const prep = parseDuration(item.prepTime || "");
             if (cook || prep) {
-              const total = (parseInt(cook) || 0) + (parseInt(prep) || 0);
+              const total = (parseInt(cook || "0") || 0) + (parseInt(prep || "0") || 0);
               result.time = total ? String(total) : undefined;
             }
           }

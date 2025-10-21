@@ -35,6 +35,7 @@ const COLORS = {
   card2: "#111827",  // gray-900
   text: "#e5e7eb",   // gray-200
   sub: "#9ca3af",    // gray-400
+  subtext: "#9ca3af",
   accent: "#38bdf8", // sky-400
 };
 
@@ -123,7 +124,7 @@ function GridCard({ item, onPress }: { item: RecipeRow; onPress: () => void }) {
           <Image source={{ uri: img }} style={{ width: "100%", height: "100%" }} />
         ) : (
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-            <Text style={{ color: COLORS.sub }}>No image</Text>
+            <Text style={{ color: COLORS.subtext }}>No image</Text>
           </View>
         )}
       </View>
@@ -132,7 +133,7 @@ function GridCard({ item, onPress }: { item: RecipeRow; onPress: () => void }) {
         <Text numberOfLines={1} style={{ color: COLORS.text, fontWeight: "800" }}>
           {title}
         </Text>
-        <Text style={{ color: COLORS.sub, marginTop: 4, fontSize: 12 }}>
+        <Text style={{ color: COLORS.subtext, marginTop: 4, fontSize: 12 }}>
           🏅 {medals} · ❤️ {likes}
         </Text>
       </View>
@@ -399,7 +400,7 @@ export default function PublicProfile() {
           }}
         >
           <ActivityIndicator />
-          <Text style={{ color: COLORS.sub, marginTop: 8 }}>Loading…</Text>
+          <Text style={{ color: COLORS.subtext, marginTop: 8 }}>Loading…</Text>
         </View>
       </SafeAreaView>
     );
@@ -491,7 +492,7 @@ export default function PublicProfile() {
               <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: "900" }}>
                 {profile.username || "Anonymous"}
               </Text>
-              <Text style={{ color: COLORS.sub }} numberOfLines={2}>
+              <Text style={{ color: COLORS.subtext }} numberOfLines={2}>
                 {profile.bio || "Cooking enthusiast sharing simple and delicious recipes."}
               </Text>
             </View>
@@ -598,7 +599,7 @@ function StatCard({ label, value }: { label: string; value: number }) {
       }}
     >
       <Text style={{ color: COLORS.text, fontWeight: "900" }}>{value}</Text>
-      <Text style={{ color: COLORS.sub, fontSize: 12 }}>{label}</Text>
+      <Text style={{ color: COLORS.subtext, fontSize: 12 }}>{label}</Text>
     </View>
   );
 }

@@ -65,7 +65,9 @@ export default function EditSlot() {
     if (!image) return null;
     if (typeof image === "string") return image || null;
     if (!image.uri) return null;
-    return await uploadAdImage(image.uri);
+    const me = (await supabase.auth.getUser()).data.user;
+    if (!me?.id) throw new Error("Not signed in");
+    return await uploadAdImage(me.id, image);
   };
 
   const save = async () => {

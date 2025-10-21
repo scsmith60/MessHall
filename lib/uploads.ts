@@ -241,7 +241,10 @@ export async function replaceRecipeImage(recipeId: string, sourceUri: string): P
  * Best-effort cleanup for an entire recipe folder, e.g., before/after deleting a recipe row.
  * Prefix pattern: <ownerId>/<recipeId>
  */
-export async function deleteRecipeAssets(ownerId: string, recipeId: string): Promise<void> {
+export async function deleteRecipeAssets(ownerIdOrRecipeId: string, recipeId?: string): Promise<void> {
+  // Back-compat: older callers may pass only recipeId; in that case, skip cleanup safely.
+  if (!recipeId) return;
+  const ownerId = ownerIdOrRecipeId;
   if (!ownerId || !recipeId) return;
   await removeFolderRecursive("recipe-images", `${ownerId}/${recipeId}`).catch(() => {});
 }

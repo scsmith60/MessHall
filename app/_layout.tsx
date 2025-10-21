@@ -24,7 +24,7 @@ const Gate =
     (({ children }: any) => <>{children}</>)) as React.ComponentType<any>;
 
 // 🎨 quick colors (bg is your screen background that will "shine" behind the status bar)
-const COLORS = { bg: "#0b1220", text: "#e5e7eb", sub: "#94a3b8", accent: "#53856b" };
+const COLORS = { bg: "#0b1220", text: "#e5e7eb", sub: "#94a3b8", subtext: "#94a3b8", accent: "#53856b" };
 
 /* -----------------------------------------------------------
    🧸 helper: am I at an auth route?
@@ -54,7 +54,11 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: false,
     shouldSetBadge: true,
-  }),
+    // newer SDKs expect these desktop-style flags as well
+    // provide safe defaults so types line up
+    shouldShowBanner: true,
+    shouldShowList: true,
+  } as any),
 });
 
 async function registerForPushToken(): Promise<string | null> {
@@ -134,7 +138,7 @@ class RootErrorBoundary extends React.Component<
         <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "800" }}>
           Oops, MessHall hiccuped
         </Text>
-        <Text style={{ color: COLORS.sub, textAlign: "center" }}>
+        <Text style={{ color: COLORS.subtext, textAlign: "center" }}>
           {this.state.message}
         </Text>
         <TouchableOpacity
@@ -330,7 +334,7 @@ export default function RootLayout() {
             }}
           >
             <ActivityIndicator />
-            <Text style={{ color: COLORS.sub, marginTop: 12 }}>
+            <Text style={{ color: COLORS.subtext, marginTop: 12 }}>
               Warming up MessHall…
             </Text>
           </View>

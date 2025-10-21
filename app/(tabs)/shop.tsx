@@ -637,12 +637,12 @@ export default function ShoppingListTab() {
       {/* BODY */}
       {loading ? (
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-          <Text style={{ color: COLORS.sub }}>Loading…</Text>
+          <Text style={{ color: COLORS.subtext }}>Loading…</Text>
         </View>
       ) : sections.length === 0 ? (
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 32 }}>
-          <MaterialCommunityIcons name="cart-outline" size={48} color={COLORS.sub} />
-          <Text style={{ color: COLORS.sub, marginTop: 10, textAlign: "center" }}>
+          <MaterialCommunityIcons name="cart-outline" size={48} color={COLORS.subtext} />
+          <Text style={{ color: COLORS.subtext, marginTop: 10, textAlign: "center" }}>
             {filter === "inCart"
               ? "No purchased items yet."
               : filter === "toBuy"

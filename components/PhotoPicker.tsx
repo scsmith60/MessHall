@@ -114,7 +114,7 @@ export default function PhotoPicker({ uri, uriOrAsset, onChange }: Props) {
         ? await ImagePicker.launchCameraAsync({ quality: 0.9 })
         : await ImagePicker.launchImageLibraryAsync({
             // 👇 NEW API — no more deprecation warnings
-            mediaTypes: ImagePicker.MediaType.image, // or [ImagePicker.MediaType.image]
+            mediaTypes: (ImagePicker as any).MediaTypeOptions?.Images ?? ImagePicker.MediaTypeOptions.Images,
             quality: 0.9,
             exif: false,
           });

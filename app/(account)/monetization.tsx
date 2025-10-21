@@ -31,6 +31,7 @@ const COLORS = {
   border: "#1f2937",
   text: "#e5e7eb",
   sub: "#94a3b8",
+  subtext: "#94a3b8",
   good: "#22c55e",
   bad: "#ef4444",
   accent: "#38bdf8",
@@ -74,7 +75,7 @@ function ThemedToast({
           <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16 }}>
             {title}
           </Text>
-          <Text style={{ color: COLORS.sub, marginTop: 8 }}>{message}</Text>
+          <Text style={{ color: COLORS.subtext, marginTop: 8 }}>{message}</Text>
           <Pressable
             onPress={onClose}
             style={{
@@ -264,10 +265,10 @@ export default function MonetizationScreen() {
         padding: 12,
       }}
     >
-      <Text style={{ color: ok ? COLORS.text : COLORS.sub, fontWeight: "800" }}>
+      <Text style={{ color: ok ? COLORS.text : COLORS.subtext, fontWeight: "800" }}>
         {ok ? "✅" : "⭕"} {label}
       </Text>
-      {help ? <Text style={{ color: COLORS.sub, marginTop: 4 }}>{help}</Text> : null}
+      {help ? <Text style={{ color: COLORS.subtext, marginTop: 4 }}>{help}</Text> : null}
     </View>
   );
 
@@ -308,16 +309,16 @@ export default function MonetizationScreen() {
         {loading && (
           <View style={{ padding: 12, alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator />
-            <Text style={{ color: COLORS.sub, marginTop: 6 }}>Checking your status…</Text>
+            <Text style={{ color: COLORS.subtext, marginTop: 6 }}>Checking your status…</Text>
           </View>
         )}
 
         {/* Checklist — ONLY before you apply (no app yet) */}
         {!loading && appStatus === "none" && (
           <View style={{ gap: 10 }}>
-            <Text style={{ color: COLORS.sub }}>Eligibility checklist</Text>
+            <Text style={{ color: COLORS.subtext }}>Eligibility checklist</Text>
             {checklist.length === 0 && (
-              <Text style={{ color: COLORS.sub }}>
+              <Text style={{ color: COLORS.subtext }}>
                 We couldn’t load your checklist right now.
               </Text>
             )}
@@ -370,7 +371,7 @@ export default function MonetizationScreen() {
             <Text style={{ color: COLORS.text, fontWeight: "800" }}>
               Earn on your recipes
             </Text>
-            <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+            <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
               Turn this on after you’re approved.
             </Text>
           </View>
@@ -383,7 +384,7 @@ export default function MonetizationScreen() {
           />
         </View>
 
-        <Text style={{ color: COLORS.sub, fontSize: 12 }}>
+        <Text style={{ color: COLORS.subtext, fontSize: 12 }}>
           Tip: Once approved, we’ll email you and unlock the switch.
         </Text>
       </ScrollView>

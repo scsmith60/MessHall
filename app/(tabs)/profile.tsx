@@ -45,6 +45,7 @@ const COLORS = {
   card2: "#111827",
   text: "#e5e7eb",
   sub: "#9ca3af",
+  subtext: "#9ca3af",
   green: "#22c55e",
   red: "#ef4444",
   accent: "#38bdf8",
@@ -65,6 +66,7 @@ type ProfileRow = {
   following?: number | null;
   // 🆕 optional fields (won’t break if not present; we fetch them in a separate try/catch)
   units_preference?: "us" | "metric" | null;
+  preferred_units?: "us" | "metric" | null;
   state?: string | null;
   country?: string | null;
   deletion_requested_at?: string | null;
@@ -511,7 +513,7 @@ export default function Profile() {
     return (
       <View style={{ flex: 1, backgroundColor: COLORS.card2, borderRadius: 12, paddingVertical: 12, alignItems: "center", justifyContent: "center" }}>
         <Text style={{ color: COLORS.text, fontWeight: "900" }}>{value}</Text>
-        <Text style={{ color: COLORS.sub, fontWeight: "700", marginTop: 4 }}>{label}</Text>
+        <Text style={{ color: COLORS.subtext, fontWeight: "700", marginTop: 4 }}>{label}</Text>
       </View>
     );
   }
@@ -550,8 +552,8 @@ export default function Profile() {
             </Text>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
               <View style={{ flexDirection: "row", gap: 12 }}>
-                <Text style={{ color: COLORS.sub }}>🏅 {r.cooks_count ?? 0}</Text>
-                <Text style={{ color: COLORS.sub }}>❤️ {r.likes_count ?? 0}</Text>
+                <Text style={{ color: COLORS.subtext }}>🏅 {r.cooks_count ?? 0}</Text>
+                <Text style={{ color: COLORS.subtext }}>❤️ {r.likes_count ?? 0}</Text>
               </View>
               {onRemove && (
                 <TouchableOpacity
@@ -806,7 +808,7 @@ export default function Profile() {
               <Text numberOfLines={1} style={{ color: COLORS.text, fontSize: 20, fontWeight: "900" }}>
                 {username || "Anonymous"}
               </Text>
-              <Text numberOfLines={3} style={{ color: COLORS.sub, marginTop: 4 }}>
+              <Text numberOfLines={3} style={{ color: COLORS.subtext, marginTop: 4 }}>
                 {bio?.trim() ? bio : "Cooking enthusiast sharing simple and delicious recipes."}
               </Text>
             </View>
@@ -861,7 +863,7 @@ export default function Profile() {
             >
               <View style={{ flex: 1 }}>
                 <Text style={{ color: COLORS.text, fontWeight: "900" }}>Connect a store</Text>
-                <Text style={{ color: COLORS.sub, marginTop: 2 }}>
+                <Text style={{ color: COLORS.subtext, marginTop: 2 }}>
                   Link Amazon, Walmart, Kroger or H-E-B for 1-tap “Send to Cart”.
                 </Text>
               </View>
@@ -949,7 +951,7 @@ export default function Profile() {
             ) : (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: GAP }}>
                 {savedRecipes.length === 0 ? (
-                  <Text style={{ color: COLORS.sub, paddingVertical: 8 }}>
+                  <Text style={{ color: COLORS.subtext, paddingVertical: 8 }}>
                     You haven’t saved any recipes yet.
                   </Text>
                 ) : (
@@ -968,7 +970,7 @@ export default function Profile() {
             <Pressable onPress={() => {}} style={{ width: "92%", backgroundColor: COLORS.card, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
               <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18, marginBottom: 12 }}>Edit Profile</Text>
 
-              <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Bio</Text>
+              <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Bio</Text>
               <TextInput
                 value={editBio}
                 onChangeText={setEditBio}
@@ -978,7 +980,7 @@ export default function Profile() {
                 multiline
               />
 
-              <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Avatar</Text>
+              <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Avatar</Text>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 }}>
                 {editAvatar ? (
                   <Image source={{ uri: editAvatar }} style={{ width: 56, height: 56, borderRadius: 28 }} />
@@ -1036,7 +1038,7 @@ export default function Profile() {
                   style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
                 >
                   <Text style={{ color: COLORS.text, fontWeight: "900" }}>Manage Stores</Text>
-                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
                     {connectedStores > 0 ? `${connectedStores} connected` : "Not connected yet"}
                   </Text>
                 </TouchableOpacity>
@@ -1048,7 +1050,7 @@ export default function Profile() {
                   style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
                 >
                   <Text style={{ color: COLORS.text, fontWeight: "900" }}>Monetization</Text>
-                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
                     {monetizeLoading ? "Checking…" : monetizeLabel}
                   </Text>
                 </TouchableOpacity>
@@ -1056,11 +1058,11 @@ export default function Profile() {
                 {/* ===== Account Info: Email + Callsign + Location (NEW grouping, same functionality) ===== */}
                 <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
                   {/* Email (read-only) */}
-                  <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Email</Text>
+                  <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Email</Text>
                   <Text style={{ color: COLORS.text }}>{email || "—"}</Text>
 
                   {/* Callsign editor (moved under email) */}
-                  <Text style={{ color: COLORS.sub, marginTop: 12, marginBottom: 6 }}>Callsign (username)</Text>
+                  <Text style={{ color: COLORS.subtext, marginTop: 12, marginBottom: 6 }}>Callsign (username)</Text>
                   <TextInput
                     value={username}
                     onChangeText={setUsername}
@@ -1079,8 +1081,8 @@ export default function Profile() {
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
-                  {!!checking && <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Checking availability…</Text>}
-                  <Text style={{ color: COLORS.sub, marginBottom: 10 }}>Tip: 3+ characters. Spaces turn into underscores.</Text>
+                  {!!checking && <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Checking availability…</Text>}
+                  <Text style={{ color: COLORS.subtext, marginBottom: 10 }}>Tip: 3+ characters. Spaces turn into underscores.</Text>
 
                   <TouchableOpacity
                     disabled={!canSave}
@@ -1099,7 +1101,7 @@ export default function Profile() {
                   {/* Location fields (NEW) */}
                   <View style={{ flexDirection: "row", gap: 8 }}>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ color: COLORS.sub, marginBottom: 6 }}>State</Text>
+                      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>State</Text>
                       <TextInput
                         value={stateRegion}
                         onChangeText={setStateRegion}
@@ -1112,7 +1114,7 @@ export default function Profile() {
                       />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Country</Text>
+                      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Country</Text>
                       <TextInput
                         value={country}
                         onChangeText={setCountry}
@@ -1137,7 +1139,7 @@ export default function Profile() {
                 {/* ===== Units preference (UPDATED to segmented slider) ===== */}
                 <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
                   <Text style={{ color: COLORS.text, fontWeight: "900" }}>Ingredient Units</Text>
-                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>Pick how measurements show up.</Text>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>Pick how measurements show up.</Text>
 
                   {/* segmented pill */}
                   <View style={{ marginTop: 10, flexDirection: "row", backgroundColor: COLORS.card2, borderRadius: 999, padding: 4 }}>
@@ -1168,7 +1170,7 @@ export default function Profile() {
                 {/* ===== Export recipes (NEW) ===== */}
                 <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
                   <Text style={{ color: COLORS.text, fontWeight: "900" }}>Export my recipes</Text>
-                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>Get your data. Your recipes belong to you.</Text>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>Get your data. Your recipes belong to you.</Text>
 
                   <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
                     <TouchableOpacity
@@ -1196,7 +1198,7 @@ export default function Profile() {
                   style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
                 >
                   <Text style={{ color: COLORS.text, fontWeight: "900" }}>Help & Support</Text>
-                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
                     Send us a ticket. You can attach screenshots.
                   </Text>
                 </TouchableOpacity>
@@ -1208,7 +1210,7 @@ export default function Profile() {
                   style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
                 >
                   <Text style={{ color: COLORS.red, fontWeight: "900" }}>Quit MessHall (delete my account)</Text>
-                  <Text style={{ color: COLORS.sub, marginTop: 4 }}>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
                     Your profile stays for 30 days, then is deleted. Recipes nobody saved are removed after 30 days.
                     Saved copies stay visible to the saver.
                   </Text>
@@ -1250,7 +1252,7 @@ export default function Profile() {
           <Pressable onPress={() => setShowAffiliate(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, alignItems: "center", justifyContent: "center", padding: 20 }}>
             <Pressable onPress={() => {}} style={{ width: "100%", backgroundColor: COLORS.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
               <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18 }}>Affiliate Disclosure</Text>
-              <Text style={{ color: COLORS.sub, marginTop: 10, lineHeight: 20 }}>
+              <Text style={{ color: COLORS.subtext, marginTop: 10, lineHeight: 20 }}>
                 MessHall uses affiliate links for some stores. If you tap “Send to Cart” or visit a store from the app,
                 we may earn a commission from qualifying purchases.{"\n\n"}
                 <Text style={{ color: COLORS.text, fontWeight: "900" }}>Amazon Notice:</Text> As an Amazon Associate, MessHall earns from qualifying purchases.{"\n\n"}
@@ -1271,9 +1273,9 @@ export default function Profile() {
           <Pressable style={{ flex: 1, backgroundColor: "#00000088", padding: 20 }} onPress={() => setShowSupport(false)}>
             <Pressable style={{ backgroundColor: COLORS.card, borderRadius: 16, padding: 16, gap: 10, borderWidth: 1, borderColor: COLORS.border }} onPress={() => {}}>
               <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18 }}>Help & Support</Text>
-              <Text style={{ color: COLORS.sub }}>Tell us what’s wrong and add screenshots.</Text>
+              <Text style={{ color: COLORS.subtext }}>Tell us what’s wrong and add screenshots.</Text>
 
-              <Text style={{ color: COLORS.sub, marginTop: 8 }}>Subject</Text>
+              <Text style={{ color: COLORS.subtext, marginTop: 8 }}>Subject</Text>
               <TextInput
                 value={ticketSubject}
                 onChangeText={setTicketSubject}
@@ -1282,7 +1284,7 @@ export default function Profile() {
                 style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 }}
               />
 
-              <Text style={{ color: COLORS.sub, marginTop: 8 }}>Message</Text>
+              <Text style={{ color: COLORS.subtext, marginTop: 8 }}>Message</Text>
               <TextInput
                 value={ticketMessage}
                 onChangeText={setTicketMessage}

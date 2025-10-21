@@ -97,7 +97,11 @@ export default function SlotCreatives() {
       let image_url: string | null = null;
       if (img) {
         if (typeof img === "string") image_url = img;
-        else if (img.uri) image_url = await uploadAdImage(img.uri);
+        else if (img.uri) {
+          const me = (await supabase.auth.getUser()).data.user;
+          if (!me?.id) throw new Error("Not signed in");
+          image_url = await uploadAdImage(me.id, img);
+        }
       }
       const { error } = await supabase.from("sponsored_creatives").insert({
         slot_id: slotId,

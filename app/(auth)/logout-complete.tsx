@@ -9,6 +9,7 @@ const COLORS = {
   bg: "#0b1220",
   text: "#e5e7eb",
   sub: "#94a3b8",
+  subtext: "#94a3b8",
   green: "#22c55e",
   greenDim: "#16a34a",
   buttonText: "#0b0f19",
@@ -26,7 +27,7 @@ export default function LogoutComplete() {
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: "center", justifyContent: "center", padding: 24 }}>
       <Text style={{ color: COLORS.text, fontSize: 28, fontWeight: "800", marginBottom: 8 }}>Mission Completed</Text>
-      <Text style={{ color: COLORS.sub, textAlign: "center", marginBottom: 24 }}>
+      <Text style={{ color: COLORS.subtext, textAlign: "center", marginBottom: 24 }}>
         You’ve been signed out safely.
       </Text>
 

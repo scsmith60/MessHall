@@ -84,7 +84,7 @@ export default function CookMode() {
   const [idx, setIdx] = useState(0);
   const [seconds, setSeconds] = useState(DEFAULT_STEP_SECONDS);
   const [running, setRunning] = useState(false);
-  const intervalRef = useRef<NodeJS.Timer | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // exit popup
   const [showExit, setShowExit] = useState(false);
@@ -268,8 +268,9 @@ export default function CookMode() {
 
         setTitle(r?.title ?? 'Recipe');
 
+        const img: any = (r as any)?.image;
         const thumb: string | null =
-          r?.image?.url ?? r?.image ?? r?.photo ?? r?.originalImage ?? r?.cover ?? r?.hero ?? r?.thumbnail ?? null;
+          img?.url ?? img ?? (r as any)?.photo ?? (r as any)?.originalImage ?? (r as any)?.cover ?? (r as any)?.hero ?? (r as any)?.thumbnail ?? null;
         setImageUrl(thumb);
 
         const rawSteps = (r?.steps ?? []).map((x: any) => {
