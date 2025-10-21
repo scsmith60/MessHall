@@ -241,64 +241,19 @@ export default function CaptureScreen() {
     const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
     s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
 
-    const cleanedLines = original
-      .split(/\r?\n/)
-      .flatMap((line) => line.split(/[•]/g))
-      .map((line) =>
-        line
-          .replace(/^[\s•*\-]+/, "")
-          .replace(/[#@][\w_]+/g, "")
-          .replace(/https?:\/\/\S+/gi, "")
-          .replace(/\s{2,}/g, " ")
-          .trim()
-      )
-      .filter(Boolean);
-
-    const fromBefore = (() => {
-      try {
-        const seg = sectionizeCaption(original);
-        return (seg.before || "")
-          .split(/\r?\n/)
-          .map((line) => line.replace(/^[\s•*\-]+/, "").trim())
-          .filter(Boolean);
-      } catch {
-        return [] as string[];
-      }
-    })();
-
-    const candidateLines = Array.from(new Set([...fromBefore, ...cleanedLines]))
-      .flatMap((line) => {
-        const trimmed = line.replace(/[“”"']/g, "").trim();
-        if (!trimmed) return [] as string[];
-        const parts = [trimmed];
-        const colonIdx = trimmed.indexOf(":");
-        if (colonIdx > 0 && colonIdx < trimmed.length - 2) {
-          const before = trimmed.slice(0, colonIdx).trim();
-          const after = trimmed.slice(colonIdx + 1).trim();
-          if (before) parts.push(before);
-          if (after) parts.push(after);
-        }
-        return parts;
-      })
-      .map((line) => line.replace(/[“”"']/g, "").trim())
-      .map((line) => line.replace(/\s{2,}/g, " ").trim())
-      .map((line) => line.replace(/\b(for the|for your|for our|for my)\b.*$/i, "").trim())
-      .filter((line) => line.length >= 3)
-      .filter((line) => !/^ingredients?\b/i.test(line))
-      .filter((line) => !TITLE_STEP_TOKEN.test(line))
-      .filter((line) => !TITLE_SERVING_TOKEN.test(line))
-      .filter((line) => !(TITLE_ING_TOKEN.test(line) && (/\d/.test(line) || TITLE_NUMBER_WORD.test(line))));
-
-    const viable = candidateLines.filter(looksLikeDishTitle);
-
-    if (!s || /^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) {
-      if (viable.length) {
-        s = viable.sort((a, b) => scoreTitleCandidate(b) - scoreTitleCandidate(a))[0];
-      }
-    }
-
-    if ((!s || isBadTitleCandidate(s)) && viable.length) {
-      s = viable.sort((a, b) => scoreTitleCandidate(b) - scoreTitleCandidate(a))[0];
+    if (!s || /^ingredients?\b/i.test(s)) {
+      const lines = original
+        .split(/\r?\n/)
+        .map((line) =>
+          line
+            .replace(/^[\s•*\-]+/, "")
+            .replace(/[#@][\w_]+/g, "")
+            .replace(/https?:\/\/\S+/gi, "")
+            .trim()
+        )
+        .filter(Boolean);
+      const alt = lines.find((line) => !/^(ingredients?|directions?|instructions?|method)\b/i.test(line) && !/^for\b/i.test(line) && !/^to\b/i.test(line));
+      if (alt) s = alt;
     }
 
     // trim site tails and tidy punctuation
@@ -528,18 +483,7 @@ function keepRealIngredients(lines: string[]): string[] {
     if (/^[@#][\w._-]+$/.test(s)) return false;
 
     // drop obvious serving/yield callouts
-    if (TITLE_SERVING_TOKEN.test(s)) return false;
-    if (/\bmakes\b/i.test(s) && (/[0-9]/.test(s) || servingWords.test(s))) return false;
-
-    // drop prep/cook time callouts that sneak in with the caption
-    if (/\b(prep|cook|total)\s*time\b/i.test(s)) return false;
-
-    // drop "Step" headers or instruction labels
-    if (TITLE_STEP_TOKEN.test(s) || /^step\b/i.test(s)) return false;
-
-    // drop lines that look like instructions (verbs + cues) without a clear measurement
-    if (IG_STEP_VERB_START.test(s)) return false;
-    if (IG_STEP_VERB.test(s) && (!unitWord.test(s) || IG_STEP_CUE.test(s))) return false;
+    if (/\b(serves?|servings?|serving size|makes|feeds|yield|yields)\b/i.test(s)) return false;
 
     // drop obvious full-sentence chatter that has no qty nor unit
     if (/[.?!…]$/.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
@@ -761,6 +705,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     return normalizeLines(glue);
   }
 
+  const [debugLog, setDebugLog] = useState<string>("");
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
   // 🛡️ strongest good title during this import run
@@ -1195,38 +1140,26 @@ try {
 
   // Move any step-like lines that slipped into ingredients
   try {
+    const stepVerb = /(\bMelt\b|\bAdd\b|\bHeat\b|\bCook\b|\bWhisk\b|\bStir\b|\bBring\b|\bSimmer\b|\bBoil\b|\bTurn\s+up\b|\bCombine\b|\bOnce\b|\bPreheat\b|\bMix\b|\bFold\b|\bPour\b|\bSpread\b|\bSeason\b|\bServe\b|\bGarnish\b|\bTransfer\b|\bBake\b|\bFry\b|\bAir\s*fry\b|\bLayer\b|\bRoll\b|\bWrap\b|\bChill\b|\bMarinate\b|\bCover\b|\bLet\b|\bDrizzle\b|\bTop\b|\bFlip\b|\bPlace\b|\bBrown\b|\bRinse\b|\bDrain\b|\bBeat\b|\bBlend\b|\bSaute\b|\bSauté\b)/i;
+    const loneVerb = /^(melt|add|mix|stir|cook|serve|enjoy|bake|fry|air fry|grill|preheat|combine|pour|spread|season|garnish|transfer|roll|wrap|chill|marinate|cover|rest|let|knead|saute|sauté)$/i;
     const newIngs: string[] = [];
     const moved: string[] = [];
     for (const line of (parsed.ingredients || [])) {
       const t = (line || '').trim();
       if (!t) continue;
       const looksLikeStep =
-        IG_STEP_VERB.test(t) ||
-        IG_STEP_CUE.test(t) ||
-        /^\d+\s*[.)-]/.test(t) ||
-        /^step\b/i.test(t);
-      if (looksLikeStep) moved.push(t);
+        stepVerb.test(t) ||
+        /\bthen\b/i.test(t) ||
+        /\buntil\b/i.test(t) ||
+        /\bafter\b/i.test(t) ||
+        /\bnext\b/i.test(t);
+      if (looksLikeStep || loneVerb.test(t)) moved.push(t);
       else newIngs.push(t);
-    }
-    if (moved.length) {
-      const cleanedMoved = moved
-        .map((line) => line.replace(/^[\s•*-]+/, '').replace(/[\s.,!?;:]+$/g, '').trim())
-        .filter(Boolean);
-      parsed.steps = stitchBrokenSteps([...(parsed.steps || []), ...cleanedMoved]);
     }
     parsed.ingredients = newIngs;
   } catch {}
 
-  parsed.ingredients = parsed.ingredients
-    .map((line: string) =>
-      line
-        .replace(/[•*\-–—]+$/g, '')
-        .replace(/[.,!?;:]+$/g, '')
-        .replace(/\s{2,}/g, " ")
-        .trim()
-    )
-    .filter(Boolean);
-  parsed.steps = Array.from(new Set(stitchBrokenSteps((parsed.steps || []).map((line: string) => line.trim()).filter(Boolean))));
+  parsed.ingredients = parsed.ingredients.map((line: string) => line.replace(/[.,!?;:]+$/g, '').trim());
 
   if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
   if (parsed.steps.length >= 1) setSteps(parsed.steps);
