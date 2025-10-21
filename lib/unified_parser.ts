@@ -213,7 +213,7 @@ const COOKING_CUES = [
   "Make","Fill","Assemble" // ✅ add here too for splitting help
 ];
 const cueRegex = new RegExp(
-  String.raw`(?<=\.)\s+(?=(?:${COOKING_CUES.join("|")})\b)|\s+(?=(?:${COOKING_CUES.join("|")})\b)`,
+  String.raw`(?<=\.)\s+(?=(?:${COOKING_CUES.join("|")})\b)`,
   "g"
 );
 function explodeCompoundSteps(steps: string[]): string[] {
