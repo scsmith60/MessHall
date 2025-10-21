@@ -165,7 +165,8 @@ export default function CaptureScreen() {
   // Turns a TikTok caption into a short, neat title candidate (kid-friendly)
   function captionToNiceTitle(raw?: string): string {
     if (!raw) return "";
-    let s = String(raw)
+    const original = String(raw);
+    let s = original
       .replace(/\r|\t/g, " ")                         // make spaces normal
       .replace(/https?:\/\/\S+/gi, "")                // remove links
       .replace(/[#@][\w_]+/g, "")                     // remove #tags and @users
@@ -177,12 +178,33 @@ export default function CaptureScreen() {
     // stop before sections like "Ingredients", "Instructions", etc. or lead-ins
     const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal|for\s+the\b|you'?ll\s+need)/i;
     const m = s.match(cutWords);
-    if (m && m.index! > 0) s = s.slice(0, m.index).trim();
+    if (m) {
+      if (m.index && m.index > 0) {
+        s = s.slice(0, m.index).trim();
+      } else {
+        s = s.slice((m.index ?? 0) + m[0].length).trim();
+      }
+    }
 
     // first sentence if present, else first line
     const firstLine = (s.split("\n")[0] || s).trim();
     const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
     s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
+
+    if (!s || /^ingredients?\b/i.test(s)) {
+      const lines = original
+        .split(/\r?\n/)
+        .map((line) =>
+          line
+            .replace(/^[\s•*\-]+/, "")
+            .replace(/[#@][\w_]+/g, "")
+            .replace(/https?:\/\/\S+/gi, "")
+            .trim()
+        )
+        .filter(Boolean);
+      const alt = lines.find((line) => !/^(ingredients?|directions?|instructions?|method)\b/i.test(line) && !/^for\b/i.test(line) && !/^to\b/i.test(line));
+      if (alt) s = alt;
+    }
 
     // trim site tails and tidy punctuation
     s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
@@ -404,6 +426,9 @@ function keepRealIngredients(lines: string[]): string[] {
     // drop lone handles/hashtags
     if (/^[@#][\w._-]+$/.test(s)) return false;
 
+    // drop obvious serving/yield callouts
+    if (/\b(serves?|servings?|serving size|makes|feeds|yield|yields)\b/i.test(s)) return false;
+
     // drop obvious full-sentence chatter that has no qty nor unit
     if (/[.?!…]$/.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
 
@@ -608,7 +633,6 @@ function keepRealIngredients(lines: string[]): string[] {
   }
 
   const [debugLog, setDebugLog] = useState<string>("");
-  const [showDebug, setShowDebug] = useState(false);
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
   // 🛡️ strongest good title during this import run
@@ -1035,17 +1059,27 @@ try {
 
   // Move any step-like lines that slipped into ingredients
   try {
-    const stepVerb = /(\bMelt\b|\bAdd\b|\bHeat\b|\bCook\b|\bWhisk\b|\bStir\b|\bBring\b|\bSimmer\b|\bBoil\b|\bTurn\s+up\b|\bCombine\b|\bOnce\b|\bPreheat\b|\bMix\b)/i;
+    const stepVerb = /(\bMelt\b|\bAdd\b|\bHeat\b|\bCook\b|\bWhisk\b|\bStir\b|\bBring\b|\bSimmer\b|\bBoil\b|\bTurn\s+up\b|\bCombine\b|\bOnce\b|\bPreheat\b|\bMix\b|\bFold\b|\bPour\b|\bSpread\b|\bSeason\b|\bServe\b|\bGarnish\b|\bTransfer\b|\bBake\b|\bFry\b|\bAir\s*fry\b|\bLayer\b|\bRoll\b|\bWrap\b|\bChill\b|\bMarinate\b|\bCover\b|\bLet\b|\bDrizzle\b|\bTop\b|\bFlip\b|\bPlace\b|\bBrown\b|\bRinse\b|\bDrain\b|\bBeat\b|\bBlend\b|\bSaute\b|\bSauté\b)/i;
+    const loneVerb = /^(melt|add|mix|stir|cook|serve|enjoy|bake|fry|air fry|grill|preheat|combine|pour|spread|season|garnish|transfer|roll|wrap|chill|marinate|cover|rest|let|knead|saute|sauté)$/i;
     const newIngs: string[] = [];
     const moved: string[] = [];
     for (const line of (parsed.ingredients || [])) {
       const t = (line || '').trim();
       if (!t) continue;
-      if (stepVerb.test(t) || /^[A-Za-z]{3,}\.?$/.test(t)) moved.push(t); else newIngs.push(t);
+      const looksLikeStep =
+        stepVerb.test(t) ||
+        /\bthen\b/i.test(t) ||
+        /\buntil\b/i.test(t) ||
+        /\bafter\b/i.test(t) ||
+        /\bnext\b/i.test(t);
+      if (looksLikeStep || loneVerb.test(t)) moved.push(t);
+      else newIngs.push(t);
     }
     if (moved.length) parsed.steps = [...(parsed.steps || []), ...moved];
     parsed.ingredients = newIngs;
   } catch {}
+
+  parsed.ingredients = parsed.ingredients.map((line: string) => line.replace(/[.,!?;:]+$/g, '').trim());
 
   if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
   if (parsed.steps.length >= 1) setSteps(parsed.steps);
@@ -1425,15 +1459,7 @@ try {
                 <Text style={{ color: "#0B1120", fontWeight: "700" }}>{hudVisible ? "Importing…" : "Import"}</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity onPress={() => setShowDebug((v)=>!v)} style={{ marginTop: 8, alignSelf: "flex-end" }}>
-              <Text style={{ color: COLORS.subtext, textDecorationLine: "underline" }}>{showDebug ? "Hide debug" : "Show debug"}</Text>
-            </TouchableOpacity>
-            {showDebug && (
-              <View style={{ marginTop: 8, backgroundColor: "#0f172a", borderColor: COLORS.border, borderWidth: 1, borderRadius: 10, padding: 8 }}>
-                <Text style={{ color: "#94a3b8", fontSize: 12 }} selectable numberOfLines={16}>{debugLog || "No debug yet."}</Text>
-              </View>
-            )}
+            {/* debug output is collected silently; no toggle is rendered for end users */}
 
             <View style={{ marginTop: 10 }}>
               {(() => {
