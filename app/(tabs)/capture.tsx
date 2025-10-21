@@ -31,6 +31,8 @@ import TTDomScraper from "@/components/TTDomScraper";
 import * as FileSystem from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Line, Circle } from "react-native-svg";
+import InstagramDomScraper from "@/components/InstagramDomScraper";
+import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata } from "@/lib/recipeSiteHelpers";
 
 // -------------- theme --------------
 const COLORS = {
@@ -58,472 +60,6 @@ const SOFT_MIN_W = 360, SOFT_MIN_H = 360;
 const MIN_LOCAL_BYTES = 30_000;
 const FOCUS_Y_DEFAULT = 0.4;
 
-// -------------- tiny utils --------------
-// wait || give up
-async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return await Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
-}
-// get first url from a string
-function extractFirstUrl(s: string): string | null {
-  const m = (s || "").match(/https?:\/\/[^\s"'<>]+/i);
-  return m ? m[0] : null;
-}
-function ensureHttps(u: string) { return /^[a-z]+:\/\//i.test(u) ? u : `https://${u}`; }
-async function resolveFinalUrl(u: string) {
-  try { const r = await fetch(u); if ((r as any)?.url) return (r as any).url as string; } catch {}
-  return u;
-}
-function canonicalizeUrl(u: string): string {
-  try {
-    const raw = ensureHttps(u.trim());
-    const url = new URL(raw);
-    url.protocol = "https:"; url.hash = ""; url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
-    const kill = ["fbclid", "gclid", "ref"];
-    for (const [k] of url.searchParams.entries()) if (k.toLowerCase().startsWith("utm_") || kill.includes(k)) url.searchParams.delete(k);
-    url.search = url.searchParams.toString() ? `?${url.searchParams.toString()}` : "";
-    if (url.pathname !== "/" && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
-    return url.toString();
-  } catch { return u.trim(); }
-}
-function isTikTokLike(url: string): boolean {
-  try { const h = new URL(url).hostname.toLowerCase(); return h === "www.tiktok.com" || h.endsWith(".tiktok.com") || h === "tiktok.com" || h === "vm.tiktok.com"; }
-  catch { return /tiktok\.com/i.test(url); }
-}
-function extractTikTokIdFromUrl(u: string): string | null {
-  const m = u.match(/\/(?:video|photo)\/(\d{6,})/);
-  return m ? m[1] : null;
-}
-async function resolveTikTokEmbedUrl(rawUrl: string) {
-  const start = ensureHttps(rawUrl.trim());
-  const final = await resolveFinalUrl(start);
-  let id = extractTikTokIdFromUrl(final);
-  if (!id) {
-    try {
-      const html = await (await fetch(final)).text();
-      const m =
-        html.match(/"videoId"\s*:\s*"(\d{6,})"/) ||
-        html.match(/"itemId"\s*:\s*"(\d{6,})"/) ||
-        html.match(/<link\s+rel="canonical"\s+href="https?:\/\/www\.tiktok\.com\/@[^\/]+\/(?:video|photo)\/(\d{6,})"/i);
-      if (m) id = m[1];
-    } catch {}
-  }
-  return { embedUrl: id ? `https://www.tiktok.com/embed/v2/${id}` : null, finalUrl: final, id };
-}
-function decodeEntities(s: string) {
-  return (s || "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
-}
-function extractMetaContent(html: string, nameOrProp: string): string | null {
-  const re = new RegExp(`<meta[^>]+(?:property|name)=["']${nameOrProp}["'][^>]*content=["']([^"']+)["'][^>]*>`, "i");
-  const m = html.match(re);
-  return m?.[1]?.trim() || null;
-}
-function hostToBrand(host: string) {
-  const h = host.toLowerCase().replace(/^www\./, "");
-  if (h.includes("tiktok")) return "tiktok";
-  if (h.includes("foodnetwork")) return "food network";
-  if (h.includes("allrecipes")) return "allrecipes";
-  if (h.includes("youtube")) return "youtube";
-  if (h.includes("pinterest")) return "pinterest";
-  return h.split(".")[0];
-}
-function cleanTitle(raw: string, url: string) {
-  let s = decodeEntities((raw || "").trim());
-  const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
-  const brand = host ? hostToBrand(host) : "";
-  const splitters = [" | ", " - ", " • ", " – "];
-  for (const sp of splitters) {
-    const parts = s.split(sp);
-    if (parts.length > 1) {
-      const last = parts[parts.length - 1].trim().toLowerCase();
-      if (brand && (last === brand || last.includes(brand))) { s = parts.slice(0, -1).join(sp).trim(); break; }
-    }
-  }
-  s = s.replace(/\s+[\-\|•–]\s*(tiktok|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
-  s = s.replace(/\b\(?video\)?\b\s*$/i, "").trim();
-  return s;
-}
-// ------------------------------
-// 🍭 Title helpers (fixed)
-// ------------------------------
-
-/** Turn a TikTok caption into a short, pretty recipe title */
-
-// Turns a TikTok caption into a short, neat title candidate (kid-friendly)
-function captionToNiceTitle(raw?: string): string {
-  if (!raw) return "";
-  let s = String(raw)
-    .replace(/\r|\t/g, " ")                         // make spaces normal
-    .replace(/https?:\/\/\S+/gi, "")                // remove links
-    .replace(/[#@][\w_]+/g, "")                     // remove #tags and @users
-    // ✅ SAFE EMOJI REMOVER (no \u{...}): surrogate pairs + misc symbols — keep on ONE LINE
-    .replace(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF])/g, "")
-    .replace(/\s{2,}/g, " ")                        // squash extra spaces
-    .trim();
-
-  // stop before sections like "Ingredients", "Instructions", etc.
-  const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal)/i;
-  const m = s.match(cutWords);
-  if (m && m.index! > 0) s = s.slice(0, m.index).trim();
-
-  // first sentence if present, else first line
-  const firstLine = (s.split("\n")[0] || s).trim();
-  const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
-  s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
-
-  // trim site tails and tidy punctuation
-  s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
-  s = s.replace(/\s*\.$/, "");
-  s = s.replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
-
-  return s; // ← important semicolon so the chain ends here
-}
-/** 🧼 normalizeDishTitle: trim hype and keep only the dish name.
- *  Example: "Smoky Poblano Chicken & Black Bean Soup Dive into..." 
- *           -> "Smoky Poblano Chicken and Black Bean Soup"
- */
-function normalizeDishTitle(input: string): string {
-  if (!input) return "";
-  let s = String(input);
-
-  // Friendlier: replace ampersand
-  s = s.replace(/&/g, " and ");
-
-  // Cut off common promo/lead-in phrases that come after the dish name
-  s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
-
-  // Remove anything after exclamation || question marks
-  s = s.replace(/\s*[!?].*$/, "");
-
-  // Remove site tails like " | TikTok"
-  s = s.replace(/\s*[|•–—-]\s*(?:tiktok|youtube|instagram|pinterest).*$/i, "");
-
-  // If multiple sentences, keep just the first
-  const firstSentence = s.split(/(?<=\.)\s+/)[0];
-  s = firstSentence || s;
-
-  // Tidy whitespace and trailing dot
-  s = s.replace(/\s{2,}/g, " ").replace(/\s+\.$/, "").trim();
-
-  return s;
-}
-/** 🛡️ safeSetTitle: only accept strong, cleaned titles and remember strongest. */
-function safeSetTitle(
-  candidate: string | null | undefined,
-  url: string,
-  current: string,
-  dbg?: (...args:any[])=>void,
-  source = "candidate"
-) {
-  const raw = (candidate ?? "").trim();
-  if (!raw) return;
-  const cleaned = normalizeDishTitle(cleanTitle(raw, url));
-  if (isWeakTitle(cleaned)) { dbg?.("🛡️ TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
-  const prev = (strongTitleRef.current || "").trim();
-  if (!prev || cleaned.length > prev.length) {
-    strongTitleRef.current = cleaned;
-    dbg?.("🛡️ TITLE strongest updated:", source, JSON.stringify(cleaned));
-  }
-  if (!isWeakTitle(current) && current.trim().length >= cleaned.length) {
-    dbg?.("🛡️ TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
-    return;
-  }
-  setTitle(cleaned);
-  dbg?.("🛡️ TITLE set:", source, JSON.stringify(cleaned));
-}
-
-
-
-
-/** Decide if a TikTok-ish title is junk */
-function isTikTokJunkTitle(s?: string | null) {
-  const t = (s || "").toLowerCase().trim();
-  if (!t) return true;
-  if (t === "tiktok") return true;
-  if (t === "make your day") return true;
-  if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
-  if (t.includes("tiktok") && t.includes("make your day")) return true;
-  return false;
-}
-
-/** Decide if current title is too weak to keep */
-function isWeakTitle(t?: string | null) {
-  const s = (t || "").trim();
-  if (!s) return true;
-  if (isTikTokJunkTitle(s)) return true;
-  const lower = s.toLowerCase();
-  if (lower === "food network" || lower === "allrecipes" || lower === "youtube") return true;
-  if (s.length < 4) return true;
-  if (/^\d{6,}$/.test(s)) return true;
-  // If it starts directly with "Ingredients:" it's not a real title
-  if (/^\s*ingredients?:/i.test(s)) return true;
-  return false;
-}
-
-// 🧠 Find "Ingredients" and "Steps" inside one long TikTok caption
-function sectionizeCaption(raw: string) {
-  const s = (raw || "").replace(/\r/g, "\n");
-  const low = s.toLowerCase();
-  // find anchors
-  const iIdx = low.search(/\bingredients?\b/);
-  const sIdx = low.search(/\b(steps?|directions?|method)\b/);
-
-  let ing = "", steps = "", before = s.trim();
-
-  if (iIdx >= 0 && sIdx >= 0) {
-    if (iIdx < sIdx) {
-      ing = s.slice(iIdx, sIdx);
-      steps = s.slice(sIdx);
-    } else {
-      steps = s.slice(sIdx, iIdx);
-      ing = s.slice(iIdx);
-    }
-  } else if (iIdx >= 0) {
-    ing = s.slice(iIdx);
-  } else if (sIdx >= 0) {
-    steps = s.slice(sIdx);
-  }
-
-  if (!ing && !steps) return { before, ing: "", steps: "" };
-  return { before: s.slice(0, Math.min(...[iIdx, sIdx].filter(x => x >= 0))).trim(), ing, steps };
-}
-
-// 🔪 Turn “Ingredients 1 lb chicken 1 cup panko …” into line items
-function explodeIngredientsBlock(block: string) {
-  if (!block) return "";
-
-  let txt = block
-    .replace(/^\s*ingredients?:?/i, "")    // drop the heading
-    .replace(/[\u2022\u25CF\u25CB]/g, "•") // normalize bullets
-    .replace(/\s{2,}/g, " ")
-    .trim();
-
-  // rule A: split on explicit bullets
-  txt = txt.replace(/\s*•\s*/g, "\n• ");
-
-  // rule B: split on ", " || "; " **when** there's a quantity/unit before it
-  txt = txt.replace(
-    /(\d+(?:\.\d+)?|[¼-¾½])\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b\s*[,;]\s*/gi,
-    "$&\n"
-  );
-
-  // rule C: split when a new quantity+unit appears without punctuation
-  txt = txt.replace(
-    /\s(?=(\d+(?:\/\d+)?(?:\.\d+)?|[¼-¾½])\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b)/gi,
-    "\n"
-  );
-
-  const lines = txt
-    .split(/\n+/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => (/^[-*•]/.test(l) ? l : `• ${l}`));
-
-  return ["Ingredients:", ...lines].join("\n");
-}
-
-// 🔧 Turn “Steps 1. Mix 2. Bake …” into numbered lines
-function explodeStepsBlock(block: string) {
-  if (!block) return "";
-
-  let txt = block
-    .replace(/^\s*(steps?|directions?|method):?/i, "")
-    .replace(/\r/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .trim();
-
-  // split on “1.” “2)” “3 -” etc
-  txt = txt.replace(/(?:\s*)(\d+)[\.\)\-]\s*/g, "\n$1. ");
-  // also split on bullets
-  txt = txt.replace(/\s*•\s*/g, "\n• ");
-
-  const lines = txt
-    .split(/\n+/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l, i) => (/^\d+\./.test(l) ? l : `${i + 1}. ${l}`));
-
-  return ["Steps:", ...lines].join("\n");
-}
-
-// 🧪 Build a recipe-looking text purely from CAPTION
-function captionToRecipeText(caption: string) {
-  const { before, ing, steps } = sectionizeCaption(caption);
-  const ingBlock = explodeIngredientsBlock(ing);
-  const stepBlock = explodeStepsBlock(steps);
-  const beforeBlock = before ? `Title/Captions:\n${before.trim()}` : "";
-  return [beforeBlock, ingBlock, stepBlock].filter(Boolean).join("\n\n").trim();
-}
-
-async function fetchWithUA(url: string, ms = 7000, as: "json" | "text" = "text"): Promise<any> {
-  const headers: Record<string, string> = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
-    "Accept": as === "json" ? "application/json,*/*" : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-  };
-  const res = (await withTimeout(fetch(url, { headers }), ms)) as unknown as Response;
-  if (!res.ok) throw new Error(`http ${res.status}`);
-  return as === "json" ? res.json() : res.text();
-}
-async function getTikTokOEmbedTitle(url: string): Promise<string | null> {
-  try {
-    const j: any = await fetchWithUA(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, 7000, "json");
-    const t = j?.title && String(j.title).trim();
-    return t && !isTikTokJunkTitle(t) ? t : null;
-  } catch { return null; }
-}
-
-// -------------- image helpers --------------
-function absolutizeImageUrl(candidate: string, pageUrl: string): string | null {
-  if (!candidate) return null;
-  try {
-    if (candidate.startsWith("//")) return "https:" + candidate;
-    if (candidate.startsWith("data:")) return null;
-    if (/^https?:\/\//i.test(candidate)) return candidate;
-    if (candidate.startsWith("/")) {
-      const u = new URL(ensureHttps(pageUrl));
-      return `${u.protocol}//${u.host}${candidate}`;
-    }
-    const base = new URL(ensureHttps(pageUrl));
-    return new URL(candidate, base).toString();
-  } catch { return null; }
-}
-async function getAnyImageFromPage(url: string): Promise<string | null> {
-  try {
-    const html = await fetchWithUA(url, 12000, "text");
-    const og = extractMetaContent(html, "og:image") || extractMetaContent(html, "twitter:image");
-    if (og) return absolutizeImageUrl(og, url);
-    return null;
-  } catch {
-    return null;
-  }
-}
-async function getLocalDimensions(uri: string): Promise<{ w: number; h: number }> {
-  try { const r = await ImageManipulator.manipulateAsync(uri, [], { compress: 0, format: ImageManipulator.SaveFormat.JPEG }); return { w: r.width ?? 0, h: r.height ?? 0 }; }
-  catch { return { w: 0, h: 0 }; }
-}
-async function ensureMinLocalImage(uri: string): Promise<string | null> {
-  const { w, h } = await getLocalDimensions(uri);
-  if (!w || !h) return null;
-  if (w >= MIN_IMG_W && h >= MIN_IMG_H) return uri;
-  if (w >= SOFT_MIN_W && h >= SOFT_MIN_H) {
-    const scale = Math.max(MIN_IMG_W / w, MIN_IMG_H / h);
-    const newW = Math.round(w * scale), newH = Math.round(h * scale);
-    try {
-      const out = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: newW, height: newH } }], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG });
-      return out.uri || null;
-    } catch { return null; }
-  }
-  return null;
-}
-async function downloadRemoteToLocalImage(url: string, referer?: string): Promise<string | null> {
-  const stripQuery = (u: string) => { try { const x = new URL(u); x.search = ""; return x.toString(); } catch { return u; } };
-  const candidates: string[] = [url, stripQuery(url)];
-  const origin = (() => { try { return referer ? new URL(referer).origin : undefined; } catch { return undefined; } })();
-  const headerSets: Record<string, string>[] = [
-    { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15", "Accept": "image/avif,image/webp,image/jpeg,image/*,*/*;q=0.8", ...(referer ? { Referer: referer } : {}), ...(origin ? { Origin: origin } : {}) },
-    { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*;q=0.8" },
-  ];
-  for (const cand of candidates) {
-    for (const headers of headerSets) {
-      const dst = FileSystem.cacheDirectory + `dl_${Date.now()}_${Math.random().toString(36).slice(2)}.img`;
-      try {
-        const res = await FileSystem.downloadAsync(cand, dst, { headers });
-        if (res.status >= 200 && res.status < 300) {
-          const out = await ImageManipulator.manipulateAsync(res.uri, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
-          const ok = await ensureMinLocalImage(out.uri);
-          return ok || out.uri;
-        }
-      } catch {}
-      try { await FileSystem.deleteAsync(dst, { idempotent: true }); } catch {}
-    }
-  }
-  return null;
-}
-
-// -------------- OCR --------------
-async function ocrImageToText(localUri: string): Promise<string | null> {
-  try {
-    const prepped = await ImageManipulator.manipulateAsync(localUri, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
-    const path = `ocr/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
-    let publicUrl: string | null = null;
-    try { publicUrl = await uploadFromUri({ uri: prepped.uri, storageBucket: "tmp-uploads", path, contentType: "image/jpeg" }); }
-    catch { publicUrl = null; }
-    if (!publicUrl) return null;
-    const { data, error } = await (supabase as any).functions.invoke("ocr", { body: { url: publicUrl } });
-    if (error) return null;
-    const text = (data && (data.text || data.ocr || data.result)) ? String(data.text || data.ocr || data.result) : "";
-    return text.trim() || null;
-  } catch { return null; }
-}
-
-// -------------- NEW: comment scoring & fusion --------------
-// 🧠 score how “ingredienty/stepy” a comment looks
-function scoreRecipeComment(s: string) {
-  let sc = 0;
-  const low = s.toLowerCase();
-  if (/ingredients?|what you need|for the (?:dough|sauce|filling)|shopping list/.test(low)) sc += 600;
-  if (/directions?|steps?|method|how to/.test(low)) sc += 320;
-  if (/[0-9½¼¾]/.test(s)) sc += 160;
-  if (/(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre)/i.test(s)) sc += 220;
-  if (/^(\s*[-*•]|\s*\d+\.)/m.test(s)) sc += 120;
-  const lines = s.split(/\r?\n/).length; sc += Math.min(lines, 40) * 6;
-  const L = s.length; if (L > 80) sc += 40; if (L > 240) sc += 30; if (L > 900) sc -= 120;
-  return sc;
-}
-// 🚿 clean up comments (strip “log in/open app” cruft)
-function isJunkComment(s: string) {
-  const low = s.toLowerCase();
-  if (low.length < 8) return true;
-  return /log\s*in|sign\s*in|open app|download|scan the qr|p_search_score|search_video/.test(low);
-}
-function normalizeLines(s: string) {
-  // turn inline “1) mix 2) bake” into newline list, keep bullets
-  let t = s
-    .replace(/\r/g, "\n")
-    .replace(/[\u2022\u25CF\u25CB]/g, "•")
-    .replace(/(?:\s*[,;]\s*)(?=(?:\d+[\.)]|[-*•]))/g, "\n")
-    .replace(/(\d+)[\)\.]\s*/g, "$1. ")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return t;
-}
-// 🍱 build a “recipe-like” text from caption + top comments
-function fuseCaptionAndComments(caption: string, comments: string[], topN = 5) {
-  const good = comments.filter((c) => c && !isJunkComment(c)).map((c) => normalizeLines(c));
-  const ranked = good.sort((a, b) => scoreRecipeComment(b) - scoreRecipeComment(a));
-  const picked = ranked.slice(0, Math.min(topN, ranked.length));
-  // separate likely ingredients from likely steps
-  const ing: string[] = [], stp: string[] = [];
-  for (const c of picked) {
-    const lower = c.toLowerCase();
-    const looksIng = /ingredients?|what you need|cups?|tsp|tbsp|oz|gram|ml|^[-*•]|\d+\s*(?:cup|tsp|tbsp|oz|g|ml)/im.test(lower);
-    const looksSteps = /steps?|directions?|method|\d+\./im.test(lower);
-    if (looksIng && !looksSteps) ing.push(c);
-    else if (looksSteps && !looksIng) stp.push(c);
-    else {
-      // ambiguous: send to bucket with better score bias
-      (scoreRecipeComment(c) >= 400 ? ing : stp).push(c);
-    }
-  }
-
-  const cap = (caption || "").trim();
-  const capBlock = cap ? `Title/Captions:\n${normalizeLines(cap)}\n` : "";
-
-  const glue = [
-    capBlock,
-    ing.length ? `Ingredients:\n${ing.join("\n")}` : "",
-    stp.length ? `\n\nSteps:\n${stp.join("\n")}` : "",
-  ].filter(Boolean).join("\n");
-
-  // last polish: ensure each list item is on its own line
-  return normalizeLines(glue);
-}
-
 // -------------- screen state --------------
 type ImageSourceState =
   | { kind: "none" }
@@ -532,6 +68,523 @@ type ImageSourceState =
   | { kind: "camera"; localUri: string };
 
 export default function CaptureScreen() {
+  // -------------- tiny utils --------------
+  // wait || give up
+  async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    return await Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
+  }
+  // get first url from a string
+  function extractFirstUrl(s: string): string | null {
+    const m = (s || "").match(/https?:\/\/[^\s"'<>]+/i);
+    return m ? m[0] : null;
+  }
+  function ensureHttps(u: string) { return /^[a-z]+:\/\//i.test(u) ? u : `https://${u}`; }
+  async function resolveFinalUrl(u: string) {
+    try { const r = await fetch(u); if ((r as any)?.url) return (r as any).url as string; } catch (e) { try { dbg('❌ try-block failed:', safeErr(e));  } catch {} }
+    return u;
+  }
+  function canonicalizeUrl(u: string): string {
+    try {
+      const raw = ensureHttps(u.trim());
+      const url = new URL(raw);
+      url.protocol = "https:"; url.hash = ""; url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+      const kill = ["fbclid", "gclid", "ref"];
+      for (const [k] of url.searchParams.entries()) if (k.toLowerCase().startsWith("utm_") || kill.includes(k)) url.searchParams.delete(k);
+      url.search = url.searchParams.toString() ? `?${url.searchParams.toString()}` : "";
+      if (url.pathname !== "/" && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
+      return url.toString();
+    } catch (e) { return u.trim(); try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+  }
+  function isTikTokLike(url: string): boolean {
+    try { const h = new URL(url).hostname.toLowerCase(); return h === "www.tiktok.com" || h.endsWith(".tiktok.com") || h === "tiktok.com" || h === "vm.tiktok.com"; } catch (e) { return /tiktok\.com/i.test(url); }
+  }
+  function extractTikTokIdFromUrl(u: string): string | null {
+    const m = u.match(/\/(?:video|photo)\/(\d{6,})/);
+    return m ? m[1] : null;
+  }
+  async function resolveTikTokEmbedUrl(rawUrl: string) {
+    const start = ensureHttps(rawUrl.trim());
+    const final = await resolveFinalUrl(start);
+    let id = extractTikTokIdFromUrl(final);
+    if (!id) {
+      try {
+        const html = await (await fetch(final)).text();
+        const m =
+          html.match(/"videoId"\s*:\s*"(\d{6,})"/) ||
+          html.match(/"itemId"\s*:\s*"(\d{6,})"/) ||
+          html.match(/<link\s+rel="canonical"\s+href="https?:\/\/www\.tiktok\.com\/@[^\/]+\/(?:video|photo)\/(\d{6,})"/i);
+        if (m) id = m[1];
+      } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+    }
+    return { embedUrl: id ? `https://www.tiktok.com/embed/v2/${id}` : null, finalUrl: final, id };
+  }
+  function decodeEntities(s: string) {
+    return (s || "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+  }
+  function extractMetaContent(html: string, nameOrProp: string): string | null {
+    const re = new RegExp(`<meta[^>]+(?:property|name)=["']${nameOrProp}["'][^>]*content=["']([^"']+)["'][^>]*>`, "i");
+    const m = html.match(re);
+    return m?.[1]?.trim() || null;
+  }
+  function hostToBrand(host: string) {
+    const h = host.toLowerCase().replace(/^www\./, "");
+    if (h.includes("tiktok")) return "tiktok";
+    if (h.includes("foodnetwork")) return "food network";
+    if (h.includes("allrecipes")) return "allrecipes";
+    if (h.includes("youtube")) return "youtube";
+    if (h.includes("pinterest")) return "pinterest";
+    return h.split(".")[0];
+  }
+  function cleanTitle(raw: string, url: string) {
+    let s = decodeEntities((raw || "").trim());
+    const host = (() => { try { return new URL(url).hostname; } catch (e) { return ""; } })();
+    const brand = host ? hostToBrand(host) : "";
+    const splitters = [" | ", " - ", " • ", " – "];
+    for (const sp of splitters) {
+      const parts = s.split(sp);
+      if (parts.length > 1) {
+        const last = parts[parts.length - 1].trim().toLowerCase();
+        if (brand && (last === brand || last.includes(brand))) { s = parts.slice(0, -1).join(sp).trim(); break; }
+      }
+    }
+    s = s.replace(/\s+[\-\|•–]\s*(tiktok|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
+    s = s.replace(/\b\(?video\)?\b\s*$/i, "").trim();
+    return s;
+  }
+  // ------------------------------
+  // 🍭 Title helpers (fixed)
+  // ------------------------------
+
+  /** Turn a TikTok caption into a short, pretty recipe title */
+
+  // Turns a TikTok caption into a short, neat title candidate (kid-friendly)
+  function captionToNiceTitle(raw?: string): string {
+    if (!raw) return "";
+    let s = String(raw)
+      .replace(/\r|\t/g, " ")                         // make spaces normal
+      .replace(/https?:\/\/\S+/gi, "")                // remove links
+      .replace(/[#@][\w_]+/g, "")                     // remove #tags and @users
+      // ✅ SAFE EMOJI REMOVER (no \u{...}): surrogate pairs + misc symbols — keep on ONE LINE
+      .replace(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF])/g, "")
+      .replace(/\s{2,}/g, " ")                        // squash extra spaces
+      .trim();
+
+    // stop before sections like "Ingredients", "Instructions", etc.
+    const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal)/i;
+    const m = s.match(cutWords);
+    if (m && m.index! > 0) s = s.slice(0, m.index).trim();
+
+    // first sentence if present, else first line
+    const firstLine = (s.split("\n")[0] || s).trim();
+    const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
+    s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
+
+    // trim site tails and tidy punctuation
+    s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
+    s = s.replace(/\s*\.$/, "");
+    s = s.replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
+
+    return s; // ← important semicolon so the chain ends here
+  }
+  /** 🧼 normalizeDishTitle: trim hype and keep only the dish name.
+   *  Example: "Smoky Poblano Chicken & Black Bean Soup Dive into..." 
+   *           -> "Smoky Poblano Chicken and Black Bean Soup"
+   */
+  function normalizeDishTitle(input: string): string {
+    if (!input) return "";
+    let s = String(input);
+
+    // Friendlier: replace ampersand
+    s = s.replace(/&/g, " and ");
+
+    // Cut off common promo/lead-in phrases that come after the dish name
+    s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
+
+    // Remove anything after exclamation || question marks
+    s = s.replace(/\s*[!?].*$/, "");
+
+    // Remove site tails like " | TikTok"
+    s = s.replace(/\s*[|•–—-]\s*(?:tiktok|youtube|instagram|pinterest).*$/i, "");
+
+    // If multiple sentences, keep just the first
+    const firstSentence = s.split(/(?<=\.)\s+/)[0];
+    s = firstSentence || s;
+
+    // Tidy whitespace and trailing dot
+    s = s.replace(/\s{2,}/g, " ").replace(/\s+\.$/, "").trim();
+
+    return s;
+  }
+  /** 🛡️ safeSetTitle: only accept strong, cleaned titles and remember strongest. */
+  function safeSetTitle(
+    candidate: string | null | undefined,
+    url: string,
+    current: string,
+    dbg?: (...args:any[])=>void,
+    source = "candidate"
+  ) {
+    const raw = (candidate ?? "").trim();
+    if (!raw) return;
+    const cleaned = normalizeDishTitle(cleanTitle(raw, url));
+    if (isWeakTitle(cleaned)) { dbg?.("🛡️ TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
+    const prev = (strongTitleRef.current || "").trim();
+    if (!prev || cleaned.length > prev.length) {
+      strongTitleRef.current = cleaned;
+      dbg?.("🛡️ TITLE strongest updated:", source, JSON.stringify(cleaned));
+    }
+    if (!isWeakTitle(current) && current.trim().length >= cleaned.length) {
+      dbg?.("🛡️ TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
+      return;
+    }
+    setTitle(cleaned);
+    dbg?.("🛡️ TITLE set:", source, JSON.stringify(cleaned));
+  }
+
+
+
+
+  /** Decide if a TikTok-ish title is junk */
+  function isTikTokJunkTitle(s?: string | null) {
+    const t = (s || "").toLowerCase().trim();
+    if (!t) return true;
+    if (t === "tiktok") return true;
+    if (t === "make your day") return true;
+    if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
+    if (t.includes("tiktok") && t.includes("make your day")) return true;
+    return false;
+  }
+
+  /** Decide if current title is too weak to keep */
+  function isWeakTitle(t?: string | null) {
+    const s = (t || "").trim();
+    if (!s) return true;
+    if (isTikTokJunkTitle(s)) return true;
+    const lower = s.toLowerCase();
+    if (lower === "food network" || lower === "allrecipes" || lower === "youtube") return true;
+    if (s.length < 4) return true;
+    if (/^\d{6,}$/.test(s)) return true;
+    // If it starts directly with "Ingredients:" it's not a real title
+    if (/^\s*ingredients?:/i.test(s)) return true;
+    return false;
+  }
+
+  // 🧠 Find "Ingredients" and "Steps" inside one long TikTok caption
+  function sectionizeCaption(raw: string) {
+    const s = (raw || "").replace(/\r/g, "\n");
+    const low = s.toLowerCase();
+    // find anchors
+    const iIdx = low.search(/\bingredients?\b/);
+    const sIdx = low.search(/\b(steps?|directions?|method)\b/);
+
+    let ing = "", steps = "", before = s.trim();
+
+    if (iIdx >= 0 && sIdx >= 0) {
+      if (iIdx < sIdx) {
+        ing = s.slice(iIdx, sIdx);
+        steps = s.slice(sIdx);
+      } else {
+        steps = s.slice(sIdx, iIdx);
+        ing = s.slice(iIdx);
+      }
+    } else if (iIdx >= 0) {
+      ing = s.slice(iIdx);
+    } else if (sIdx >= 0) {
+      steps = s.slice(sIdx);
+    }
+
+    if (!ing && !steps) return { before, ing: "", steps: "" };
+    return { before: s.slice(0, Math.min(...[iIdx, sIdx].filter(x => x >= 0))).trim(), ing, steps };
+  }
+
+  // 🔪 Turn “Ingredients 1 lb chicken 1 cup panko …” into line items
+  function explodeIngredientsBlock(block: string) {
+    if (!block) return "";
+
+    let txt = block
+      .replace(/^\s*ingredients?:?/i, "")    // drop the heading
+      .replace(/[\u2022\u25CF\u25CB]/g, "•") // normalize bullets
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
+    // rule A: split on explicit bullets
+    txt = txt.replace(/\s*•\s*/g, "\n• ");
+
+    // rule B: split on ", " || "; " **when** there's a quantity/unit before it
+    txt = txt.replace(
+      /(\d+(?:\.\d+)?|[¼-¾½])\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b\s*[,;]\s*/gi,
+      "$&\n"
+    );
+
+    // rule C: split when a new quantity+unit appears without punctuation
+    txt = txt.replace(
+      /\s(?=(\d+(?:\/\d+)?(?:\.\d+)?|[¼-¾½])\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b)/gi,
+      "\n"
+    );
+
+    const lines = txt
+      .split(/\n+/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => (/^[-*•]/.test(l) ? l : `• ${l}`));
+
+    return ["Ingredients:", ...lines].join("\n");
+  }
+  // ─────────────────────────────────────────────────────────────
+// ELI5: make the words easy for our parser
+// - turn fancy fractions (½) into normal " 1/2"
+// - put a space between numbers and units ("1lb" -> "1 lb", "1 1/2lb" -> "1 1/2 lb")
+// - we do this BEFORE we call parseRecipeText
+// ─────────────────────────────────────────────────────────────
+
+function normalizeUnicodeFractions(s: string): string {
+  return (s || "")
+    .replace(/¼/g, " 1/4")
+    .replace(/½/g, " 1/2")
+    .replace(/¾/g, " 3/4");
+}
+
+function preCleanIgCaptionForParsing(s: string): string {
+  // 1) make fractions friendly
+  let out = normalizeUnicodeFractions(s);
+
+  // 2) add a space between quantity (with optional mixed fraction) and unit
+  //    examples: "1lb" -> "1 lb", "1 1/2lb" -> "1 1/2 lb", "12oz" -> "12 oz"
+  //    units we care about here; extend if you like
+  out = out.replace(
+    /\b(\d+(?:\s+\d+\/\d+)?)(?=(lb|lbs|pound|pounds|oz|ounce|ounces|g|kg|ml|l)\b)/gi,
+    "$1 "
+  );
+
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────
+// ELI5: throw away lines that are NOT ingredients
+// - lines that end like a sentence (no units/amounts)
+// - lines like "5 likes" / "0 comments"
+// - lone @handles or #hashtags
+// ─────────────────────────────────────────────────────────────
+
+function keepRealIngredients(lines: string[]): string[] {
+  const unitWord = /\b(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|kg|ml|l|clove|cloves|stick|sticks)\b/i;
+  const hasQty = /(^|\s)(\d+(\s+\d+\/\d+)?|\d+\/\d+|¼|½|¾)(?=\s|$)/; // 1 , 1 1/2 , 1/2 , ½
+  return (lines || []).filter((raw) => {
+    const s = (raw || "").trim();
+    if (!s) return false;
+
+    // drop "5 likes" / "0 comments"
+    if (/^\d[\d,.\s]*\s+(likes?|comments?)\b/i.test(s)) return false;
+
+    // drop lone handles/hashtags
+    if (/^[@#][\w._-]+$/.test(s)) return false;
+
+    // drop obvious full-sentence chatter that has no qty nor unit
+    if (/[.?!…]$/.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
+
+    return true;
+  });
+}
+
+
+  // 🔧 Turn “Steps 1. Mix 2. Bake …” into numbered lines
+  function explodeStepsBlock(block: string) {
+    if (!block) return "";
+
+    let txt = block
+      .replace(/^\s*(steps?|directions?|method):?/i, "")
+      .replace(/\r/g, "\n")
+      .replace(/[ \t]+/g, " ")
+      .trim();
+
+    // split on “1.” “2)” “3 -” etc
+    txt = txt.replace(/(?:\s*)(\d+)[\.\)\-]\s*/g, "\n$1. ");
+    // also split on bullets
+    txt = txt.replace(/\s*•\s*/g, "\n• ");
+
+    const lines = txt
+      .split(/\n+/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l, i) => (/^\d+\./.test(l) ? l : `${i + 1}. ${l}`));
+
+    return ["Steps:", ...lines].join("\n");
+  }
+
+  // 🧪 Build a recipe-looking text purely from CAPTION
+  function captionToRecipeText(caption: string) {
+    const { before, ing, steps } = sectionizeCaption(caption);
+    const ingBlock = explodeIngredientsBlock(ing);
+    const stepBlock = explodeStepsBlock(steps);
+    const beforeBlock = before ? `Title/Captions:\n${before.trim()}` : "";
+    return [beforeBlock, ingBlock, stepBlock].filter(Boolean).join("\n\n").trim();
+  }
+
+  async function fetchWithUA(url: string, ms = 7000, as: "json" | "text" = "text"): Promise<any> {
+    const headers: Record<string, string> = {
+      "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+      "Accept": as === "json" ? "application/json,*/*" : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+    };
+    const res = (await withTimeout(fetch(url, { headers }), ms)) as unknown as Response;
+    if (!res.ok) throw new Error(`http ${res.status}`);
+    return as === "json" ? res.json() : res.text();
+  }
+  async function getTikTokOEmbedTitle(url: string): Promise<string | null> {
+    try {
+      const j: any = await fetchWithUA(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, 7000, "json");
+      const t = j?.title && String(j.title).trim();
+      return t && !isTikTokJunkTitle(t) ? t : null;
+    } catch (e) { return null; try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+  }
+
+  // -------------- image helpers --------------
+  function absolutizeImageUrl(candidate: string, pageUrl: string): string | null {
+    if (!candidate) return null;
+    try {
+      if (candidate.startsWith("//")) return "https:" + candidate;
+      if (candidate.startsWith("data:")) return null;
+      if (/^https?:\/\//i.test(candidate)) return candidate;
+      if (candidate.startsWith("/")) {
+        const u = new URL(ensureHttps(pageUrl));
+        return `${u.protocol}//${u.host}${candidate}`;
+      }
+      const base = new URL(ensureHttps(pageUrl));
+      return new URL(candidate, base).toString();
+    } catch (e) { return null; try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+  }
+  async function getAnyImageFromPage(url: string): Promise<string | null> {
+    try {
+      const html = await fetchWithUA(url, 12000, "text");
+      const og = extractMetaContent(html, "og:image") || extractMetaContent(html, "twitter:image");
+      if (og) return absolutizeImageUrl(og, url);
+      return null;
+    } catch (e) { return null; try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+  }
+  async function getLocalDimensions(uri: string): Promise<{ w: number; h: number }> {
+    try { const r = await ImageManipulator.manipulateAsync(uri, [], { compress: 0, format: ImageManipulator.SaveFormat.JPEG }); return { w: r.width ?? 0, h: r.height ?? 0 }; } catch (e) { return { w: 0, h: 0 }; }
+  }
+  async function ensureMinLocalImage(uri: string): Promise<string | null> {
+    const { w, h } = await getLocalDimensions(uri);
+    if (!w || !h) return null;
+    if (w >= MIN_IMG_W && h >= MIN_IMG_H) return uri;
+    if (w >= SOFT_MIN_W && h >= SOFT_MIN_H) {
+      const scale = Math.max(MIN_IMG_W / w, MIN_IMG_H / h);
+      const newW = Math.round(w * scale), newH = Math.round(h * scale);
+      try {
+        const out = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: newW, height: newH } }], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG });
+        return out.uri || null;
+      } catch (e) { return null; try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+    }
+    return null;
+  }
+  async function downloadRemoteToLocalImage(url: string, referer?: string): Promise<string | null> {
+    const stripQuery = (u: string) => { try { const x = new URL(u); x.search = ""; return x.toString(); } catch (e) { return u; } };
+    const candidates: string[] = [url, stripQuery(url)];
+    const origin = (() => { try { return referer ? new URL(referer).origin : undefined; } catch (e) { return undefined; } })();
+    const headerSets: Record<string, string>[] = [
+      { "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15", "Accept": "image/avif,image/webp,image/jpeg,image/*,*/*;q=0.8", ...(referer ? { Referer: referer } : {}), ...(origin ? { Origin: origin } : {}) },
+      { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*;q=0.8" },
+    ];
+    for (const cand of candidates) {
+      for (const headers of headerSets) {
+        const dst = FileSystem.cacheDirectory + `dl_${Date.now()}_${Math.random().toString(36).slice(2)}.img`;
+        try {
+          const res = await FileSystem.downloadAsync(cand, dst, { headers });
+          if (res.status >= 200 && res.status < 300) {
+            const out = await ImageManipulator.manipulateAsync(res.uri, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
+            const ok = await ensureMinLocalImage(out.uri);
+            return ok || out.uri;
+          }
+        } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+        try { await FileSystem.deleteAsync(dst, { idempotent: true }); } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+      }
+    }
+    return null;
+  }
+
+  // -------------- OCR --------------
+  async function ocrImageToText(localUri: string): Promise<string | null> {
+    try {
+      const prepped = await ImageManipulator.manipulateAsync(localUri, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
+      const path = `ocr/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+      let publicUrl: string | null = null;
+      try { publicUrl = await uploadFromUri({ uri: prepped.uri, storageBucket: "tmp-uploads", path, contentType: "image/jpeg" }); } catch (e) { publicUrl = null; }
+      if (!publicUrl) return null;
+      const { data, error } = await (supabase as any).functions.invoke("ocr", { body: { url: publicUrl } });
+      if (error) return null;
+      const text = (data && (data.text || data.ocr || data.result)) ? String(data.text || data.ocr || data.result) : "";
+      return text.trim() || null;
+    } catch (e) { return null; try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+  }
+
+  // -------------- NEW: comment scoring & fusion --------------
+  // 🧠 score how “ingredienty/stepy” a comment looks
+  function scoreRecipeComment(s: string) {
+    let sc = 0;
+    const low = s.toLowerCase();
+    if (/ingredients?|what you need|for the (?:dough|sauce|filling)|shopping list/.test(low)) sc += 600;
+    if (/directions?|steps?|method|how to/.test(low)) sc += 320;
+    if (/[0-9½¼¾]/.test(s)) sc += 160;
+    if (/(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre)/i.test(s)) sc += 220;
+    if (/^(\s*[-*•]|\s*\d+\.)/m.test(s)) sc += 120;
+    const lines = s.split(/\r?\n/).length; sc += Math.min(lines, 40) * 6;
+    const L = s.length; if (L > 80) sc += 40; if (L > 240) sc += 30; if (L > 900) sc -= 120;
+    return sc;
+  }
+  // 🚿 clean up comments (strip “log in/open app” cruft)
+  function isJunkComment(s: string) {
+    const low = s.toLowerCase();
+    if (low.length < 8) return true;
+    return /log\s*in|sign\s*in|open app|download|scan the qr|p_search_score|search_video/.test(low);
+  }
+  function normalizeLines(s: string) {
+    // turn inline “1) mix 2) bake” into newline list, keep bullets
+    let t = s
+      .replace(/\r/g, "\n")
+      .replace(/[\u2022\u25CF\u25CB]/g, "•")
+      .replace(/(?:\s*[,;]\s*)(?=(?:\d+[\.)]|[-*•]))/g, "\n")
+      .replace(/(\d+)[\)\.]\s*/g, "$1. ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    return t;
+  }
+  // 🍱 build a “recipe-like” text from caption + top comments
+  function fuseCaptionAndComments(caption: string, comments: string[], topN = 5) {
+    const good = comments.filter((c) => c && !isJunkComment(c)).map((c) => normalizeLines(c));
+    const ranked = good.sort((a, b) => scoreRecipeComment(b) - scoreRecipeComment(a));
+    const picked = ranked.slice(0, Math.min(topN, ranked.length));
+    // separate likely ingredients from likely steps
+    const ing: string[] = [], stp: string[] = [];
+    for (const c of picked) {
+      const lower = c.toLowerCase();
+      const looksIng = /ingredients?|what you need|cups?|tsp|tbsp|oz|gram|ml|^[-*•]|\d+\s*(?:cup|tsp|tbsp|oz|g|ml)/im.test(lower);
+      const looksSteps = /steps?|directions?|method|\d+\./im.test(lower);
+      if (looksIng && !looksSteps) ing.push(c);
+      else if (looksSteps && !looksIng) stp.push(c);
+      else {
+        // ambiguous: send to bucket with better score bias
+        (scoreRecipeComment(c) >= 400 ? ing : stp).push(c);
+      }
+    }
+
+    const cap = (caption || "").trim();
+    const capBlock = cap ? `Title/Captions:\n${normalizeLines(cap)}\n` : "";
+
+    const glue = [
+      capBlock,
+      ing.length ? `Ingredients:\n${ing.join("\n")}` : "",
+      stp.length ? `\n\nSteps:\n${stp.join("\n")}` : "",
+    ].filter(Boolean).join("\n");
+
+    // last polish: ensure each list item is on its own line
+    return normalizeLines(glue);
+  }
+
   const [debugLog, setDebugLog] = useState<string>("");
   const [showDebug, setShowDebug] = useState(false);
   const [pastedUrl, setPastedUrl] = useState("");
@@ -546,10 +599,10 @@ export default function CaptureScreen() {
 
   const dbg = useCallback((...args: any[]) => {
     try {
-      const line = args.map((a) => typeof a === "string" ? a : (()=>{ try { return JSON.stringify(a); } catch { return String(a); } })()).join(" ");
+      const line = args.map((a) => typeof a === "string" ? a : (()=>{ try { return JSON.stringify(a); } catch (e) { return String(a); } })()).join(" ");
       setDebugLog((prev) => (prev ? prev + "\n" : "") + line);
       console.log("[IMPORT]", line);
-    } catch {}
+    } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
   }, []);
   const safeErr = useCallback((e: any): string => {
     try {
@@ -558,7 +611,7 @@ export default function CaptureScreen() {
       if (e instanceof Error && e.message) return e.message;
       const msg = (e?.message || e?.toString?.() || JSON.stringify(e));
       return typeof msg === "string" ? msg : "unknown";
-    } catch { return "unknown"; }
+    } catch (e) { return "unknown"; try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
   }, []);
 
   const [hudVisible, setHudVisible] = useState(false);
@@ -578,6 +631,10 @@ export default function CaptureScreen() {
   const [domScraperVisible, setDomScraperVisible] = useState(false);
   const [domScraperUrl, setDomScraperUrl] = useState("");
   const domScraperResolverRef = useRef<((payload: any) => void) | null>(null);
+
+  const [instagramScraperVisible, setInstagramScraperVisible] = useState(false);
+  const [instagramScraperUrl, setInstagramScraperUrl] = useState("");
+  const instagramScraperResolverRef = useRef<((payload: any) => void) | null>(null);
 
   const [snapFocusY, setSnapFocusY] = useState(FOCUS_Y_DEFAULT);
   const [snapZoom, setSnapZoom] = useState(1.2);
@@ -612,11 +669,11 @@ export default function CaptureScreen() {
   const validateOrRepairLocal = useCallback(async (uri: string): Promise<string | null> => {
     try {
       const info = await FileSystem.getInfoAsync(uri);
-      if (!info.exists || (info.size ?? 0) < MIN_LOCAL_BYTES) {
+      if (!("exists" in info) || !info.exists || (info.size ?? 0) < MIN_LOCAL_BYTES) {
         const resaved = await ImageManipulator.manipulateAsync(uri, [], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }).catch(() => null);
         if (resaved?.uri) uri = resaved.uri; else return null;
       }
-    } catch { return null; }
+    } catch (e) { return null; try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
     return await ensureMinLocalImage(uri);
   }, []);
   const isValidCandidate = useCallback(async (uri: string): Promise<{ ok: boolean; useUri?: string }> => {
@@ -628,14 +685,14 @@ export default function CaptureScreen() {
       if (w < MIN_IMG_W || h < MIN_IMG_H) return { ok: false };
       return { ok: true, useUri: fixed };
     } else {
-      try { await withTimeout(RNImage.prefetch(uri), 1800).catch(() => null); } catch {}
+      try { await withTimeout(RNImage.prefetch(uri), 1800).catch(() => null); } catch (e) { try { dbg('❌ try-block failed:', safeErr(e));  } catch {} }
       const { w, h } = await getImageDims(uri);
       if ((w >= MIN_IMG_W && h >= MIN_IMG_H) || (w === 0 && h === 0)) return { ok: true, useUri: uri };
       try {
         const dl = await FileSystem.downloadAsync(uri, FileSystem.cacheDirectory + `snap_${Date.now()}.jpg`);
         const fixed = await validateOrRepairLocal(dl.uri);
         if (fixed) return { ok: true, useUri: fixed };
-      } catch {}
+      } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
       return { ok: false };
     }
   }, [getImageDims, validateOrRepairLocal]);
@@ -716,6 +773,114 @@ export default function CaptureScreen() {
     });
   }, [bringHudToFront]);
 
+  const scrapeInstagramDom = useCallback(async (rawUrl: string): Promise<{
+    text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string;
+  } | null> => {
+    const finalUrl = await resolveFinalUrl(ensureHttps(rawUrl.trim()));
+    return new Promise((resolve) => {
+      let resolved = false;
+      const timeout = setTimeout(() => {
+        if (!resolved) { resolved = true; setInstagramScraperVisible(false); resolve(null); }
+      }, 16000);
+      
+      setInstagramScraperUrl(finalUrl);
+      setInstagramScraperVisible(true);
+      bringHudToFront();
+      
+      instagramScraperResolverRef.current = (payload: any) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          setInstagramScraperVisible(false);
+          resolve(payload || null);
+        }
+      };
+    });
+  }, [bringHudToFront]);
+
+  const tryImageUrl = useCallback(async (rawUrl: string, originUrl: string) => {
+    const absolute = absolutizeImageUrl(rawUrl, originUrl);
+    if (!absolute) return false;
+    const test = await isValidCandidate(absolute);
+    if (test.ok && test.useUri) {
+      bumpStage(1);
+      if (test.useUri.startsWith("http")) setImg({ kind: "url-og", url: originUrl, resolvedImageUrl: test.useUri });
+      else setImg({ kind: "picker", localUri: test.useUri });
+      lastGoodPreviewRef.current = test.useUri;
+      lastResolvedUrlRef.current = originUrl;
+      gotSomethingForRunRef.current = true;
+      return true;
+    }
+    return false;
+  }, [isValidCandidate, bumpStage]);
+
+  const handleRecipeSite = useCallback(async (url: string, html: string) => {
+  try {
+    // Try JSON-LD first (most reliable)
+    const jsonLd = extractRecipeFromJsonLd(html);
+    if (jsonLd) {
+      dbg("🍳 JSON-LD recipe found");
+      
+      if (jsonLd.title && isWeakTitle(title)) {
+        safeSetTitle(jsonLd.title, url, title, dbg, "jsonld");
+      }
+      
+      if (jsonLd.ingredients && jsonLd.ingredients.length >= 2) {
+        setIngredients(jsonLd.ingredients);
+        bumpStage(2);
+      }
+      
+      if (jsonLd.steps && jsonLd.steps.length >= 1) {
+        setSteps(jsonLd.steps);
+        bumpStage(3);
+      }
+      
+      if (jsonLd.image) {
+        await tryImageUrl(jsonLd.image, url);
+      }
+      
+      if (jsonLd.time) {
+        setTimeMinutes(jsonLd.time);
+      }
+      
+      if (jsonLd.servings) {
+        setServings(jsonLd.servings);
+      }
+      
+      return true;
+    }
+    
+    // Try microdata as fallback
+    const microdata = extractRecipeFromMicrodata(html);
+    if (microdata) {
+      dbg("🍳 Microdata recipe found");
+      
+      if (microdata.title && isWeakTitle(title)) {
+        safeSetTitle(microdata.title, url, title, dbg, "microdata");
+      }
+      
+      if (microdata.ingredients && microdata.ingredients.length >= 2) {
+        setIngredients(microdata.ingredients);
+        bumpStage(2);
+      }
+      
+      if (microdata.steps && microdata.steps.length >= 1) {
+        setSteps(microdata.steps);
+        bumpStage(3);
+      }
+      
+      return true;
+    }
+    
+    return false;
+  } catch (e) {
+    dbg("⚠️ Recipe site handler failed:", safeErr(e));
+    return false;
+  }
+  }, [title, bumpStage, tryImageUrl, dbg, safeErr]);
+
+  
+
   // 📸 snap TikTok for preview/OCR (embed is ok for a *picture*)
   const autoSnapTikTok = useCallback(async (rawUrl: string, maxAttempts = SNAP_ATTEMPTS) => {
     const { embedUrl, finalUrl } = await resolveTikTokEmbedUrl(rawUrl);
@@ -760,21 +925,6 @@ export default function CaptureScreen() {
     return best;
   }, [getImageDims, setGoodPreview, validateOrRepairLocal, isValidCandidate, bringHudToFront]);
 
-  const tryImageUrl = useCallback(async (rawUrl: string, originUrl: string) => {
-    const absolute = absolutizeImageUrl(rawUrl, originUrl);
-    if (!absolute) return false;
-    const test = await isValidCandidate(absolute);
-    if (test.ok && test.useUri) {
-      bumpStage(1);
-      if (test.useUri.startsWith("http")) setImg({ kind: "url-og", url: originUrl, resolvedImageUrl: test.useUri });
-      else setImg({ kind: "picker", localUri: test.useUri });
-      lastGoodPreviewRef.current = test.useUri;
-      lastResolvedUrlRef.current = originUrl;
-      gotSomethingForRunRef.current = true;
-      return true;
-    }
-    return false;
-  }, [isValidCandidate, bumpStage]);
 
   // ----------------- THE BOSS: unified import -----------------
   const startImport = useCallback(async (url: string) => {
@@ -790,164 +940,283 @@ export default function CaptureScreen() {
     }, IMPORT_HARD_TIMEOUT_MS);
 
     let success = false;
+    lastResolvedUrlRef.current = url;
+
+    // STEP 0: try oEmbed title
     try {
-      lastResolvedUrlRef.current = url;
+        const siteType = detectSiteType(url);
+        dbg("🎯 Site detected:", siteType);
 
-      // STEP 0: try oEmbed title
-      try {
-        const best = await getTikTokOEmbedTitle(url);
-        if (best && isWeakTitle(title)) safeSetTitle(best, url, title, dbg, 'oembed');
-        dbg("🪪 STEP 0 oEmbed title:", best ? "got" : "none");
-      } catch (e) { dbg("⚠️ STEP 0 oEmbed title failed:", safeErr(e)); }
+        if (siteType === "instagram") {
+          // INSTAGRAM PATH
+          dbg("📸 Instagram path begins");
+let igDom: any = null;
+try {
+  bumpStage(1);
+  igDom = await scrapeInstagramDom(url);
+  const len = (igDom?.text || "").length;
+  dbg("📄 Instagram payload length:", len);
 
-      if (isTikTokLike(url)) {
-        dbg("🎯 TikTok detected — unified import path begins");
+  // Title: prefer cleanTitle from DOM, else tidy caption
+  const titleCand = igDom?.cleanTitle || (igDom?.caption ? normalizeDishTitle(cleanTitle(captionToNiceTitle(igDom.caption), url)) : "");
+  if (titleCand) {
+    setTitle(titleCand);
+    strongTitleRef.current = titleCand;
+    dbg("🪪 TITLE from Instagram caption (clean):", titleCand);
+  }
 
-        // STEP 1: DOM scrape
-        let domPayload: { text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string } | null = null;
-        try {
-          bumpStage(1);
-          domPayload = await scrapeTikTokDom(url);
-          const len = (domPayload?.text || "").length;
-          dbg("📄 STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
-          // 👇 extra trace to know where it came from and if “see more” was clicked
-          if (domPayload?.debug) dbg("🧪 TTDOM DEBUG:", domPayload.debug);
-        
-          // 👉 NEW: try to set a nice title from the TikTok caption if ours is weak
+  // Pre-clean caption/text so "1 1/2lb" -> "1 1/2 lb" and "½" -> "1/2"
+  const capRaw = (igDom?.text || igDom?.caption || "").trim();
+  const capReady = preCleanIgCaptionForParsing(capRaw);
+
+  // Parse
+  const parsed = parseRecipeText(capReady);
+  // Drop IG boilerplate accidentally parsed as ingredients + chatter lines
+  parsed.ingredients = keepRealIngredients(
+    parsed.ingredients.filter((l:string) => !/^\s*\d[\d,\.\s]*\s+(likes?|comments?)\b/i.test(l))
+  );
+  dbg("📊 Instagram parse conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+
+  if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
+  if (parsed.steps.length >= 1) setSteps(parsed.steps);
+
+  if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
+    bumpStage(2);
+    success = true;
+  }
+} catch (e) {
+  dbg("❌ Instagram scraper failed:", safeErr(e));
+}
+// Try image from DOM first
+          try { if (!gotSomethingForRunRef.current && igDom?.imageUrl) { await tryImageUrl(igDom.imageUrl, url); } } catch {}
+          
+          // Image fallback
           try {
-            const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
-            const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
-            if (capTitle) {
-              setTitle(capTitle);
-              strongTitleRef.current = capTitle;
-              dbg("🪪 TITLE from caption (final):", capTitle);
+            if (!gotSomethingForRunRef.current) {
+              const og = await fetchOgForUrl(url);
+              if (og?.image) await tryImageUrl(og.image, url);
             }
-          } catch {}} catch (e) { dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e)); }
-
-        // STEP 2: PARSE — caption first (photos often hold full recipe here)
-        try {
-          const cap = (domPayload?.caption || "").trim();
-          const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
-
-          // A) build clean recipe text from CAPTION
-          const capRecipe = captionToRecipeText(cap);
-
-          // B) parse caption text
-          let parsed = parseRecipeText(capRecipe);
-          dbg("📊 STEP 2A parse(CAPTION) conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
-
-          // C) if still weak, fuse top comments and reparse
-          if ((parsed.ingredients.length < 3 || parsed.steps.length < 1) && comments.length) {
-            const fusion = fuseCaptionAndComments(cap, comments, 5);
-            const parsed2 = parseRecipeText(fusion);
-            dbg("📊 STEP 2B parse(CAPTION+COMMENTS) conf:", parsed2.confidence, "ing:", parsed2.ingredients.length, "steps:", parsed2.steps.length);
-            if ((parsed2.ingredients.length + parsed2.steps.length) > (parsed.ingredients.length + parsed.steps.length)) {
-              parsed = parsed2;
-            }
+          } catch (e) {
+            dbg("⚠️ Instagram image fallback failed:", safeErr(e));
           }
 
-          if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
-            if (parsed.ingredients.length) setIngredients(parsed.ingredients);
-            if (parsed.steps.length) setSteps(parsed.steps);
-            bumpStage(2);
-            dbg("✅ STEP 2 caption-based parse worked");
-            success = true;
-          } else {
-            dbg("ℹ️ STEP 2 caption parse still weak; will try OCR next");
+        } else if (siteType === "facebook") {
+          // FACEBOOK PATH (similar to Instagram)
+          dbg("👍 Facebook path begins");
+          
+          try {
+            const og = await fetchOgForUrl(url);
+            
+            if (og?.title && isWeakTitle(title)) {
+              safeSetTitle(og.title, url, title, dbg, "facebook:og");
+            }
+            
+            if (og?.description) {
+              const parsed = parseRecipeText(og.description);
+              dbg("📊 Facebook parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+              
+              if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
+              if (parsed.steps.length >= 1) setSteps(parsed.steps);
+              
+              if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
+                bumpStage(2);
+                success = true;
+              }
+            }
+            
+            if (og?.image) await tryImageUrl(og.image, url);
+          } catch (e) {
+            dbg("❌ Facebook handler failed:", safeErr(e));
           }
-        } catch (e) {
-          dbg("❌ STEP 2 (parse) failed:", safeErr(e));
-        }
 
-        // STEP 3: OCR fallback
-        try {
-          if (!success || (ingredients.every(v => !v.trim()))) {
-            bumpStage(2);
-            dbg("📸 STEP 3 trying screenshot + OCR");
-            const shot = await autoSnapTikTok(url, 2);
-            if (shot) {
-              const ocrText = await ocrImageToText(shot);
-              dbg("🔍 STEP 3 OCR text length:", ocrText ? ocrText.length : 0);
-              if (ocrText && ocrText.length > 50) {
-                const parsed = parseRecipeText(ocrText);
-                dbg("📊 STEP 3 OCR parse conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+        } else if (siteType === "recipe-site") {
+          // RECIPE SITE PATH (AllRecipes, Food Network, etc.)
+          dbg("🍳 Recipe site path begins");
+          
+          try {
+            const html = await fetchWithUA(url, 12000, "text");
+            const handled = await handleRecipeSite(url, html);
+            
+            if (handled) {
+              success = true;
+              dbg("✅ Recipe site extraction successful");
+            } else {
+              // Fallback to OG if structured data failed
+              const og = await fetchOgForUrl(url);
+              if (og?.title && isWeakTitle(title)) {
+                safeSetTitle(og.title, url, title, dbg, "recipe-site:og");
+              }
+              if (og?.image) await tryImageUrl(og.image, url);
+            }
+          } catch (e) {
+            dbg("❌ Recipe site handler failed:", safeErr(e));
+          }
+
+        } else if (siteType === "tiktok") {
+          // EXISTING TIKTOK PATH (keep all your existing TikTok code here)
+          dbg("🎯 TikTok detected – unified import path begins");
+          // STEP 1: DOM scrape
+          let domPayload: { text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string } | null = null;
+          try {
+            bumpStage(1);
+            domPayload = await scrapeTikTokDom(url);
+            const len = (domPayload?.text || "").length;
+            dbg("📄 STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
+            // 👇 extra trace to know where it came from and if “see more” was clicked
+            if (domPayload?.debug) dbg("🧪 TTDOM DEBUG:", domPayload.debug);
+          
+            // 👉 NEW: try to set a nice title from the TikTok caption if ours is weak
+            try {
+              const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
+              const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
+              if (capTitle) {
+                setTitle(capTitle);
+                strongTitleRef.current = capTitle;
+                dbg("🪪 TITLE from caption (final):", capTitle);
+              }
+            } catch {}
+          } catch (e) {
+            dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e));
+          }
+
+          // STEP 2: PARSE — caption first (photos often hold full recipe here)
+          try {
+            const cap = (domPayload?.caption || "").trim();
+            const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
+
+            // A) build clean recipe text from CAPTION
+            const capRecipe = captionToRecipeText(cap);
+
+            // B) parse caption text
+            let parsed = parseRecipeText(capRecipe);
+            dbg("📊 STEP 2A parse(CAPTION) conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+
+            // C) if still weak, fuse top comments and reparse
+            if ((parsed.ingredients.length < 3 || parsed.steps.length < 1) && comments.length) {
+              const fusion = fuseCaptionAndComments(cap, comments, 5);
+              const parsed2 = parseRecipeText(fusion);
+              dbg("📊 STEP 2B parse(CAPTION+COMMENTS) conf:", parsed2.confidence, "ing:", parsed2.ingredients.length, "steps:", parsed2.steps.length);
+              if ((parsed2.ingredients.length + parsed2.steps.length) > (parsed.ingredients.length + parsed.steps.length)) {
+                parsed = parsed2;
+              }
+            }
+
+            if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
+              if (parsed.ingredients.length) setIngredients(parsed.ingredients);
+              if (parsed.steps.length) setSteps(parsed.steps);
+              bumpStage(2);
+              dbg("✅ STEP 2 caption-based parse worked");
+              success = true;
+            } else {
+              dbg("ℹ️ STEP 2 caption parse still weak; will try OCR next");
+            }
+          } catch (e) {
+            dbg("❌ STEP 2 (parse) failed:", safeErr(e));
+          }
+
+          // STEP 3: OCR fallback
+          try {
+            if (!success || (ingredients.every(v => !v.trim()))) {
+              bumpStage(2);
+              dbg("📸 STEP 3 trying screenshot + OCR");
+              const shot = await autoSnapTikTok(url, 2);
+              if (shot) {
+                const ocrText = await ocrImageToText(shot);
+                dbg("🔍 STEP 3 OCR text length:", ocrText ? ocrText.length : 0);
+                if (ocrText && ocrText.length > 50) {
+                  const parsed = parseRecipeText(ocrText);
+                  dbg("📊 STEP 3 OCR parse conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+                  if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
+                    if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) setIngredients(parsed.ingredients);
+                    if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
+                    bumpStage(3);
+                    dbg("✅ STEP 3 OCR gave usable content");
+                    success = true;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            dbg("⚠️ STEP 3 (OCR) failed:", safeErr(e));
+          }
+
+          // STEP 4: OG/Meta as last resort for text
+          try {
+            if (!success || ingredients.every(v => !v.trim())) {
+              bumpStage(3);
+              dbg("🌐 STEP 4 trying OG/Meta description");
+              const og = await fetchOgForUrl(url);
+
+              /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
+
+              if (og?.description) {
+                const parsed = parseRecipeText(og.description);
+                dbg("📊 STEP 4 OG parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
                 if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
                   if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) setIngredients(parsed.ingredients);
                   if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
-                  bumpStage(3);
-                  dbg("✅ STEP 3 OCR gave usable content");
+                  dbg("✅ STEP 4 got usable content from OG description");
                   success = true;
                 }
               }
             }
+          } catch (e) {
+            dbg("⚠️ STEP 4 (OG/Meta) failed:", safeErr(e));
           }
-        } catch (e) { dbg("⚠️ STEP 3 (OCR) failed:", safeErr(e)); }
+          // STEP 5: image preview fallback
+          try {
+            bumpStage(4);
+            if (!gotSomethingForRunRef.current) {
+              const imgUrl = await getAnyImageFromPage(url);
+              if (imgUrl) await tryImageUrl(imgUrl, url);
+              dbg("🖼️ STEP 5 image fallback:", !!imgUrl);
+            }
+          } catch (e) {
+            dbg("⚠️ STEP 5 (image fallback) failed:", safeErr(e));
+          }
 
-        // STEP 4: OG/Meta as last resort for text
-        try {
-          if (!success || ingredients.every(v => !v.trim())) {
-            bumpStage(3);
-            dbg("🌐 STEP 4 trying OG/Meta description");
+        } else {
+          // generic path
+          try {
             const og = await fetchOgForUrl(url);
-
-            /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
-
+            if (og?.title && isWeakTitle(title)) safeSetTitle(og?.title ?? og.title, url, title, dbg, 'og:title');
             if (og?.description) {
               const parsed = parseRecipeText(og.description);
-              dbg("📊 STEP 4 OG parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
-              if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
-                if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) setIngredients(parsed.ingredients);
-                if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
-                dbg("✅ STEP 4 got usable content from OG description");
-                success = true;
-              }
+              if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
+              if (parsed.steps.length >= 1) setSteps(parsed.steps);
             }
+            if (og?.image) await tryImageUrl(og.image, url);
+          } catch (e) {
+            dbg("⚠️ Generic handler failed:", safeErr(e));
           }
-        } catch (e) { dbg("⚠️ STEP 4 (OG/Meta) failed:", safeErr(e)); }
-// STEP 5: image preview fallback
+        }
+      } catch (e: any) {
+        const msg = safeErr(e);
+        dbg("❌ Import error:", msg);
+        if (!gotSomethingForRunRef.current) setImg({ kind: "none" });
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert("Import error", msg || "Could not read that webpage.");
+      } finally {
+        // 🧲 Final guard: restore strongest good title if something clobbered it
         try {
-          bumpStage(4);
-          if (!gotSomethingForRunRef.current) {
-            const imgUrl = await getAnyImageFromPage(url);
-            if (imgUrl) await tryImageUrl(imgUrl, url);
-            dbg("🖼️ STEP 5 image fallback:", !!imgUrl);
-          }
-        } catch (e) { dbg("⚠️ STEP 5 (image fallback) failed:", safeErr(e)); }
-
-      } else {
-        // non-TikTok path
-        const og = await fetchOgForUrl(url);
-        if (og?.title && isWeakTitle(title)) safeSetTitle(og?.title ?? og.title, url, title, dbg, 'og:title');
-        if (og?.image) await tryImageUrl(og.image, url);
+          const best = (strongTitleRef.current || '').trim();
+          if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore strongest:', JSON.stringify(best)); setTitle(best); }
+        } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+        clearTimeout(watchdog);
+        if (success || gotSomethingForRunRef.current) {
+          setHudPhase("acquired");
+          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          await new Promise((r) => setTimeout(r, 800));
+        }
+        setHudVisible(false);
+        // 🧲 post-close restore
+        setTimeout(() => {
+          const best = (strongTitleRef.current || '').trim();
+          if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore after close:', JSON.stringify(best)); setTitle(best); }
+        }, 0);
+        setDomScraperVisible(false);
+        setSnapVisible(false);
       }
-
-    } catch (e: any) {
-      const msg = safeErr(e);
-      dbg("❌ Import error:", msg);
-      if (!gotSomethingForRunRef.current) setImg({ kind: "none" });
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Import error", msg || "Could not read that webpage.");
-    } finally {
-      // 🧲 Final guard: restore strongest good title if something clobbered it
-      try {
-        const best = (strongTitleRef.current || '').trim();
-        if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore strongest:', JSON.stringify(best)); setTitle(best); }
-      } catch {}
-clearTimeout(watchdog);
-      if (success || gotSomethingForRunRef.current) {
-        setHudPhase("acquired");
-        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        await new Promise((r) => setTimeout(r, 800));
-      }
-      setHudVisible(false);
-      // 🧲 post-close restore
-      setTimeout(() => {
-        const best = (strongTitleRef.current || '').trim();
-        if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore after close:', JSON.stringify(best)); setTitle(best); }
-      }, 0);
-      setDomScraperVisible(false);
-      setSnapVisible(false);
-    }
   }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
 
   // -------------- import button flow --------------
@@ -1053,8 +1322,9 @@ clearTimeout(watchdog);
       try {
         const best = (strongTitleRef.current || '').trim();
         if (best && (isWeakTitle(title) || title.trim() !== best)) { dbg('🧲 TITLE restore strongest:', JSON.stringify(best)); setTitle(best); }
-      } catch {}
-setSaving(false); }
+      } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+      setSaving(false);
+    }
   }, [title, timeMinutes, servings, ingredients, steps, previewUri]);
 
   const renderRightActions = (onDelete: () => void) => (
@@ -1207,6 +1477,16 @@ setSaving(false); }
           url={domScraperUrl}
           onClose={() => setDomScraperVisible(false)}
           onResult={(payload) => { domScraperResolverRef.current?.(payload); setDomScraperVisible(false); }}
+        />
+        {/* Instagram Scraper */}
+        <InstagramDomScraper
+          visible={instagramScraperVisible}
+          url={instagramScraperUrl}
+          onClose={() => setInstagramScraperVisible(false)}
+          onResult={(payload) => {
+            instagramScraperResolverRef.current?.(payload);
+            setInstagramScraperVisible(false);
+          }}
         />
 
         {/* HUD — key={hudZKey} means “remount on demand” so it’s ALWAYS on top */}
@@ -1490,6 +1770,47 @@ const dialogStyles = StyleSheet.create({
 
 // -------------- duplicate detection --------------
 async function buildDuplicateCandidatesFromRaw(raw: string): Promise<string[]> {
+  const ensureHttps = (u: string) => /^[a-z]+:\/\//i.test(u) ? u : `https://${u}`;
+  const canonicalizeUrl = (u: string): string => {
+    try {
+      const rawUrl = ensureHttps(u.trim());
+      const url = new URL(rawUrl);
+      url.protocol = "https:"; url.hash = ""; url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+      const kill = ["fbclid", "gclid", "ref"];
+      for (const [k] of url.searchParams.entries()) if (k.toLowerCase().startsWith("utm_") || kill.includes(k)) url.searchParams.delete(k);
+      url.search = url.searchParams.toString() ? `?${url.searchParams.toString()}` : "";
+      if (url.pathname !== "/" && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
+      return url.toString();
+    } catch (e) { return u.trim(); }
+  };
+  const resolveFinalUrl = async (u: string) => {
+    try { const r = await fetch(u); if ((r as any)?.url) return (r as any).url as string; } catch (e) { }
+    return u;
+  };
+  const isTikTokLike = (url: string): boolean => {
+    try { const h = new URL(url).hostname.toLowerCase(); return h === "www.tiktok.com" || h.endsWith(".tiktok.com") || h === "tiktok.com" || h === "vm.tiktok.com"; } catch (e) { return /tiktok\.com/i.test(url); }
+  };
+  const resolveTikTokEmbedUrl = async (rawUrl: string) => {
+    const start = ensureHttps(rawUrl.trim());
+    const final = await resolveFinalUrl(start);
+    const extractTikTokIdFromUrl = (u: string): string | null => {
+      const m = u.match(/\/(?:video|photo)\/(\d{6,})/);
+      return m ? m[1] : null;
+    };
+    let id = extractTikTokIdFromUrl(final);
+    if (!id) {
+      try {
+        const html = await (await fetch(final)).text();
+        const m =
+          html.match(/"videoId"\s*:\s*"(\d{6,})"/) ||
+          html.match(/"itemId"\s*:\s*"(\d{6,})"/) ||
+          html.match(/<link\s+rel="canonical"\s+href="https?:\/\/www\.tiktok\.com\/@[^\/]+\/(?:video|photo)\/(\d{6,})"/i);
+        if (m) id = m[1];
+      } catch (e) { }
+    }
+    return { embedUrl: id ? `https://www.tiktok.com/embed/v2/${id}` : null, finalUrl: final, id };
+  };
+  
   const ensured = ensureHttps(raw.trim());
   const finalResolved = await resolveFinalUrl(ensured);
   let tiktokFinal = finalResolved;
@@ -1507,5 +1828,5 @@ async function checkDuplicateSourceUrl(rawUrl: string): Promise<boolean> {
     const { data, error } = await supabase.from("recipes").select("id, title, source_url").in("source_url", candidates).limit(1);
     if (error) return false;
     return !!(data && data.length);
-  } catch { return false; }
+  } catch (e) { return false; }
 }

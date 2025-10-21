@@ -459,3 +459,28 @@ export function parseRecipeText(input: string): ParseResult {
   const dbg = `len:${raw.length} iIng:${iIng} iStep:${iStep} ing:${ingredients.length} steps:${steps.length} guessed:${hadGuesses}`;
   return { ingredients, steps, confidence, debug: dbg };
 }
+
+
+// ─────────────────────────────────────────────────────────────
+// Quantity normalizers (handle 1½, 1 1/2lb → 1 1/2 lb, etc.)
+// ─────────────────────────────────────────────────────────────
+function normalizeUnicodeFractions(s: string): string {
+  // Map common unicode fractions to ascii
+  return s.replace(/¼/g, " 1/4")
+          .replace(/½/g, " 1/2")
+          .replace(/¾/g, " 3/4");
+}
+function fixStuckQtyUnitsAll(s: string): string {
+  // Add a space between quantity (with optional mixed fraction) and unit
+  // Examples: "1lb" -> "1 lb", "1 1/2lb" -> "1 1/2 lb", "12oz" -> "12 oz"
+  return s.replace(/\b(\d+(?:\s+\d+\/\d+)?)(?=(lb|lbs|pound|pounds|oz|g|kg|ml|l)\b)/gi, "$1 ");
+}
+function normalizeQuantitiesForIG(s: string): string {
+  let out = normalizeUnicodeFractions(s);
+  out = fixStuckQtyUnitsAll(out);
+  return out;
+}
+// Drop obvious junk lines that sometimes sneak in as ingredients
+function dropJunkIngredientLines(lines: string[]): string[] {
+  return (lines || []).filter((l) => !/^\s*\d[\d,.\s]*\s+(likes?|comments?)\b/i.test(l || ""));
+}
