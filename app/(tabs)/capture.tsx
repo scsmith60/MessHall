@@ -213,9 +213,11 @@ export default function CaptureScreen() {
       if (m.index && m.index > 0) {
         s = s.slice(0, m.index).trim();
       } else {
-        s = s.slice((m.index ?? 0) + m[0].length).trim();
+        s = "";
       }
     }
+
+    if (/^ingredients?\b/i.test(s)) s = "";
 
     // first sentence if present, else first line
     const firstLine = (s.split("\n")[0] || s).trim();
@@ -235,15 +237,35 @@ export default function CaptureScreen() {
       )
       .filter(Boolean);
 
+    const fromBefore = (() => {
+      try {
+        const seg = sectionizeCaption(original);
+        return (seg.before || "")
+          .split(/\r?\n/)
+          .map((line) => line.replace(/^[\s•*\-]+/, "").trim())
+          .filter(Boolean);
+      } catch {
+        return [] as string[];
+      }
+    })();
+
+    const candidateLines = Array.from(new Set([...fromBefore, ...cleanedLines]))
+      .map((line) => line.replace(/[“”"']/g, "").trim())
+      .filter((line) => line.length >= 3)
+      .filter((line) => !/^ingredients?\b/i.test(line))
+      .filter((line) => !TITLE_STEP_TOKEN.test(line))
+      .filter((line) => !TITLE_SERVING_TOKEN.test(line))
+      .filter((line) => !(TITLE_ING_TOKEN.test(line) && /\d/.test(line)));
+
     if (!s || /^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) {
-      const preferred = cleanedLines.find((line) => looksLikeDishTitle(line) && /\s/.test(line));
-      const fallback = cleanedLines.find(looksLikeDishTitle);
+      const preferred = candidateLines.find((line) => looksLikeDishTitle(line) && /\s/.test(line));
+      const fallback = candidateLines.find(looksLikeDishTitle);
       if (preferred) s = preferred;
       else if (fallback) s = fallback;
     }
 
     if (isBadTitleCandidate(s)) {
-      const rescue = cleanedLines.find(looksLikeDishTitle);
+      const rescue = candidateLines.find(looksLikeDishTitle);
       if (rescue) s = rescue;
     }
 
@@ -472,6 +494,9 @@ function keepRealIngredients(lines: string[]): string[] {
     // drop obvious serving/yield callouts
     if (TITLE_SERVING_TOKEN.test(s)) return false;
 
+    // drop prep/cook time callouts that sneak in with the caption
+    if (/\b(prep|cook|total)\s*time\b/i.test(s)) return false;
+
     // drop "Step" headers or instruction labels
     if (TITLE_STEP_TOKEN.test(s) || /^step\b/i.test(s)) return false;
 
@@ -483,6 +508,23 @@ function keepRealIngredients(lines: string[]): string[] {
 
     return true;
   });
+}
+
+function stitchBrokenSteps(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of lines) {
+    const current = (raw || "").trim();
+    if (!current) continue;
+    const prev = out[out.length - 1] || "";
+    const prevLooksOpen = prev && !/[.!?]$/.test(prev);
+    const nextLooksContinuation = /^[a-z]/.test(current) && current.length <= 80;
+    if (prevLooksOpen && nextLooksContinuation) {
+      out[out.length - 1] = `${prev} ${current}`.replace(/\s{2,}/g, " ");
+    } else {
+      out.push(current);
+    }
+  }
+  return out;
 }
 
 
@@ -1125,7 +1167,7 @@ try {
       const cleanedMoved = moved
         .map((line) => line.replace(/^[\s•*-]+/, '').replace(/[\s.,!?;:]+$/g, '').trim())
         .filter(Boolean);
-      parsed.steps = [...(parsed.steps || []), ...cleanedMoved];
+      parsed.steps = stitchBrokenSteps([...(parsed.steps || []), ...cleanedMoved]);
     }
     parsed.ingredients = newIngs;
   } catch {}
@@ -1133,7 +1175,7 @@ try {
   parsed.ingredients = parsed.ingredients
     .map((line: string) => line.replace(/[.,!?;:]+$/g, '').trim())
     .filter(Boolean);
-  parsed.steps = Array.from(new Set((parsed.steps || []).map((line: string) => line.trim()).filter(Boolean)));
+  parsed.steps = Array.from(new Set(stitchBrokenSteps((parsed.steps || []).map((line: string) => line.trim()).filter(Boolean))));
 
   if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
   if (parsed.steps.length >= 1) setSteps(parsed.steps);
@@ -1749,7 +1791,7 @@ function MilitaryImportOverlay({
               const a = blipAnims[i % blipAnims.length];
               const scale = a.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1.4] });
               const opacity = a.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] });
-              return (<Animated.View key={`blip-${i}`} style={{ position: "absolute", left: x - 6, top: y - 6, width: 12, height: 12, borderRadius: 6, backgroundColor: "rgba(34,197,94,0.9)", opacity, transform: [{ scale }] }} />);
+              return (<Animated.View key={`blip-${i}`} style={{ position: "absolute", left: x - 6, top: y - 6, width: 12, height: 12, borderRadius: 6, backgroundColor: "rgba(47,174,102,0.9)", opacity, transform: [{ scale }] }} />);
             })}
             <Animated.View style={[hudBackdrop.centerDot, { transform: [{ scale: centerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.2] }) }] }]} />
             {phase === "acquired" && (
@@ -1763,8 +1805,8 @@ function MilitaryImportOverlay({
               const done = i < stageIndex, active = i === stageIndex;
               return (
                 <View key={label} style={hudBackdrop.stepRow}>
-                  <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(34,197,94,0.18)", borderColor: COLORS.accent }, active && { borderColor: "#86efac" }]}>
-                    {done ? <Text style={{ color: "#bbf7d0", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
+                  <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(47,174,102,0.26)", borderColor: "rgba(47,174,102,0.6)" }, active && { borderColor: "#86efac" }]}>
+                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
                   </View>
                   <Text style={[hudBackdrop.stepText, done && { color: "#bbf7d0" }, active && { color: COLORS.text, fontWeight: "600" }]}>{label}</Text>
                 </View>
@@ -1800,19 +1842,19 @@ const hudBackdrop = StyleSheet.create({
     marginVertical: 16,        // 👈 was marginBottom: 12
     overflow: "hidden",
     borderRadius: RADAR_SIZE / 2,
-    backgroundColor: "rgba(34,197,94,0.08)",
+    backgroundColor: "rgba(47,174,102,0.12)",
   },
   beamPivot: { position: "absolute", left: 0, top: 0, width: RADAR_SIZE, height: RADAR_SIZE },
   beamArm: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 1, width: RADAR_SIZE / 2, height: 2, backgroundColor: MESSHALL_GREEN },
-  beamGlow: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 8, width: RADAR_SIZE / 2, height: 16, backgroundColor: "rgba(47,174,102,0.14)" },
+  beamGlow: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 8, width: RADAR_SIZE / 2, height: 16, backgroundColor: "rgba(47,174,102,0.22)" },
   centerDot: { position: "absolute", width: 10, height: 10, borderRadius: 6, backgroundColor: MESSHALL_GREEN },
-  acquiredWrap: { position: "absolute", top: "42%", alignSelf: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(34,197,94,0.14)" },
-  acquiredText: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 1.2 },
-  stepsBox: { backgroundColor: COLORS.sunken, borderColor: COLORS.border, borderWidth: 1, borderRadius: 12, padding: 10, marginBottom: 12 },
+  acquiredWrap: { position: "absolute", top: "42%", alignSelf: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(47,174,102,0.18)" },
+  acquiredText: { color: "#d1fae5", fontSize: 22, fontWeight: "900", letterSpacing: 1.2 },
+  stepsBox: { backgroundColor: "rgba(47,174,102,0.08)", borderColor: "rgba(47,174,102,0.35)", borderWidth: 1, borderRadius: 12, padding: 10, marginBottom: 12 },
   stepRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6 },
-  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: COLORS.border, marginRight: 8, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.bg },
+  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: "rgba(47,174,102,0.45)", marginRight: 8, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.bg },
   stepText: { color: COLORS.subtext, fontSize: 14 },
-  progressOuter: { height: 10, borderRadius: 8, overflow: "hidden", backgroundColor: COLORS.sunken, borderWidth: 1, borderColor: COLORS.border },
+  progressOuter: { height: 10, borderRadius: 8, overflow: "hidden", backgroundColor: "rgba(47,174,102,0.12)", borderWidth: 1, borderColor: "rgba(47,174,102,0.35)" },
   progressInner: { height: "100%", backgroundColor: MESSHALL_GREEN },
 });
 

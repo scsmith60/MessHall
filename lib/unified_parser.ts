@@ -111,8 +111,6 @@ function forceInlineStepBreaks(s: string): string {
     .replace(INLINE_BULLET, "\n$2")
     // split on semicolons and pipes (common makeshift separators)
     .replace(/[;|]+\s*/g, "\n")
-    // be gentler about breaking on periods — only break when the next word looks like a new step cue
-    .replace(/(?<=\.)\s+(?=(?:Step\b|STEP\b|Add\b|Then\b|Next\b|Now\b|Once\b|After\b|Meanwhile\b|When\b|If\b|Bake\b|Cook\b|Serve\b|Let\b))/g, "\n")
     .replace(/\n{2,}/g, "\n")
     .trim();
 }
