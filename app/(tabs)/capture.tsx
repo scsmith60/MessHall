@@ -35,6 +35,7 @@ import InstagramDomScraper from "@/components/InstagramDomScraper";
 import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata } from "@/lib/recipeSiteHelpers";
 
 // -------------- theme --------------
+const MESSHALL_GREEN = "#2FAE66";
 const COLORS = {
   bg: "#0B1120",
   card: "#0E1726",
@@ -42,12 +43,11 @@ const COLORS = {
   text: "#E5E7EB",
   sub: "#A8B3BA",
   subtext: "#A8B3BA",
-  accent: "#22c55e",
-  green: "#22c55e",
+  accent: MESSHALL_GREEN,
+  green: MESSHALL_GREEN,
   red: "#EF4444",
   border: "#243042",
 };
-const MESSHALL_GREEN = "#2FAE66";
 
 // -------------- timings --------------
 const CAPTURE_DELAY_MS = 700;
@@ -162,10 +162,63 @@ export default function CaptureScreen() {
 
   /** Turn a TikTok caption into a short, pretty recipe title */
 
+  const TITLE_ING_TOKEN = /(\b(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|clove|cloves|stick|sticks|tablespoons?)\b)/i;
+  const TITLE_SERVING_TOKEN = /\b(serves?|servings?|serving size|makes|feeds|yield|yields)\b/i;
+  const TITLE_STEP_TOKEN = /\b(step\s*\d+|steps?|instructions?|directions?|method)\b/i;
+  const TITLE_NUMBER_WORD = /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b/i;
+  function looksLikeDishTitle(line: string): boolean {
+    const s = (line || "").trim();
+    if (!s) return false;
+    if (s.length < 3 || s.length > 80) return false;
+    if (/^[\d•*\-]/.test(s)) return false;
+    if (TITLE_STEP_TOKEN.test(s)) return false;
+    if (/https?:\/\//i.test(s)) return false;
+    if (/[#@]/.test(s)) return false;
+    const words = s.split(/\s+/).filter(Boolean);
+    if (!words.length) return false;
+    const hasLetters = /[A-Za-z]/.test(s);
+    if (!hasLetters) return false;
+    const hasUnits = TITLE_ING_TOKEN.test(s);
+    const hasQty = /\d/.test(s);
+    if (hasUnits && hasQty) return false;
+    if (hasUnits && TITLE_NUMBER_WORD.test(s)) return false;
+    if (TITLE_SERVING_TOKEN.test(s)) return false;
+    if (/^for\b/i.test(s)) return false;
+    if (words.length === 1) return /^[A-Z][A-Za-z'()-]{3,}$/.test(s);
+    return true;
+  }
+  function isBadTitleCandidate(s: string): boolean {
+    if (!s) return true;
+    if (TITLE_STEP_TOKEN.test(s)) return true;
+    if (/[•]/.test(s)) return true;
+    if (TITLE_SERVING_TOKEN.test(s)) return true;
+    if (TITLE_ING_TOKEN.test(s) && (/\d/.test(s) || TITLE_NUMBER_WORD.test(s))) return true;
+    if (/^for\b/i.test(s)) return true;
+    if (s.length > 120) return true;
+    return false;
+  }
+  function scoreTitleCandidate(line: string): number {
+    const s = line.trim();
+    if (!s) return -Infinity;
+    let score = 0;
+    const lengthTarget = 22;
+    score += Math.max(0, 24 - Math.abs(s.length - lengthTarget));
+    const wordCount = s.split(/\s+/).filter(Boolean).length;
+    if (wordCount >= 2 && wordCount <= 6) score += 8;
+    if (wordCount === 1) score += 4;
+    if (!/[,:;]/.test(s)) score += 3;
+    if (!/[()]/.test(s)) score += 1;
+    if (/^[A-Z]/.test(s)) score += 2;
+    if (/\bwith\b/i.test(s)) score -= 2;
+    if (/\bfor\b/i.test(s)) score -= 4;
+    if (TITLE_NUMBER_WORD.test(s)) score -= 3;
+    return score;
+  }
   // Turns a TikTok caption into a short, neat title candidate (kid-friendly)
   function captionToNiceTitle(raw?: string): string {
     if (!raw) return "";
-    let s = String(raw)
+    const original = String(raw);
+    let s = original
       .replace(/\r|\t/g, " ")                         // make spaces normal
       .replace(/https?:\/\/\S+/gi, "")                // remove links
       .replace(/[#@][\w_]+/g, "")                     // remove #tags and @users
@@ -176,18 +229,85 @@ export default function CaptureScreen() {
 
     // stop before sections like "Ingredients", "Instructions", etc. or lead-ins
     const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal|for\s+the\b|you'?ll\s+need)/i;
-    const m = s.match(cutWords);
-    if (m && m.index! > 0) s = s.slice(0, m.index).trim();
+    const cutIdx = s.search(cutWords);
+    if (cutIdx >= 0) {
+      s = cutIdx > 0 ? s.slice(0, cutIdx).trim() : "";
+    }
+
+    if (/^ingredients?\b/i.test(s)) s = "";
 
     // first sentence if present, else first line
     const firstLine = (s.split("\n")[0] || s).trim();
     const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
     s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
 
+    const cleanedLines = original
+      .split(/\r?\n/)
+      .flatMap((line) => line.split(/[•]/g))
+      .map((line) =>
+        line
+          .replace(/^[\s•*\-]+/, "")
+          .replace(/[#@][\w_]+/g, "")
+          .replace(/https?:\/\/\S+/gi, "")
+          .replace(/\s{2,}/g, " ")
+          .trim()
+      )
+      .filter(Boolean);
+
+    const fromBefore = (() => {
+      try {
+        const seg = sectionizeCaption(original);
+        return (seg.before || "")
+          .split(/\r?\n/)
+          .map((line) => line.replace(/^[\s•*\-]+/, "").trim())
+          .filter(Boolean);
+      } catch {
+        return [] as string[];
+      }
+    })();
+
+    const candidateLines = Array.from(new Set([...fromBefore, ...cleanedLines]))
+      .flatMap((line) => {
+        const trimmed = line.replace(/[“”"']/g, "").trim();
+        if (!trimmed) return [] as string[];
+        const parts = [trimmed];
+        const colonIdx = trimmed.indexOf(":");
+        if (colonIdx > 0 && colonIdx < trimmed.length - 2) {
+          const before = trimmed.slice(0, colonIdx).trim();
+          const after = trimmed.slice(colonIdx + 1).trim();
+          if (before) parts.push(before);
+          if (after) parts.push(after);
+        }
+        return parts;
+      })
+      .map((line) => line.replace(/[“”"']/g, "").trim())
+      .map((line) => line.replace(/\s{2,}/g, " ").trim())
+      .map((line) => line.replace(/\b(for the|for your|for our|for my)\b.*$/i, "").trim())
+      .filter((line) => line.length >= 3)
+      .filter((line) => !/^ingredients?\b/i.test(line))
+      .filter((line) => !TITLE_STEP_TOKEN.test(line))
+      .filter((line) => !TITLE_SERVING_TOKEN.test(line))
+      .filter((line) => !(TITLE_ING_TOKEN.test(line) && (/\d/.test(line) || TITLE_NUMBER_WORD.test(line))));
+
+    const viable = candidateLines.filter(looksLikeDishTitle);
+
+    if (!s || /^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) {
+      if (viable.length) {
+        s = viable.sort((a, b) => scoreTitleCandidate(b) - scoreTitleCandidate(a))[0];
+      }
+    }
+
+    if ((!s || isBadTitleCandidate(s)) && viable.length) {
+      s = viable.sort((a, b) => scoreTitleCandidate(b) - scoreTitleCandidate(a))[0];
+    }
+
     // trim site tails and tidy punctuation
     s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
     s = s.replace(/\s*\.$/, "");
     s = s.replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
+
+    if (/^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) return "";
+    if (!looksLikeDishTitle(s)) return "";
 
     return s; // ← important semicolon so the chain ends here
   }
@@ -391,9 +511,15 @@ function preCleanIgCaptionForParsing(s: string): string {
 // - lone @handles or #hashtags
 // ─────────────────────────────────────────────────────────────
 
+const IG_STEP_VERB = /\b(preheat|heat|warm|melt|whisk|stir|mix|combine|bring|simmer|boil|reduce|add|fold|pour|spread|sprinkle|season|coat|cook|bake|fry|air\s*fry|remove|transfer|let|allow|rest|chill|refrigerate|cool|cut|slice|serve|garnish|line|mince|dice|chop|peel|seed|core|marinate|prepare|beat|blend|pulse|knead|roll|press|grease|butter|measure|rinse|drain|pat\s+dry|toast|grate|zest|steam|microwave|warm|make|fill|assemble|layer|wrap|toss|sauté|saute|brown|stir-fry|mix together)\b/i;
+const IG_STEP_VERB_START = /^(?:add|mix|combine|stir|whisk|fold|pour|drizzle|layer|spread|cook|bake|heat|preheat|sauté|saute|marinate|season|toss|press|arrange|place|roll|wrap|serve|enjoy|garnish|top|spoon|transfer)\b/i;
+const IG_STEP_CUE = /\b(then|after|next|until|together|into|over|onto|for\s+\d|about\s+\d|minutes?|hours?|seconds?|while|cook|bake)\b/i;
 function keepRealIngredients(lines: string[]): string[] {
   const unitWord = /\b(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|kg|ml|l|clove|cloves|stick|sticks)\b/i;
   const hasQty = /(^|\s)(\d+(\s+\d+\/\d+)?|\d+\/\d+|¼|½|¾)(?=\s|$)/; // 1 , 1 1/2 , 1/2 , ½
+  const servingWords = /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b/i;
+  const inlineHashtag = /#[\p{L}][\p{L}\p{N}_-]*/iu;
+  const inlineHandle = /@[a-z0-9_.-]+/i;
   return (lines || []).filter((raw) => {
     const s = (raw || "").trim();
     if (!s) return false;
@@ -403,12 +529,52 @@ function keepRealIngredients(lines: string[]): string[] {
 
     // drop lone handles/hashtags
     if (/^[@#][\w._-]+$/.test(s)) return false;
+    if (inlineHashtag.test(s)) return false;
+    if (inlineHandle.test(s)) return false;
+    if (/https?:\/\//i.test(s)) return false;
+
+    // drop obvious serving/yield callouts
+    if (TITLE_SERVING_TOKEN.test(s)) return false;
+    if (/\bmakes\b/i.test(s) && (/[0-9]/.test(s) || servingWords.test(s))) return false;
+
+    // drop prep/cook time callouts that sneak in with the caption
+    if (/\b(prep|cook|total)\s*time\b/i.test(s)) return false;
+
+    // drop "Step" headers or instruction labels
+    if (TITLE_STEP_TOKEN.test(s) || /^step\b/i.test(s)) return false;
+
+    // drop lines that look like instructions (verbs + cues) without a clear measurement
+    if (IG_STEP_VERB_START.test(s)) return false;
+    if (IG_STEP_VERB.test(s) && (!unitWord.test(s) || IG_STEP_CUE.test(s))) return false;
 
     // drop obvious full-sentence chatter that has no qty nor unit
     if (/[.?!…]$/.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
 
+    // drop promo chatter that sometimes sneaks in
+    if (/\bmore\b.*\brecipes\b/i.test(s)) return false;
+    if (/\bdelicious\s+food\b/i.test(s)) return false;
+    if (/\bchance\s+to\s+be\s+featured\b/i.test(s)) return false;
+    if (/\bfeature[ds]?\b/i.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
+
     return true;
   });
+}
+
+function stitchBrokenSteps(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of lines) {
+    const current = (raw || "").trim();
+    if (!current) continue;
+    const prev = out[out.length - 1] || "";
+    const prevLooksOpen = prev && !/[.!?]$/.test(prev);
+    const nextLooksContinuation = /^[a-z]/.test(current) && current.length <= 80;
+    if (prevLooksOpen && nextLooksContinuation) {
+      out[out.length - 1] = `${prev} ${current}`.replace(/\s{2,}/g, " ");
+    } else {
+      out.push(current);
+    }
+  }
+  return out;
 }
 
 
@@ -607,8 +773,6 @@ function keepRealIngredients(lines: string[]): string[] {
     return normalizeLines(glue);
   }
 
-  const [debugLog, setDebugLog] = useState<string>("");
-  const [showDebug, setShowDebug] = useState(false);
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
   // 🛡️ strongest good title during this import run
@@ -621,10 +785,16 @@ function keepRealIngredients(lines: string[]): string[] {
 
   const dbg = useCallback((...args: any[]) => {
     try {
-      const line = args.map((a) => typeof a === "string" ? a : (()=>{ try { return JSON.stringify(a); } catch (e) { return String(a); } })()).join(" ");
-      setDebugLog((prev) => (prev ? prev + "\n" : "") + line);
+      const line = args
+        .map((a) => {
+          if (typeof a === "string") return a;
+          try { return JSON.stringify(a); } catch { return String(a); }
+        })
+        .join(" ");
       console.log("[IMPORT]", line);
-    } catch (e) { try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+    } catch (err) {
+      try { console.log("[IMPORT]", "dbg-failed", String(err)); } catch {}
+    }
   }, []);
   const safeErr = useCallback((e: any): string => {
     try {
@@ -633,7 +803,9 @@ function keepRealIngredients(lines: string[]): string[] {
       if (e instanceof Error && e.message) return e.message;
       const msg = (e?.message || e?.toString?.() || JSON.stringify(e));
       return typeof msg === "string" ? msg : "unknown";
-    } catch (e) { return "unknown"; try { dbg('❌ try-block failed:', safeErr(e)); } catch {} }
+    } catch {
+      return "unknown";
+    }
   }, []);
 
   const [hudVisible, setHudVisible] = useState(false);
@@ -1035,17 +1207,38 @@ try {
 
   // Move any step-like lines that slipped into ingredients
   try {
-    const stepVerb = /(\bMelt\b|\bAdd\b|\bHeat\b|\bCook\b|\bWhisk\b|\bStir\b|\bBring\b|\bSimmer\b|\bBoil\b|\bTurn\s+up\b|\bCombine\b|\bOnce\b|\bPreheat\b|\bMix\b)/i;
     const newIngs: string[] = [];
     const moved: string[] = [];
     for (const line of (parsed.ingredients || [])) {
       const t = (line || '').trim();
       if (!t) continue;
-      if (stepVerb.test(t) || /^[A-Za-z]{3,}\.?$/.test(t)) moved.push(t); else newIngs.push(t);
+      const looksLikeStep =
+        IG_STEP_VERB.test(t) ||
+        IG_STEP_CUE.test(t) ||
+        /^\d+\s*[.)-]/.test(t) ||
+        /^step\b/i.test(t);
+      if (looksLikeStep) moved.push(t);
+      else newIngs.push(t);
     }
-    if (moved.length) parsed.steps = [...(parsed.steps || []), ...moved];
+    if (moved.length) {
+      const cleanedMoved = moved
+        .map((line) => line.replace(/^[\s•*-]+/, '').replace(/[\s.,!?;:]+$/g, '').trim())
+        .filter(Boolean);
+      parsed.steps = stitchBrokenSteps([...(parsed.steps || []), ...cleanedMoved]);
+    }
     parsed.ingredients = newIngs;
   } catch {}
+
+  parsed.ingredients = parsed.ingredients
+    .map((line: string) =>
+      line
+        .replace(/[•*\-–—]+$/g, '')
+        .replace(/[.,!?;:]+$/g, '')
+        .replace(/\s{2,}/g, " ")
+        .trim()
+    )
+    .filter(Boolean);
+  parsed.steps = Array.from(new Set(stitchBrokenSteps((parsed.steps || []).map((line: string) => line.trim()).filter(Boolean))));
 
   if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
   if (parsed.steps.length >= 1) setSteps(parsed.steps);
@@ -1139,11 +1332,7 @@ try {
             try {
               const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
               const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
-              if (capTitle) {
-                setTitle(capTitle);
-                strongTitleRef.current = capTitle;
-                dbg("🪪 TITLE from caption (final):", capTitle);
-              }
+              if (capTitle) safeSetTitle(capTitle, url, title, dbg, "tiktok:caption");
             } catch {}
           } catch (e) {
             dbg("❌ STEP 1 (DOM scraper) failed:", safeErr(e));
@@ -1218,6 +1407,10 @@ try {
               const og = await fetchOgForUrl(url);
 
               /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
+
+              if (og?.title && isWeakTitle(title)) {
+                safeSetTitle(og.title, url, title, dbg, "tiktok:og:title");
+              }
 
               if (og?.description) {
                 const parsed = parseRecipeText(og.description);
@@ -1425,15 +1618,7 @@ try {
                 <Text style={{ color: "#0B1120", fontWeight: "700" }}>{hudVisible ? "Importing…" : "Import"}</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity onPress={() => setShowDebug((v)=>!v)} style={{ marginTop: 8, alignSelf: "flex-end" }}>
-              <Text style={{ color: COLORS.subtext, textDecorationLine: "underline" }}>{showDebug ? "Hide debug" : "Show debug"}</Text>
-            </TouchableOpacity>
-            {showDebug && (
-              <View style={{ marginTop: 8, backgroundColor: "#0f172a", borderColor: COLORS.border, borderWidth: 1, borderRadius: 10, padding: 8 }}>
-                <Text style={{ color: "#94a3b8", fontSize: 12 }} selectable numberOfLines={16}>{debugLog || "No debug yet."}</Text>
-              </View>
-            )}
+            {/* debug output is collected silently; no toggle is rendered for end users */}
 
             <View style={{ marginTop: 10 }}>
               {(() => {
@@ -1683,10 +1868,10 @@ function MilitaryImportOverlay({
               const done = i < stageIndex, active = i === stageIndex;
               return (
                 <View key={label} style={hudBackdrop.stepRow}>
-                  <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(46,204,113,0.2)", borderColor: MESSHALL_GREEN }, active && { borderColor: "#a7f3d0" }]}>
-                    {done ? <Text style={{ color: "#a7f3d0", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: MESSHALL_GREEN, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
+                  <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(47,174,102,0.26)", borderColor: "rgba(47,174,102,0.6)" }, active && { borderColor: "#86efac" }]}>
+                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
                   </View>
-                  <Text style={[hudBackdrop.stepText, done && { color: "#a7f3d0" }, active && { color: "#e2e8f0", fontWeight: "600" }]}>{label}</Text>
+                  <Text style={[hudBackdrop.stepText, done && { color: "#bbf7d0" }, active && { color: COLORS.text, fontWeight: "600" }]}>{label}</Text>
                 </View>
               );
             })}
@@ -1702,15 +1887,15 @@ const hudBackdrop = StyleSheet.create({
   card: {
     width: "100%",
     maxWidth: 540,
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.card,
     borderRadius: 16,
     padding: 20,
     paddingBottom: 28,
     borderWidth: 1,
-    borderColor: "rgba(147,197,114,0.15)",
+    borderColor: COLORS.border,
     minHeight: HUD_CARD_MIN_H, // 👈 gives the card extra height
   },
-  headline: { color: "#d1fae5", fontSize: 18, textAlign: "center", letterSpacing: 1, marginBottom: 12 },
+  headline: { color: COLORS.text, fontSize: 18, textAlign: "center", letterSpacing: 1, marginBottom: 12 },
   radarWrap: {
     alignSelf: "center",
     width: RADAR_SIZE,
@@ -1720,19 +1905,19 @@ const hudBackdrop = StyleSheet.create({
     marginVertical: 16,        // 👈 was marginBottom: 12
     overflow: "hidden",
     borderRadius: RADAR_SIZE / 2,
-    backgroundColor: "rgba(20,31,25,0.35)",
+    backgroundColor: "rgba(47,174,102,0.12)",
   },
   beamPivot: { position: "absolute", left: 0, top: 0, width: RADAR_SIZE, height: RADAR_SIZE },
-  beamArm: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 1, width: RADAR_SIZE / 2, height: 2, backgroundColor: "rgba(47,174,102,0.9)" },
-  beamGlow: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 8, width: RADAR_SIZE / 2, height: 16, backgroundColor: "rgba(47,174,102,0.12)" },
+  beamArm: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 1, width: RADAR_SIZE / 2, height: 2, backgroundColor: MESSHALL_GREEN },
+  beamGlow: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 8, width: RADAR_SIZE / 2, height: 16, backgroundColor: "rgba(47,174,102,0.22)" },
   centerDot: { position: "absolute", width: 10, height: 10, borderRadius: 6, backgroundColor: MESSHALL_GREEN },
-  acquiredWrap: { position: "absolute", top: "42%", alignSelf: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.06)" },
-  acquiredText: { color: "#fef08a", fontSize: 22, fontWeight: "900", letterSpacing: 1.2 },
-  stepsBox: { backgroundColor: "rgba(46,204,113,0.06)", borderColor: "rgba(46,204,113,0.15)", borderWidth: 1, borderRadius: 12, padding: 10, marginBottom: 12 },
+  acquiredWrap: { position: "absolute", top: "42%", alignSelf: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(47,174,102,0.18)" },
+  acquiredText: { color: "#d1fae5", fontSize: 22, fontWeight: "900", letterSpacing: 1.2 },
+  stepsBox: { backgroundColor: "rgba(47,174,102,0.08)", borderColor: "rgba(47,174,102,0.35)", borderWidth: 1, borderRadius: 12, padding: 10, marginBottom: 12 },
   stepRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6 },
-  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: "rgba(46,204,113,0.35)", marginRight: 8, alignItems: "center", justifyContent: "center" },
-  stepText: { color: "#cbd5e1", fontSize: 14 },
-  progressOuter: { height: 10, borderRadius: 8, overflow: "hidden", backgroundColor: "rgba(46,204,113,0.1)", borderWidth: 1, borderColor: "rgba(46,204,113,0.2)" },
+  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: "rgba(47,174,102,0.45)", marginRight: 8, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.bg },
+  stepText: { color: COLORS.subtext, fontSize: 14 },
+  progressOuter: { height: 10, borderRadius: 8, overflow: "hidden", backgroundColor: "rgba(47,174,102,0.12)", borderWidth: 1, borderColor: "rgba(47,174,102,0.35)" },
   progressInner: { height: "100%", backgroundColor: MESSHALL_GREEN },
 });
 

@@ -111,8 +111,6 @@ function forceInlineStepBreaks(s: string): string {
     .replace(INLINE_BULLET, "\n$2")
     // split on semicolons and pipes (common makeshift separators)
     .replace(/[;|]+\s*/g, "\n")
-    // allow split after a full stop followed by Capital/number
-    .replace(/(?<=\.)\s+(?=[A-Z0-9])/g, "\n")
     .replace(/\n{2,}/g, "\n")
     .trim();
 }
@@ -182,10 +180,15 @@ function looksLikeStep(line: string): boolean {
 
 // ---------- UI line cleaners ----------
 function cleanIngredientLine(line: string): string {
-  return tidySpaces(stripLeadBullets(stripEmojis(line)));
+  const stripped = tidySpaces(stripLeadBullets(stripEmojis(line)));
+  // trim punctuation that often trails after copying from captions ("Add salt.")
+  const withoutTrail = stripped.replace(/[.,!?;:]+$/g, "").trim();
+  return withoutTrail;
 }
 function cleanStepLine(line: string): string {
-  return tidySpaces(stripTrailHashtags(stripLeadBullets(stripLeadNumbers(stripEmojis(line)))));
+  let cleaned = tidySpaces(stripTrailHashtags(stripLeadBullets(stripLeadNumbers(stripEmojis(line)))));
+  cleaned = cleaned.replace(/^step\s*\d*[:.)-]?\s*/i, "");
+  return cleaned;
 }
 
 // ---------- merge orphan "8x" + "inch" lines in steps ----------
@@ -210,7 +213,7 @@ const COOKING_CUES = [
   "Make","Fill","Assemble" // ✅ add here too for splitting help
 ];
 const cueRegex = new RegExp(
-  String.raw`(?<=\.)\s+(?=(?:${COOKING_CUES.join("|")})\b)|\s+(?=(?:${COOKING_CUES.join("|")})\b)`,
+  String.raw`(?<=\.)\s+(?=(?:${COOKING_CUES.join("|")})\b)`,
   "g"
 );
 function explodeCompoundSteps(steps: string[]): string[] {
@@ -396,6 +399,7 @@ export function parseRecipeText(input: string): ParseResult {
   const ingLinesPrepped = sanitizedPieces
     .filter(p => !p.maybeHeader) // drop "For the Ganache:"-style headers
     .map(p => p.text);
+  const strayStepSeedsRaw = ingLinesPrepped.filter(line => !looksLikeIngredient(line) && !isLikelyPromoLine(line));
 
   // build ingredients from cleaned lines
   const ingredientCandidates = ingLinesPrepped.filter(looksLikeIngredient);
@@ -414,7 +418,8 @@ export function parseRecipeText(input: string): ParseResult {
     }
   }
   // unique + final orphan-number glue
-  let ingredients = finalFixOrphanNumberIngredients(uniqueNonEmpty(ingredientsBuilt)).slice(0, 60);
+  const ingredientsPrepped = finalFixOrphanNumberIngredients(uniqueNonEmpty(ingredientsBuilt));
+  let ingredients = dropJunkIngredientLines(ingredientsPrepped).slice(0, 60);
 
   // ---------- STEPS ----------
   // get raw step lines (after strong inline splitting)
@@ -444,6 +449,19 @@ export function parseRecipeText(input: string): ParseResult {
       .filter(s => !isMetaLine(s))
       .filter(s => looksLikeStep(s) || VERB_ANYWHERE_RE.test(s));
     if (exploded.length > steps.length) steps = exploded;
+  }
+
+  const stepSeedsFromIngredients = strayStepSeedsRaw
+    .map(cleanStepLine)
+    .map(stripEditorArtifacts)
+    .flatMap(splitMixedStepLine)
+    .map(s => s.replace(/\s+:\s*$/, ":").trim())
+    .filter(s => s.length > 1)
+    .filter(s => !isMetaLine(s))
+    .filter(s => !isLikelyPromoLine(s))
+    .filter(s => looksLikeStep(s) || VERB_ANYWHERE_RE.test(s));
+  if (stepSeedsFromIngredients.length) {
+    steps = steps.concat(stepSeedsFromIngredients);
   }
 
   // Final tidy for steps
@@ -481,6 +499,25 @@ function normalizeQuantitiesForIG(s: string): string {
   return out;
 }
 // Drop obvious junk lines that sometimes sneak in as ingredients
+const INLINE_HASHTAG_RE = /#[\p{L}][\p{L}\p{N}_-]*/iu;
+const INLINE_HANDLE_RE = /@[a-z0-9_.-]+/i;
+const PROMO_CLUE_RE = /\b(follow|subscribe|newsletter|link\s+(?:in|on)\s+bio|visit\s+our|check\s+(?:out|our)|use\s+code|discount|shop\s+(?:our|the)|our\s+shop|storefront|featured|feature|chance\s+to\s+be\s+featured|tag\s+us|contest|giveaway|delicious\s+food|our\s+(?:site|website|blog)|download\s+our\s+app|app\s+store)\b/i;
+
+function isLikelyPromoLine(line: string): boolean {
+  const t = (line || "").trim();
+  if (!t) return true;
+  if (/https?:\/\//i.test(t)) return true;
+  if (INLINE_HASHTAG_RE.test(t)) return true;
+  if (INLINE_HANDLE_RE.test(t)) return true;
+  if (/\b\d+\s*\+\s*(?:more\s+)?recipes\b/i.test(t)) return true;
+  if (/\bmore\b.*\brecipes\b/i.test(t)) return true;
+  if (PROMO_CLUE_RE.test(t)) return true;
+  return false;
+}
+
 function dropJunkIngredientLines(lines: string[]): string[] {
-  return (lines || []).filter((l) => !/^\s*\d[\d,.\s]*\s+(likes?|comments?)\b/i.test(l || ""));
+  return (lines || [])
+    .map((l) => l || "")
+    .filter((l) => !/^\s*\d[\d,.\s]*\s+(likes?|comments?)\b/i.test(l))
+    .filter((l) => !isLikelyPromoLine(l));
 }
