@@ -162,10 +162,42 @@ export default function CaptureScreen() {
 
   /** Turn a TikTok caption into a short, pretty recipe title */
 
+  const TITLE_ING_TOKEN = /(\b(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|clove|cloves|stick|sticks|tablespoons?)\b)/i;
+  const TITLE_SERVING_TOKEN = /\b(serves?|servings?|serving size|makes|feeds|yield|yields)\b/i;
+  const TITLE_STEP_TOKEN = /\b(step\s*\d+|steps?|instructions?|directions?|method)\b/i;
+  function looksLikeDishTitle(line: string): boolean {
+    const s = (line || "").trim();
+    if (!s) return false;
+    if (s.length < 3 || s.length > 80) return false;
+    if (/^[\d•*\-]/.test(s)) return false;
+    if (TITLE_STEP_TOKEN.test(s)) return false;
+    if (/https?:\/\//i.test(s)) return false;
+    if (/[#@]/.test(s)) return false;
+    const words = s.split(/\s+/).filter(Boolean);
+    if (!words.length) return false;
+    const hasLetters = /[A-Za-z]/.test(s);
+    if (!hasLetters) return false;
+    const hasUnits = TITLE_ING_TOKEN.test(s);
+    const hasQty = /\d/.test(s);
+    if (hasUnits && hasQty) return false;
+    if (TITLE_SERVING_TOKEN.test(s)) return false;
+    if (words.length === 1) return /^[A-Z][A-Za-z'()-]{3,}$/.test(s);
+    return true;
+  }
+  function isBadTitleCandidate(s: string): boolean {
+    if (!s) return true;
+    if (TITLE_STEP_TOKEN.test(s)) return true;
+    if (/[•]/.test(s)) return true;
+    if (TITLE_SERVING_TOKEN.test(s)) return true;
+    if (TITLE_ING_TOKEN.test(s) && /\d/.test(s)) return true;
+    if (s.length > 120) return true;
+    return false;
+  }
   // Turns a TikTok caption into a short, neat title candidate (kid-friendly)
   function captionToNiceTitle(raw?: string): string {
     if (!raw) return "";
-    let s = String(raw)
+    const original = String(raw);
+    let s = original
       .replace(/\r|\t/g, " ")                         // make spaces normal
       .replace(/https?:\/\/\S+/gi, "")                // remove links
       .replace(/[#@][\w_]+/g, "")                     // remove #tags and @users
@@ -177,12 +209,43 @@ export default function CaptureScreen() {
     // stop before sections like "Ingredients", "Instructions", etc. or lead-ins
     const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal|for\s+the\b|you'?ll\s+need)/i;
     const m = s.match(cutWords);
-    if (m && m.index! > 0) s = s.slice(0, m.index).trim();
+    if (m) {
+      if (m.index && m.index > 0) {
+        s = s.slice(0, m.index).trim();
+      } else {
+        s = s.slice((m.index ?? 0) + m[0].length).trim();
+      }
+    }
 
     // first sentence if present, else first line
     const firstLine = (s.split("\n")[0] || s).trim();
     const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
     s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
+
+    const cleanedLines = original
+      .split(/\r?\n/)
+      .flatMap((line) => line.split(/[•]/g))
+      .map((line) =>
+        line
+          .replace(/^[\s•*\-]+/, "")
+          .replace(/[#@][\w_]+/g, "")
+          .replace(/https?:\/\/\S+/gi, "")
+          .replace(/\s{2,}/g, " ")
+          .trim()
+      )
+      .filter(Boolean);
+
+    if (!s || /^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) {
+      const preferred = cleanedLines.find((line) => looksLikeDishTitle(line) && /\s/.test(line));
+      const fallback = cleanedLines.find(looksLikeDishTitle);
+      if (preferred) s = preferred;
+      else if (fallback) s = fallback;
+    }
+
+    if (isBadTitleCandidate(s)) {
+      const rescue = cleanedLines.find(looksLikeDishTitle);
+      if (rescue) s = rescue;
+    }
 
     // trim site tails and tidy punctuation
     s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
@@ -391,6 +454,8 @@ function preCleanIgCaptionForParsing(s: string): string {
 // - lone @handles or #hashtags
 // ─────────────────────────────────────────────────────────────
 
+const IG_STEP_VERB = /\b(preheat|heat|warm|melt|whisk|stir|mix|combine|bring|simmer|boil|reduce|add|fold|pour|spread|sprinkle|season|coat|cook|bake|fry|air\s*fry|remove|transfer|let|allow|rest|chill|refrigerate|cool|cut|slice|serve|garnish|line|mince|dice|chop|peel|seed|core|marinate|prepare|beat|blend|pulse|knead|roll|press|grease|butter|measure|rinse|drain|pat\s+dry|toast|grate|zest|steam|microwave|warm|make|fill|assemble|layer|wrap|toss|sauté|saute|brown|stir-fry|mix together)\b/i;
+const IG_STEP_CUE = /\b(then|after|next|until|together|into|over|onto|for\s+\d|about\s+\d|minutes?|hours?|seconds?|while|cook|bake)\b/i;
 function keepRealIngredients(lines: string[]): string[] {
   const unitWord = /\b(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|kg|ml|l|clove|cloves|stick|sticks)\b/i;
   const hasQty = /(^|\s)(\d+(\s+\d+\/\d+)?|\d+\/\d+|¼|½|¾)(?=\s|$)/; // 1 , 1 1/2 , 1/2 , ½
@@ -403,6 +468,15 @@ function keepRealIngredients(lines: string[]): string[] {
 
     // drop lone handles/hashtags
     if (/^[@#][\w._-]+$/.test(s)) return false;
+
+    // drop obvious serving/yield callouts
+    if (TITLE_SERVING_TOKEN.test(s)) return false;
+
+    // drop "Step" headers or instruction labels
+    if (TITLE_STEP_TOKEN.test(s) || /^step\b/i.test(s)) return false;
+
+    // drop lines that look like instructions (verbs + cues) without a clear measurement
+    if (IG_STEP_VERB.test(s) && (!unitWord.test(s) || IG_STEP_CUE.test(s))) return false;
 
     // drop obvious full-sentence chatter that has no qty nor unit
     if (/[.?!…]$/.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
@@ -608,7 +682,6 @@ function keepRealIngredients(lines: string[]): string[] {
   }
 
   const [debugLog, setDebugLog] = useState<string>("");
-  const [showDebug, setShowDebug] = useState(false);
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
   // 🛡️ strongest good title during this import run
@@ -1035,17 +1108,32 @@ try {
 
   // Move any step-like lines that slipped into ingredients
   try {
-    const stepVerb = /(\bMelt\b|\bAdd\b|\bHeat\b|\bCook\b|\bWhisk\b|\bStir\b|\bBring\b|\bSimmer\b|\bBoil\b|\bTurn\s+up\b|\bCombine\b|\bOnce\b|\bPreheat\b|\bMix\b)/i;
     const newIngs: string[] = [];
     const moved: string[] = [];
     for (const line of (parsed.ingredients || [])) {
       const t = (line || '').trim();
       if (!t) continue;
-      if (stepVerb.test(t) || /^[A-Za-z]{3,}\.?$/.test(t)) moved.push(t); else newIngs.push(t);
+      const looksLikeStep =
+        IG_STEP_VERB.test(t) ||
+        IG_STEP_CUE.test(t) ||
+        /^\d+\s*[.)-]/.test(t) ||
+        /^step\b/i.test(t);
+      if (looksLikeStep) moved.push(t);
+      else newIngs.push(t);
     }
-    if (moved.length) parsed.steps = [...(parsed.steps || []), ...moved];
+    if (moved.length) {
+      const cleanedMoved = moved
+        .map((line) => line.replace(/^[\s•*-]+/, '').replace(/[\s.,!?;:]+$/g, '').trim())
+        .filter(Boolean);
+      parsed.steps = [...(parsed.steps || []), ...cleanedMoved];
+    }
     parsed.ingredients = newIngs;
   } catch {}
+
+  parsed.ingredients = parsed.ingredients
+    .map((line: string) => line.replace(/[.,!?;:]+$/g, '').trim())
+    .filter(Boolean);
+  parsed.steps = Array.from(new Set((parsed.steps || []).map((line: string) => line.trim()).filter(Boolean)));
 
   if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
   if (parsed.steps.length >= 1) setSteps(parsed.steps);
@@ -1425,15 +1513,7 @@ try {
                 <Text style={{ color: "#0B1120", fontWeight: "700" }}>{hudVisible ? "Importing…" : "Import"}</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity onPress={() => setShowDebug((v)=>!v)} style={{ marginTop: 8, alignSelf: "flex-end" }}>
-              <Text style={{ color: COLORS.subtext, textDecorationLine: "underline" }}>{showDebug ? "Hide debug" : "Show debug"}</Text>
-            </TouchableOpacity>
-            {showDebug && (
-              <View style={{ marginTop: 8, backgroundColor: "#0f172a", borderColor: COLORS.border, borderWidth: 1, borderRadius: 10, padding: 8 }}>
-                <Text style={{ color: "#94a3b8", fontSize: 12 }} selectable numberOfLines={16}>{debugLog || "No debug yet."}</Text>
-              </View>
-            )}
+            {/* debug output is collected silently; no toggle is rendered for end users */}
 
             <View style={{ marginTop: 10 }}>
               {(() => {
@@ -1669,7 +1749,7 @@ function MilitaryImportOverlay({
               const a = blipAnims[i % blipAnims.length];
               const scale = a.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1.4] });
               const opacity = a.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] });
-              return (<Animated.View key={`blip-${i}`} style={{ position: "absolute", left: x - 6, top: y - 6, width: 12, height: 12, borderRadius: 6, backgroundColor: "rgba(47,174,102,0.9)", opacity, transform: [{ scale }] }} />);
+              return (<Animated.View key={`blip-${i}`} style={{ position: "absolute", left: x - 6, top: y - 6, width: 12, height: 12, borderRadius: 6, backgroundColor: "rgba(34,197,94,0.9)", opacity, transform: [{ scale }] }} />);
             })}
             <Animated.View style={[hudBackdrop.centerDot, { transform: [{ scale: centerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.2] }) }] }]} />
             {phase === "acquired" && (
@@ -1683,10 +1763,10 @@ function MilitaryImportOverlay({
               const done = i < stageIndex, active = i === stageIndex;
               return (
                 <View key={label} style={hudBackdrop.stepRow}>
-                  <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(46,204,113,0.2)", borderColor: MESSHALL_GREEN }, active && { borderColor: "#a7f3d0" }]}>
-                    {done ? <Text style={{ color: "#a7f3d0", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: MESSHALL_GREEN, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
+                  <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(34,197,94,0.18)", borderColor: COLORS.accent }, active && { borderColor: "#86efac" }]}>
+                    {done ? <Text style={{ color: "#bbf7d0", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
                   </View>
-                  <Text style={[hudBackdrop.stepText, done && { color: "#a7f3d0" }, active && { color: "#e2e8f0", fontWeight: "600" }]}>{label}</Text>
+                  <Text style={[hudBackdrop.stepText, done && { color: "#bbf7d0" }, active && { color: COLORS.text, fontWeight: "600" }]}>{label}</Text>
                 </View>
               );
             })}
@@ -1702,15 +1782,15 @@ const hudBackdrop = StyleSheet.create({
   card: {
     width: "100%",
     maxWidth: 540,
-    backgroundColor: COLORS.bg,
+    backgroundColor: COLORS.card,
     borderRadius: 16,
     padding: 20,
     paddingBottom: 28,
     borderWidth: 1,
-    borderColor: "rgba(147,197,114,0.15)",
+    borderColor: COLORS.border,
     minHeight: HUD_CARD_MIN_H, // 👈 gives the card extra height
   },
-  headline: { color: "#d1fae5", fontSize: 18, textAlign: "center", letterSpacing: 1, marginBottom: 12 },
+  headline: { color: COLORS.text, fontSize: 18, textAlign: "center", letterSpacing: 1, marginBottom: 12 },
   radarWrap: {
     alignSelf: "center",
     width: RADAR_SIZE,
@@ -1720,19 +1800,19 @@ const hudBackdrop = StyleSheet.create({
     marginVertical: 16,        // 👈 was marginBottom: 12
     overflow: "hidden",
     borderRadius: RADAR_SIZE / 2,
-    backgroundColor: "rgba(20,31,25,0.35)",
+    backgroundColor: "rgba(34,197,94,0.08)",
   },
   beamPivot: { position: "absolute", left: 0, top: 0, width: RADAR_SIZE, height: RADAR_SIZE },
-  beamArm: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 1, width: RADAR_SIZE / 2, height: 2, backgroundColor: "rgba(47,174,102,0.9)" },
-  beamGlow: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 8, width: RADAR_SIZE / 2, height: 16, backgroundColor: "rgba(47,174,102,0.12)" },
+  beamArm: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 1, width: RADAR_SIZE / 2, height: 2, backgroundColor: MESSHALL_GREEN },
+  beamGlow: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 8, width: RADAR_SIZE / 2, height: 16, backgroundColor: "rgba(47,174,102,0.14)" },
   centerDot: { position: "absolute", width: 10, height: 10, borderRadius: 6, backgroundColor: MESSHALL_GREEN },
-  acquiredWrap: { position: "absolute", top: "42%", alignSelf: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.06)" },
-  acquiredText: { color: "#fef08a", fontSize: 22, fontWeight: "900", letterSpacing: 1.2 },
-  stepsBox: { backgroundColor: "rgba(46,204,113,0.06)", borderColor: "rgba(46,204,113,0.15)", borderWidth: 1, borderRadius: 12, padding: 10, marginBottom: 12 },
+  acquiredWrap: { position: "absolute", top: "42%", alignSelf: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(34,197,94,0.14)" },
+  acquiredText: { color: COLORS.text, fontSize: 22, fontWeight: "900", letterSpacing: 1.2 },
+  stepsBox: { backgroundColor: COLORS.sunken, borderColor: COLORS.border, borderWidth: 1, borderRadius: 12, padding: 10, marginBottom: 12 },
   stepRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6 },
-  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: "rgba(46,204,113,0.35)", marginRight: 8, alignItems: "center", justifyContent: "center" },
-  stepText: { color: "#cbd5e1", fontSize: 14 },
-  progressOuter: { height: 10, borderRadius: 8, overflow: "hidden", backgroundColor: "rgba(46,204,113,0.1)", borderWidth: 1, borderColor: "rgba(46,204,113,0.2)" },
+  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: COLORS.border, marginRight: 8, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.bg },
+  stepText: { color: COLORS.subtext, fontSize: 14 },
+  progressOuter: { height: 10, borderRadius: 8, overflow: "hidden", backgroundColor: COLORS.sunken, borderWidth: 1, borderColor: COLORS.border },
   progressInner: { height: "100%", backgroundColor: MESSHALL_GREEN },
 });
 
