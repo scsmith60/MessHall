@@ -165,31 +165,96 @@ export default function CaptureScreen() {
   // Turns a TikTok caption into a short, neat title candidate (kid-friendly)
   function captionToNiceTitle(raw?: string): string {
     if (!raw) return "";
-    let s = String(raw)
-      .replace(/\r|\t/g, " ")                         // make spaces normal
-      .replace(/https?:\/\/\S+/gi, "")                // remove links
-      .replace(/[#@][\w_]+/g, "")                     // remove #tags and @users
-      // ✅ SAFE EMOJI REMOVER (no \u{...}): surrogate pairs + misc symbols — keep on ONE LINE
-      .replace(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF])/g, "")
-      .replace(/\s{2,}/g, " ")                        // squash extra spaces
-      .trim();
+    const original = String(raw);
 
-    // stop before sections like "Ingredients", "Instructions", etc. or lead-ins
-    const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal|for\s+the\b|you'?ll\s+need)/i;
-    const m = s.match(cutWords);
-    if (m && m.index! > 0) s = s.slice(0, m.index).trim();
+    const scrub = (text: string) =>
+      text
+        .replace(/\r|\t/g, " ")
+        .replace(/https?:\/\/\S+/gi, "")
+        .replace(/[#@][\w_]+/g, "")
+        .replace(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF])/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
 
-    // first sentence if present, else first line
-    const firstLine = (s.split("\n")[0] || s).trim();
-    const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
-    s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
+    const cutSections = (text: string) => {
+      const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal|for\s+the\b|you'?ll\s+need)/i;
+      const m = text.match(cutWords);
+      if (m) {
+        if (m.index && m.index > 0) return text.slice(0, m.index).trim();
+        return text.slice((m.index ?? 0) + m[0].length).trim();
+      }
+      return text;
+    };
 
-    // trim site tails and tidy punctuation
+    const normalizeLine = (line: string) => scrub(line.replace(/^[\s•*\-]+/, ""));
+
+    const qty = /^(?:\s*[-•*]?\s*)?(\d+(?:\s+\d+\/\d+)?|\d+\/\d+|¼|½|¾)\b/;
+    const unitWord = /\b(cups?|cup|tsp|tbsp|tablespoons?|teaspoons?|ounce|ounces|oz|gram|grams?|g|kg|milliliter|milliliters|ml|liter|liters|lb|lbs|pound|pounds|stick|sticks|clove|cloves|package|packages|can|cans|slices?|heads?|bunch(?:es)?|pinch|dash|quart|quarts|pint|pints|tablespoon|teaspoon)\b/i;
+    const ingredientLabel = /^(?:ingredients?|for\s+the\b.*|for\b.*|filling|topping|wrapping|sauce|glaze|seasoning|instructions?|directions?|servings?|serving size|yields?|makes)\b/i;
+    const stepVerb = /^(preheat|heat|melt|whisk|stir|mix|combine|bring|simmer|boil|reduce|add|fold|pour|spread|sprinkle|season|coat|cook|bake|fry|air\s*fry|remove|transfer|let\s+(?:it\s+)?(?:sit|rest|cool)|rest|chill|refrigerate|cool|cut|slice|serve|garnish|line|grease|arrange|press|drizzle|marinate|allow|place|roll|wrap|sear|saute|sauté|baste|blend|pulse|process|toast|broil|roast|steam)\b/i;
+
+    const looksLikeIngredient = (line: string) => {
+      if (!line) return false;
+      if (ingredientLabel.test(line)) return true;
+      if (/^[\-•*]\s*/.test(line)) return true;
+      if (qty.test(line)) return true;
+      if (unitWord.test(line)) return true;
+      return false;
+    };
+
+    const looksLikeInstruction = (line: string) => {
+      if (!line) return false;
+      if (/^(?:step|direction)s?\b/i.test(line)) return true;
+      if (/^\d{1,2}[.)]\s+/.test(line)) return true;
+      if (stepVerb.test(line) && !qty.test(line) && !unitWord.test(line)) return true;
+      if (/(?:then|after|once|next|finally)\b/i.test(line) && !qty.test(line) && !unitWord.test(line)) return true;
+      return false;
+    };
+
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const pushCandidate = (value?: string) => {
+      const rawStr = typeof value === "string" ? value : "";
+      const trimmed = normalizeLine(rawStr);
+      if (!trimmed) return;
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push(trimmed);
+    };
+
+    const sections = sectionizeCaption(original);
+    if (sections.before) {
+      sections.before.split(/\r?\n+/).forEach((line) => pushCandidate(line));
+    }
+
+    original.split(/\r?\n+/).forEach((line) => pushCandidate(line));
+
+    const cleanedCaption = scrub(original);
+    cutSections(cleanedCaption).split(/(?<=[.!?])\s+/).forEach((part) => pushCandidate(part));
+
+    pushCandidate(cutSections(cleanedCaption));
+
+    let best = candidates.find((line) => !looksLikeIngredient(line) && !looksLikeInstruction(line));
+
+    if (!best && sections.before) {
+      const before = normalizeLine(sections.before);
+      if (before && !looksLikeIngredient(before) && !looksLikeInstruction(before)) best = before;
+    }
+
+    if (!best) best = cutSections(cleanedCaption);
+
+    let s = normalizeLine(best);
+    if (!s) return "";
+
     s = s.replace(/\s*[|–-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
     s = s.replace(/\s*\.$/, "");
     s = s.replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
 
-    return s; // ← important semicolon so the chain ends here
+    if (s.length > 72) s = s.slice(0, 72).trim();
+    if (looksLikeIngredient(s) || looksLikeInstruction(s)) return "";
+
+    return s;
   }
   /** 🧼 normalizeDishTitle: trim hype and keep only the dish name.
    *  Example: "Smoky Poblano Chicken & Black Bean Soup Dive into..." 
@@ -394,6 +459,7 @@ function preCleanIgCaptionForParsing(s: string): string {
 function keepRealIngredients(lines: string[]): string[] {
   const unitWord = /\b(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|kg|ml|l|clove|cloves|stick|sticks)\b/i;
   const hasQty = /(^|\s)(\d+(\s+\d+\/\d+)?|\d+\/\d+|¼|½|¾)(?=\s|$)/; // 1 , 1 1/2 , 1/2 , ½
+  const stepVerb = /^(preheat|heat|melt|whisk|stir|mix|combine|bring|simmer|boil|reduce|add|fold|pour|spread|sprinkle|season|coat|cook|bake|fry|air\s*fry|remove|transfer|let\s+(?:it\s+)?(?:sit|rest|cool)|rest|chill|refrigerate|cool|cut|slice|serve|garnish|line|grease|arrange|press|drizzle|marinate|allow|place|roll|wrap|sear|saute|sauté|baste|blend|pulse|process)\b/i;
   return (lines || []).filter((raw) => {
     const s = (raw || "").trim();
     if (!s) return false;
@@ -403,6 +469,19 @@ function keepRealIngredients(lines: string[]): string[] {
 
     // drop lone handles/hashtags
     if (/^[@#][\w._-]+$/.test(s)) return false;
+
+    // drop obvious serving/yield callouts
+    if (/\b(serves?|servings?|serving size|makes|feeds|yield|yields)\b/i.test(s)) return false;
+
+    // drop explicit step markers ("Step 1", "1.") that slipped into the ingredient list
+    if (/^(?:step|direction)s?\b/i.test(s)) return false;
+    if (/^\d{1,2}[.)]\s+/.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
+
+    // drop instruction-like sentences that start with cooking verbs and have no quantity/unit
+    if (stepVerb.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
+
+    // drop long instruction-like chatter (contains sequencing words) without obvious ingredient cues
+    if (/(?:then|after|once|next|finally)\b/i.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
 
     // drop obvious full-sentence chatter that has no qty nor unit
     if (/[.?!…]$/.test(s) && !unitWord.test(s) && !hasQty.test(s)) return false;
@@ -608,7 +687,6 @@ function keepRealIngredients(lines: string[]): string[] {
   }
 
   const [debugLog, setDebugLog] = useState<string>("");
-  const [showDebug, setShowDebug] = useState(false);
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
   // 🛡️ strongest good title during this import run
@@ -1035,17 +1113,27 @@ try {
 
   // Move any step-like lines that slipped into ingredients
   try {
-    const stepVerb = /(\bMelt\b|\bAdd\b|\bHeat\b|\bCook\b|\bWhisk\b|\bStir\b|\bBring\b|\bSimmer\b|\bBoil\b|\bTurn\s+up\b|\bCombine\b|\bOnce\b|\bPreheat\b|\bMix\b)/i;
+    const stepVerb = /(\bMelt\b|\bAdd\b|\bHeat\b|\bCook\b|\bWhisk\b|\bStir\b|\bBring\b|\bSimmer\b|\bBoil\b|\bTurn\s+up\b|\bCombine\b|\bOnce\b|\bPreheat\b|\bMix\b|\bFold\b|\bPour\b|\bSpread\b|\bSeason\b|\bServe\b|\bGarnish\b|\bTransfer\b|\bBake\b|\bFry\b|\bAir\s*fry\b|\bLayer\b|\bRoll\b|\bWrap\b|\bChill\b|\bMarinate\b|\bCover\b|\bLet\b|\bDrizzle\b|\bTop\b|\bFlip\b|\bPlace\b|\bBrown\b|\bRinse\b|\bDrain\b|\bBeat\b|\bBlend\b|\bSaute\b|\bSauté\b)/i;
+    const loneVerb = /^(melt|add|mix|stir|cook|serve|enjoy|bake|fry|air fry|grill|preheat|combine|pour|spread|season|garnish|transfer|roll|wrap|chill|marinate|cover|rest|let|knead|saute|sauté)$/i;
     const newIngs: string[] = [];
     const moved: string[] = [];
     for (const line of (parsed.ingredients || [])) {
       const t = (line || '').trim();
       if (!t) continue;
-      if (stepVerb.test(t) || /^[A-Za-z]{3,}\.?$/.test(t)) moved.push(t); else newIngs.push(t);
+      const looksLikeStep =
+        stepVerb.test(t) ||
+        /\bthen\b/i.test(t) ||
+        /\buntil\b/i.test(t) ||
+        /\bafter\b/i.test(t) ||
+        /\bnext\b/i.test(t);
+      if (looksLikeStep || loneVerb.test(t)) moved.push(t);
+      else newIngs.push(t);
     }
     if (moved.length) parsed.steps = [...(parsed.steps || []), ...moved];
     parsed.ingredients = newIngs;
   } catch {}
+
+  parsed.ingredients = parsed.ingredients.map((line: string) => line.replace(/[.,!?;:]+$/g, '').trim());
 
   if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
   if (parsed.steps.length >= 1) setSteps(parsed.steps);
@@ -1425,15 +1513,7 @@ try {
                 <Text style={{ color: "#0B1120", fontWeight: "700" }}>{hudVisible ? "Importing…" : "Import"}</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity onPress={() => setShowDebug((v)=>!v)} style={{ marginTop: 8, alignSelf: "flex-end" }}>
-              <Text style={{ color: COLORS.subtext, textDecorationLine: "underline" }}>{showDebug ? "Hide debug" : "Show debug"}</Text>
-            </TouchableOpacity>
-            {showDebug && (
-              <View style={{ marginTop: 8, backgroundColor: "#0f172a", borderColor: COLORS.border, borderWidth: 1, borderRadius: 10, padding: 8 }}>
-                <Text style={{ color: "#94a3b8", fontSize: 12 }} selectable numberOfLines={16}>{debugLog || "No debug yet."}</Text>
-              </View>
-            )}
+            {/* debug output is collected silently; no toggle is rendered for end users */}
 
             <View style={{ marginTop: 10 }}>
               {(() => {

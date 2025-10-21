@@ -22,9 +22,15 @@ import Svg, { Line, Circle } from "react-native-svg";
 // ==============================
 // 2) Simple color theme (tweak if you want)
 // ==============================
-const MESSHALL_GREEN = "#2FAE66"; // <- use your brand green here
-const BG = "#0f172a";             // slate-900 vibe
-const GRID = "rgba(47, 174, 102, 0.15)"; // soft green lines
+const HUD_GREEN = "#22C55E"; // align with app accent
+const BG = "#0B1120";        // matches capture screen background
+const GRID = "rgba(34, 197, 94, 0.18)"; // soft green lines
+const BORDER = "rgba(34, 197, 94, 0.28)";
+const PANEL_BG = "rgba(34, 197, 94, 0.10)";
+const PANEL_BORDER = "rgba(34, 197, 94, 0.32)";
+const TEXT_MAIN = "#E5E7EB";
+const TEXT_MUTED = "rgba(168, 179, 186, 0.9)";
+const TEXT_DONE = "#A7F3D0";
 
 // ==============================
 // 3) Tiny helper: random blip positions (little dots)
@@ -179,7 +185,7 @@ export default function MilitaryImportOverlay({
                     cx={b.x}
                     cy={b.y}
                     r={rAnim as any}
-                    fill={MESSHALL_GREEN}
+                    fill={HUD_GREEN}
                     opacity={opacity as any}
                   />
                 );
@@ -192,7 +198,7 @@ export default function MilitaryImportOverlay({
                 styles.centerDot,
                 {
                   transform: [{ scale: centerScale }],
-                  shadowColor: MESSHALL_GREEN,
+                  shadowColor: HUD_GREEN,
                 },
               ]}
             />
@@ -259,10 +265,10 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: "rgba(147, 197, 114, 0.15)",
+    borderColor: BORDER,
   },
   headline: {
-    color: "#d1fae5",
+    color: TEXT_DONE,
     fontSize: 18,
     textAlign: "center",
     letterSpacing: 1,
@@ -281,14 +287,14 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 6,
-    backgroundColor: MESSHALL_GREEN,
+    backgroundColor: HUD_GREEN,
     shadowOpacity: 0.9,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
   },
   stepsBox: {
-    backgroundColor: "rgba(46, 204, 113, 0.06)",
-    borderColor: "rgba(46, 204, 113, 0.15)",
+    backgroundColor: PANEL_BG,
+    borderColor: PANEL_BORDER,
     borderWidth: 1,
     borderRadius: 12,
     padding: 10,
@@ -304,59 +310,59 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: "rgba(46, 204, 113, 0.35)",
+    borderColor: PANEL_BORDER,
     marginRight: 8,
     alignItems: "center",
     justifyContent: "center",
   },
   checkboxDone: {
-    backgroundColor: "rgba(46, 204, 113, 0.2)",
-    borderColor: MESSHALL_GREEN,
+    backgroundColor: PANEL_BG,
+    borderColor: HUD_GREEN,
   },
   checkboxActive: {
-    borderColor: "#a7f3d0",
+    borderColor: TEXT_DONE,
   },
   checkmark: {
-    color: "#a7f3d0",
+    color: TEXT_DONE,
     fontSize: 14,
     fontWeight: "700",
   },
   dot: {
-    color: MESSHALL_GREEN,
+    color: HUD_GREEN,
     fontSize: 20,
     lineHeight: 20,
   },
   stepText: {
-    color: "#cbd5e1",
+    color: TEXT_MUTED,
     fontSize: 14,
   },
   stepTextDone: {
-    color: "#a7f3d0",
+    color: TEXT_DONE,
     textDecorationLine: "none",
   },
   stepTextActive: {
-    color: "#e2e8f0",
+    color: TEXT_MAIN,
     fontWeight: "600",
   },
   progressOuter: {
     height: 10,
     borderRadius: 8,
     overflow: "hidden",
-    backgroundColor: "rgba(46, 204, 113, 0.1)",
+    backgroundColor: PANEL_BG,
     borderWidth: 1,
-    borderColor: "rgba(46, 204, 113, 0.2)",
+    borderColor: PANEL_BORDER,
   },
   progressInner: {
     height: "100%",
-    backgroundColor: MESSHALL_GREEN,
+    backgroundColor: HUD_GREEN,
   },
   progressShimmer: {
     position: "absolute",
     top: 0,
     bottom: 0,
     width: "30%",
-    backgroundColor: "rgba(255,255,255,0.25)",
-    opacity: 0.25,
+    backgroundColor: "rgba(229, 231, 235, 0.24)",
+    opacity: 0.35,
   },
   cancelBtn: {
     alignSelf: "center",
@@ -365,7 +371,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   cancelText: {
-    color: "#9ca3af",
+    color: TEXT_MUTED,
     fontSize: 14,
   },
 });

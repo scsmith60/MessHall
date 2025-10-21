@@ -111,8 +111,8 @@ function forceInlineStepBreaks(s: string): string {
     .replace(INLINE_BULLET, "\n$2")
     // split on semicolons and pipes (common makeshift separators)
     .replace(/[;|]+\s*/g, "\n")
-    // allow split after a full stop followed by Capital/number
-    .replace(/(?<=\.)\s+(?=[A-Z0-9])/g, "\n")
+    // be gentler about breaking on periods — only break when the next word is an explicit new step cue
+    .replace(/(?<=\.)\s+(?=(?:Step|STEP)\b)/g, "\n")
     .replace(/\n{2,}/g, "\n")
     .trim();
 }
@@ -182,7 +182,10 @@ function looksLikeStep(line: string): boolean {
 
 // ---------- UI line cleaners ----------
 function cleanIngredientLine(line: string): string {
-  return tidySpaces(stripLeadBullets(stripEmojis(line)));
+  const stripped = tidySpaces(stripLeadBullets(stripEmojis(line)));
+  // trim punctuation that often trails after copying from captions ("Add salt.")
+  const withoutTrail = stripped.replace(/[.,!?;:]+$/g, "").trim();
+  return withoutTrail;
 }
 function cleanStepLine(line: string): string {
   return tidySpaces(stripTrailHashtags(stripLeadBullets(stripLeadNumbers(stripEmojis(line)))));
