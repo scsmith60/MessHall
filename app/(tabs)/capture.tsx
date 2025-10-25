@@ -291,7 +291,13 @@ function findDishTitleFromText(source: string, url: string): string | null {
     s = s.replace(/&/g, " and ");
 
     // Cut off common promo/lead-in phrases that come after the dish name
-    s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
+    const hypeMatch = s.match(/(.+?)\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i);
+    if (hypeMatch) {
+      const prefix = hypeMatch[1].trim();
+      if (prefix.replace(/[^A-Za-z0-9]+/g, "").length >= 4) {
+        s = prefix;
+      }
+    }
 
     // Remove anything after exclamation || question marks
     s = s.replace(/\s*[!?].*$/, "");
