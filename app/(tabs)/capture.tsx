@@ -331,10 +331,8 @@ function findDishTitleFromText(source: string, url: string): string | null {
     const cleaned = normalizeDishTitle(cleanTitle(raw, url));
     if (!cleaned) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (empty after clean):", source); return; }
 
-    const current = titleRef.current || "";
     const cleanedIsWeak = isWeakTitle(cleaned);
     const currentIsWeak = isWeakTitle(current);
-    const storedStrong = (strongTitleRef.current || "").trim();
 
     if (!cleanedIsWeak) {
       const prev = (strongTitleRef.current || "").trim();
@@ -342,17 +340,6 @@ function findDishTitleFromText(source: string, url: string): string | null {
         strongTitleRef.current = cleaned;
         dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
       }
-    }
-
-    if (cleanedIsWeak && storedStrong && !isWeakTitle(storedStrong)) {
-      if (current !== storedStrong) {
-        setTitle(storedStrong);
-        titleRef.current = storedStrong;
-        dbg?.("≡ƒ¢í∩╕Å TITLE kept stored strong over weak candidate:", JSON.stringify(storedStrong), "from", source);
-      } else {
-        dbg?.("≡ƒ¢í∩╕Å TITLE ignored weak candidate while strong stored:", source);
-      }
-      return;
     }
 
     if (!currentIsWeak) {
@@ -367,7 +354,6 @@ function findDishTitleFromText(source: string, url: string): string | null {
     }
 
     setTitle(cleaned);
-    titleRef.current = cleaned;
     dbg?.(
       cleanedIsWeak ? "≡ƒ¢í∩╕Å TITLE forced weak candidate:" : "≡ƒ¢í∩╕Å TITLE set:",
       source,
@@ -1230,7 +1216,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
         try {
           const oembedTitle = await getTikTokOEmbedTitle(url);
           if (oembedTitle) {
-            safeSetTitle(oembedTitle, url, dbg, "tiktok:oembed");
+            safeSetTitle(oembedTitle, url, title, dbg, "tiktok:oembed");
           }
         } catch (err) {
           dbg("Γ¥î TikTok oEmbed failed:", safeErr(err));
@@ -1247,7 +1233,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           dbg("[IG] Instagram payload length:", rawCaption.length);
 
           if (igDom?.cleanTitle) {
-            safeSetTitle(igDom.cleanTitle, url, dbg, "instagram:dom-clean");
+            safeSetTitle(igDom.cleanTitle, url, title, dbg, "instagram:dom-clean");
           }
 
           const heroFromDom = igDom?.imageUrl || igDom?.image_url || null;
@@ -1270,11 +1256,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
           ]);
 
           if (parsedInstagram.title) {
-            safeSetTitle(parsedInstagram.title, url, dbg, "instagram:caption-title");
+            safeSetTitle(parsedInstagram.title, url, title, dbg, "instagram:caption-title");
           } else if (captionDishTitle) {
-            safeSetTitle(captionDishTitle, url, dbg, "instagram:caption-fallback");
-          } else if (fallbackDishTitle) {
-            safeSetTitle(fallbackDishTitle, url, dbg, "instagram:caption-nice");
+            safeSetTitle(captionDishTitle, url, title, dbg, "instagram:caption-fallback");
           }
 
           const partitioned = partitionIngredientRows(mergedIngredients, mergedSteps);
@@ -1311,8 +1295,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
         if (!gotSomethingForRunRef.current) {
           try {
             const og = await fetchOgForUrl(url);
-            if (og?.title && isWeakTitle(titleRef.current) && !isWeakTitle(og.title)) {
-              safeSetTitle(og.title, url, dbg, "instagram:og-title");
+            if (og?.title && isWeakTitle(title)) {
+              safeSetTitle(og.title, url, title, dbg, "instagram:og-title");
             }
             if (og?.image) {
               await tryImageUrl(og.image, url);
@@ -1396,7 +1380,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
             const domDishTitle = findDishTitleFromText(domPayload?.text || "", url);
             if (domDishTitle) {
-              safeSetTitle(domDishTitle, url, dbg, "tiktok:dom-text");
+              safeSetTitle(domDishTitle, url, title, dbg, "tiktok:dom-text");
             }
           } catch (e) {
             dbg("Γ¥î STEP 1 (DOM scraper) failed:", safeErr(e));
