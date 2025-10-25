@@ -291,7 +291,12 @@ function findDishTitleFromText(source: string, url: string): string | null {
     s = s.replace(/&/g, " and ");
 
     // Cut off common promo/lead-in phrases that come after the dish name
-    s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
+    s = s.replace(/(.+?)\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "$1");
+    s = s.trim();
+
+    // Trim hype phrases when they lead the line ("How to make..." -> "make...")
+    s = s.replace(/^(?:How to|Learn to|Let's make|Let us make|We're making|We are making|Watch me make|Watch me cook|Watch us make|Time to make)\s+/i, "");
+    s = s.replace(/^(?:Make this|Make these|Try this|Try these|Watch this|Learn this)\s+/i, "");
 
     // Remove anything after exclamation || question marks
     s = s.replace(/\s*[!?].*$/, "");
