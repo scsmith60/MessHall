@@ -272,7 +272,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     // trim site tails and tidy punctuation
     s = s.replace(/\s*[|\u2022\u2013-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
-    s = s.replace(/\s*\.$/, "");
+    s = s.replace(/[.!?]+$/, "");
     s = s.replace(/[\u2013-]/g, "-").replace(/\s+/g, " ").trim();
 
     if (/^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) return "";
@@ -291,7 +291,13 @@ function findDishTitleFromText(source: string, url: string): string | null {
     s = s.replace(/&/g, " and ");
 
     // Cut off common promo/lead-in phrases that come after the dish name
-    s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
+    const hypeMatch = s.match(/(.+?)\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i);
+    if (hypeMatch) {
+      const prefix = hypeMatch[1].trim();
+      if (prefix.replace(/[^A-Za-z0-9]+/g, "").length >= 4) {
+        s = prefix;
+      }
+    }
 
     // Remove anything after exclamation || question marks
     s = s.replace(/\s*[!?].*$/, "");
@@ -303,9 +309,13 @@ function findDishTitleFromText(source: string, url: string): string | null {
     const firstSentence = s.split(/(?<=\.)\s+/)[0];
     s = firstSentence || s;
 
-    // Tidy whitespace and trailing dot; strip quotes
+    // Tidy whitespace and trailing punctuation; strip quotes
     s = s.replace(/["""']/g, "");
-    s = s.replace(/\s{2,}/g, " ").replace(/\s+\.$/, "").trim();
+    s = s.replace(/\s{2,}/g, " ")
+      .replace(/[.!?]+$/, "")
+      .trim();
+
+    if (!/[A-Za-z]/.test(s)) return "";
 
     return s;
   }
@@ -313,25 +323,60 @@ function findDishTitleFromText(source: string, url: string): string | null {
   function safeSetTitle(
     candidate: string | null | undefined,
     url: string,
-    current: string,
     dbg?: (...args:any[])=>void,
     source = "candidate"
   ) {
     const raw = (candidate ?? "").trim();
     if (!raw) return;
     const cleaned = normalizeDishTitle(cleanTitle(raw, url));
-    if (isWeakTitle(cleaned)) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
-    const prev = (strongTitleRef.current || "").trim();
-    if (!prev || cleaned.length > prev.length) {
-      strongTitleRef.current = cleaned;
-      dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
+    if (!cleaned) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (empty after clean):", source); return; }
+
+    const current = titleRef.current || "";
+    const cleanedIsWeak = isWeakTitle(cleaned);
+    const currentIsWeak = isWeakTitle(current);
+    const storedStrong = (strongTitleRef.current || "").trim();
+
+    if (!cleanedIsWeak) {
+      const prev = (strongTitleRef.current || "").trim();
+      if (!prev || cleaned.length > prev.length) {
+        strongTitleRef.current = cleaned;
+        dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
+      }
     }
-    if (!isWeakTitle(current) && current.trim().length >= cleaned.length) {
-      dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
+
+    if (cleanedIsWeak && storedStrong && !isWeakTitle(storedStrong)) {
+      if (current !== storedStrong) {
+        setTitle(storedStrong);
+        titleRef.current = storedStrong;
+        dbg?.("≡ƒ¢í∩╕Å TITLE kept stored strong over weak candidate:", JSON.stringify(storedStrong), "from", source);
+      } else {
+        dbg?.("≡ƒ¢í∩╕Å TITLE ignored weak candidate while strong stored:", source);
+      }
       return;
     }
+
+    if (!currentIsWeak) {
+      if (cleanedIsWeak) {
+        dbg?.("≡ƒ¢í∩╕Å TITLE kept existing strong over weak candidate:", JSON.stringify(current), "vs", JSON.stringify(cleaned), "from", source);
+        return;
+      }
+      if (current.trim().length >= cleaned.length) {
+        dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
+        return;
+      }
+    }
+
     setTitle(cleaned);
-    dbg?.("≡ƒ¢í∩╕Å TITLE set:", source, JSON.stringify(cleaned));
+    titleRef.current = cleaned;
+    dbg?.(
+      cleanedIsWeak ? "≡ƒ¢í∩╕Å TITLE forced weak candidate:" : "≡ƒ¢í∩╕Å TITLE set:",
+      source,
+      JSON.stringify(cleaned)
+    );
+
+    if (cleanedIsWeak && !strongTitleRef.current) {
+      strongTitleRef.current = cleaned;
+    }
   }
 
 
@@ -339,12 +384,15 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
   /** Decide if a TikTok-ish title is junk */
   function isTikTokJunkTitle(s?: string | null) {
-    const t = (s || "").toLowerCase().trim();
-    if (!t) return true;
-    if (t === "tiktok") return true;
-    if (t === "make your day") return true;
-    if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
-    if (t.includes("tiktok") && t.includes("make your day")) return true;
+    const lowered = (s || "").toLowerCase().replace(/[.!?]+$/, "").trim();
+    const normalized = lowered.replace(/[\s|\u2022-]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!normalized) return true;
+    if (normalized === "tiktok") return true;
+    if (normalized === "make your day") return true;
+    if (normalized === "tiktok make your day") return true;
+    if (normalized === "make your day tiktok") return true;
+    const words = normalized.split(" ").filter(Boolean);
+    if (words.length && words.every((w) => w === "tiktok" || w === "make" || w === "your" || w === "day")) return true;
     return false;
   }
 
@@ -527,7 +575,7 @@ function partitionIngredientRows(rows: string[], existingSteps: string[]): { ing
       continue;
     }
 
-    if (!hasMeasurement && /(to taste|pinch|dash)/i.test(trimmed)) {
+    if (!hasMeasurement && /\b(to taste|pinch|dash)\b/i.test(trimmed)) {
       kept.push(trimmed);
       continue;
     }
@@ -792,6 +840,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const [debugLog, setDebugLog] = useState<string>("");
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
+  const titleRef = useRef<string>("");
   // ≡ƒ¢í∩╕Å strongest good title during this import run
   const strongTitleRef = useRef<string>("");
   const [timeMinutes, setTimeMinutes] = useState("");
@@ -801,6 +850,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const [img, setImg] = useState<ImageSourceState>({ kind: "none" });
   const ingredientSwipeRefs = useRef<Array<Swipeable | null>>([]);
   const stepSwipeRefs = useRef<Array<Swipeable | null>>([]);
+
+  useEffect(() => {
+    titleRef.current = title;
+  }, [title]);
 
   const dbg = useCallback((...args: any[]) => {
     try {
@@ -928,6 +981,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     snapCancelledRef.current = false;
     snapResolverRef.current = null;
     snapRejectRef.current = null;
+    strongTitleRef.current = "";
     setHudVisible(false);
     setImprovingSnap(false);
     setTikTokShots([]);
@@ -1006,7 +1060,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const tryImageUrl = useCallback(async (rawUrl: string, originUrl: string) => {
     const absolute = absolutizeImageUrl(rawUrl, originUrl);
     if (!absolute) return false;
-    const test = await isValidCandidate(absolute);
+    let test = await isValidCandidate(absolute);
+    if (!test.ok) {
+      const downloaded = await downloadRemoteToLocalImage(absolute, originUrl);
+      if (downloaded) {
+        test = await isValidCandidate(downloaded);
+        if (!test.ok && downloaded) {
+          try { await FileSystem.deleteAsync(downloaded, { idempotent: true }); } catch (e) { }
+        }
+      }
+    }
     if (test.ok && test.useUri) {
       bumpStage(1);
       if (test.useUri.startsWith("http")) setImg({ kind: "url-og", url: originUrl, resolvedImageUrl: test.useUri });
@@ -1037,8 +1100,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
     if (jsonLd) {
       dbg("≡ƒì│ JSON-LD recipe found");
       
-      if (jsonLd.title && isWeakTitle(title)) {
-        safeSetTitle(jsonLd.title, url, title, dbg, "jsonld");
+      if (jsonLd.title && isWeakTitle(titleRef.current) && !isWeakTitle(jsonLd.title)) {
+        safeSetTitle(jsonLd.title, url, dbg, "jsonld");
       }
       
       if (jsonLd.ingredients && jsonLd.ingredients.length >= 2) {
@@ -1071,8 +1134,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
     if (microdata) {
       dbg("≡ƒì│ Microdata recipe found");
       
-      if (microdata.title && isWeakTitle(title)) {
-        safeSetTitle(microdata.title, url, title, dbg, "microdata");
+      if (microdata.title && isWeakTitle(titleRef.current) && !isWeakTitle(microdata.title)) {
+        safeSetTitle(microdata.title, url, dbg, "microdata");
       }
       
       if (microdata.ingredients && microdata.ingredients.length >= 2) {
@@ -1093,7 +1156,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     dbg("ΓÜá∩╕Å Recipe site handler failed:", safeErr(e));
     return false;
   }
-  }, [title, bumpStage, tryImageUrl, dbg, safeErr]);
+  }, [bumpStage, tryImageUrl, dbg, safeErr]);
 
   
 
@@ -1160,87 +1223,104 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
     // STEP 0: try oEmbed title
     try {
-        const siteType = detectSiteType(url);
-        dbg("≡ƒÄ» Site detected:", siteType);
+      const siteType = detectSiteType(url);
+      dbg("≡ƒÄ» Site detected:", siteType);
 
-        if (siteType === "instagram") {
-          dbg("[IG] Instagram path begins");
-          let igDom: any = null;
+      if (siteType === "tiktok") {
+        try {
+          const oembedTitle = await getTikTokOEmbedTitle(url);
+          if (oembedTitle) {
+            safeSetTitle(oembedTitle, url, dbg, "tiktok:oembed");
+          }
+        } catch (err) {
+          dbg("Γ¥î TikTok oEmbed failed:", safeErr(err));
+        }
+      }
+
+      if (siteType === "instagram") {
+        dbg("[IG] Instagram path begins");
+        let igDom: any = null;
+        try {
+          bumpStage(1);
+          igDom = await scrapeInstagramDom(url);
+          const rawCaption = (igDom?.text || igDom?.caption || "").trim();
+          dbg("[IG] Instagram payload length:", rawCaption.length);
+
+          if (igDom?.cleanTitle) {
+            safeSetTitle(igDom.cleanTitle, url, dbg, "instagram:dom-clean");
+          }
+
+          const heroFromDom = igDom?.imageUrl || igDom?.image_url || null;
+          const cleanedCaption = preCleanIgCaptionForParsing(rawCaption);
+          const captionDishTitle = findDishTitleFromText(cleanedCaption, url);
+          const fallbackDishTitle = captionDishTitle || normalizeDishTitle(cleanTitle(captionToNiceTitle(cleanedCaption), url));
+          const parsedInstagram = parseSocialCaption(cleanedCaption, {
+            fallbackTitle: fallbackDishTitle,
+            heroImage: heroFromDom ?? null,
+          });
+          const unifiedParse = parseRecipeText(cleanedCaption);
+
+          const mergedIngredients = dedupeNormalized([
+            ...parsedInstagram.ingredients,
+            ...unifiedParse.ingredients,
+          ]);
+          const mergedSteps = dedupeNormalized([
+            ...parsedInstagram.steps,
+            ...unifiedParse.steps,
+          ]);
+
+          if (parsedInstagram.title) {
+            safeSetTitle(parsedInstagram.title, url, dbg, "instagram:caption-title");
+          } else if (captionDishTitle) {
+            safeSetTitle(captionDishTitle, url, dbg, "instagram:caption-fallback");
+          } else if (fallbackDishTitle) {
+            safeSetTitle(fallbackDishTitle, url, dbg, "instagram:caption-nice");
+          }
+
+          const partitioned = partitionIngredientRows(mergedIngredients, mergedSteps);
+          const normalizedSteps = mergeStepFragments(partitioned.steps);
+
+          if (partitioned.ingredients.length) {
+            setIngredients(partitioned.ingredients);
+          }
+
+          if (normalizedSteps.length) {
+            setSteps(normalizedSteps);
+          }
+
+          if (parsedInstagram.servings) {
+            setServings((prev) => (prev.trim().length > 0 ? prev : parsedInstagram.servings ?? prev));
+          }
+
+          if (parsedInstagram.heroImage) {
+            await tryImageUrl(parsedInstagram.heroImage, url);
+          }
+
+          if (partitioned.ingredients.length >= 2 || normalizedSteps.length >= 1) {
+            bumpStage(2);
+            success = true;
+          }
+
+          if (!gotSomethingForRunRef.current && heroFromDom) {
+            await tryImageUrl(heroFromDom, url);
+          }
+        } catch (err) {
+          dbg("[IG] Instagram scraper failed:", safeErr(err));
+        }
+
+        if (!gotSomethingForRunRef.current) {
           try {
-            bumpStage(1);
-            igDom = await scrapeInstagramDom(url);
-            const rawCaption = (igDom?.text || igDom?.caption || "").trim();
-            dbg("[IG] Instagram payload length:", rawCaption.length);
-
-            const heroFromDom = igDom?.imageUrl || igDom?.image_url || null;
-            const cleanedCaption = preCleanIgCaptionForParsing(rawCaption);
-            const captionDishTitle = findDishTitleFromText(cleanedCaption, url);
-            const fallbackDishTitle = captionDishTitle || normalizeDishTitle(cleanTitle(captionToNiceTitle(cleanedCaption), url));
-            const parsedInstagram = parseSocialCaption(cleanedCaption, {
-              fallbackTitle: fallbackDishTitle,
-              heroImage: heroFromDom ?? null,
-            });
-            const unifiedParse = parseRecipeText(cleanedCaption);
-
-            const mergedIngredients = dedupeNormalized([
-              ...parsedInstagram.ingredients,
-              ...unifiedParse.ingredients,
-            ]);
-            const mergedSteps = dedupeNormalized([
-              ...parsedInstagram.steps,
-              ...unifiedParse.steps,
-            ]);
-
-            if (parsedInstagram.title) {
-              safeSetTitle(parsedInstagram.title, url, title, dbg, "instagram:caption-title");
-            } else if (captionDishTitle) {
-              safeSetTitle(captionDishTitle, url, title, dbg, "instagram:caption-fallback");
+            const og = await fetchOgForUrl(url);
+            if (og?.title && isWeakTitle(titleRef.current) && !isWeakTitle(og.title)) {
+              safeSetTitle(og.title, url, dbg, "instagram:og-title");
             }
-
-            const partitioned = partitionIngredientRows(mergedIngredients, mergedSteps);
-            const normalizedSteps = mergeStepFragments(partitioned.steps);
-
-            if (partitioned.ingredients.length) {
-              setIngredients(partitioned.ingredients);
-            }
-
-            if (normalizedSteps.length) {
-              setSteps(normalizedSteps);
-            }
-
-            if (parsedInstagram.servings) {
-              setServings((prev) => (prev.trim().length > 0 ? prev : parsedInstagram.servings ?? prev));
-            }
-
-            if (parsedInstagram.heroImage) {
-              await tryImageUrl(parsedInstagram.heroImage, url);
-            }
-
-            if (partitioned.ingredients.length >= 2 || normalizedSteps.length >= 1) {
-              bumpStage(2);
-              success = true;
-            }
-
-            if (!gotSomethingForRunRef.current && heroFromDom) {
-              await tryImageUrl(heroFromDom, url);
+            if (og?.image) {
+              await tryImageUrl(og.image, url);
             }
           } catch (err) {
-            dbg("[IG] Instagram scraper failed:", safeErr(err));
+            dbg("[IG] Instagram image fallback failed:", safeErr(err));
           }
-
-          if (!gotSomethingForRunRef.current) {
-            try {
-              const og = await fetchOgForUrl(url);
-              if (og?.title && isWeakTitle(title)) {
-                safeSetTitle(og.title, url, title, dbg, "instagram:og-title");
-              }
-              if (og?.image) {
-                await tryImageUrl(og.image, url);
-              }
-            } catch (err) {
-              dbg("[IG] Instagram image fallback failed:", safeErr(err));
-            }
-          }
+        }
 
         } else if (siteType === "facebook") {
           // FACEBOOK PATH (similar to Instagram)
@@ -1249,8 +1329,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
           try {
             const og = await fetchOgForUrl(url);
             
-            if (og?.title && isWeakTitle(title)) {
-              safeSetTitle(og.title, url, title, dbg, "facebook:og");
+            if (og?.title && isWeakTitle(titleRef.current) && !isWeakTitle(og.title)) {
+              safeSetTitle(og.title, url, dbg, "facebook:og");
             }
             
             if (og?.description) {
@@ -1285,8 +1365,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
             } else {
               // Fallback to OG if structured data failed
               const og = await fetchOgForUrl(url);
-              if (og?.title && isWeakTitle(title)) {
-                safeSetTitle(og.title, url, title, dbg, "recipe-site:og");
+              if (og?.title && isWeakTitle(titleRef.current) && !isWeakTitle(og.title)) {
+                safeSetTitle(og.title, url, dbg, "recipe-site:og");
               }
               if (og?.image) await tryImageUrl(og.image, url);
             }
@@ -1306,13 +1386,18 @@ function stitchBrokenSteps(lines: string[]): string[] {
             dbg("≡ƒôä STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
             // ≡ƒæç extra trace to know where it came from and if "see more" was clicked
             if (domPayload?.debug) dbg("≡ƒº¬ TTDOM DEBUG:", domPayload.debug);
-          
+
             // ≡ƒæë NEW: try to set a nice title from the TikTok caption if ours is weak
             try {
               const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
               const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
-              if (capTitle) safeSetTitle(capTitle, url, title, dbg, "tiktok:caption");
+              if (capTitle) safeSetTitle(capTitle, url, dbg, "tiktok:caption");
             } catch {}
+
+            const domDishTitle = findDishTitleFromText(domPayload?.text || "", url);
+            if (domDishTitle) {
+              safeSetTitle(domDishTitle, url, dbg, "tiktok:dom-text");
+            }
           } catch (e) {
             dbg("Γ¥î STEP 1 (DOM scraper) failed:", safeErr(e));
           }
@@ -1323,11 +1408,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
             const dishTitleFromCaption = findDishTitleFromText(cap, url);
             if (dishTitleFromCaption) {
-              safeSetTitle(dishTitleFromCaption, url, title, dbg, "tiktok:caption-dish");
+              safeSetTitle(dishTitleFromCaption, url, dbg, "tiktok:caption-dish");
             }
             const captionFallbackTitle = normalizeDishTitle(cleanTitle(captionToNiceTitle(cap), url));
             if (captionFallbackTitle) {
-              safeSetTitle(captionFallbackTitle, url, title, dbg, "tiktok:caption-fallback");
+              safeSetTitle(captionFallbackTitle, url, dbg, "tiktok:caption-fallback");
             }
 
             // A) build clean recipe text from CAPTION
@@ -1352,7 +1437,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             });
 
             if (socialParsed.title) {
-              safeSetTitle(socialParsed.title, url, title, dbg, "tiktok:social-title");
+              safeSetTitle(socialParsed.title, url, dbg, "tiktok:social-title");
             }
 
             if (socialParsed.servings) {
@@ -1422,8 +1507,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
               /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
 
-              if (og?.title && isWeakTitle(title)) {
-                safeSetTitle(og.title, url, title, dbg, "tiktok:og:title");
+              if (og?.title && isWeakTitle(titleRef.current) && !isWeakTitle(og.title)) {
+                safeSetTitle(og.title, url, dbg, "tiktok:og:title");
               }
 
               if (og?.description) {
@@ -1456,7 +1541,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
           // generic path
           try {
             const og = await fetchOgForUrl(url);
-            if (og?.title && isWeakTitle(title)) safeSetTitle(og?.title ?? og.title, url, title, dbg, 'og:title');
+            const ogTitle = og?.title;
+            if (ogTitle && isWeakTitle(titleRef.current) && !isWeakTitle(ogTitle)) {
+              safeSetTitle(ogTitle, url, dbg, 'og:title');
+            }
             if (og?.description) {
               const parsed = parseRecipeText(og.description);
               if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
@@ -1475,6 +1563,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
         Alert.alert("Import error", msg || "Could not read that webpage.");
       } finally {
         clearTimeout(watchdog);
+        const storedStrong = (strongTitleRef.current || "").trim();
+        if (storedStrong && !isWeakTitle(storedStrong) && isWeakTitle(titleRef.current)) {
+          setTitle(storedStrong);
+          titleRef.current = storedStrong;
+          dbg("≡ƒ¢í∩╕Å TITLE restored stored strong after import:", JSON.stringify(storedStrong));
+        }
         if (success || gotSomethingForRunRef.current) {
           setHudPhase("acquired");
           await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -1483,7 +1577,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
         setHudVisible(false);
         setSnapVisible(false);
       }
-  }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
+  }, [autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
 
   // -------------- import button flow --------------
   const resolveOg = useCallback(async () => {
@@ -1615,6 +1709,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     ingredientSwipeRefs.current = [];
     stepSwipeRefs.current = [];
     setImg({ kind: "none" });
+    strongTitleRef.current = "";
     hardResetImport();
   }, [hardResetImport]);
   useFocusEffect(useCallback(() => { return () => { resetForm(); }; }, [resetForm]));
@@ -1915,7 +2010,7 @@ function MilitaryImportOverlay({
               return (
                 <View key={label} style={hudBackdrop.stepRow}>
                   <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(47,174,102,0.26)", borderColor: "rgba(47,174,102,0.6)" }, active && { borderColor: "#86efac" }]}>
-                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>\u2022</Text> : null}
+                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
                   </View>
                   <Text style={[hudBackdrop.stepText, done && { color: "#bbf7d0" }, active && { color: COLORS.text, fontWeight: "600" }]}>{label}</Text>
                 </View>
