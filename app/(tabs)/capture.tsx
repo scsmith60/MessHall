@@ -320,18 +320,40 @@ function findDishTitleFromText(source: string, url: string): string | null {
     const raw = (candidate ?? "").trim();
     if (!raw) return;
     const cleaned = normalizeDishTitle(cleanTitle(raw, url));
-    if (isWeakTitle(cleaned)) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
-    const prev = (strongTitleRef.current || "").trim();
-    if (!prev || cleaned.length > prev.length) {
-      strongTitleRef.current = cleaned;
-      dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
+    if (!cleaned) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (empty after clean):", source); return; }
+
+    const cleanedIsWeak = isWeakTitle(cleaned);
+    const currentIsWeak = isWeakTitle(current);
+
+    if (!cleanedIsWeak) {
+      const prev = (strongTitleRef.current || "").trim();
+      if (!prev || cleaned.length > prev.length) {
+        strongTitleRef.current = cleaned;
+        dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
+      }
     }
-    if (!isWeakTitle(current) && current.trim().length >= cleaned.length) {
-      dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
-      return;
+
+    if (!currentIsWeak) {
+      if (cleanedIsWeak) {
+        dbg?.("≡ƒ¢í∩╕Å TITLE kept existing strong over weak candidate:", JSON.stringify(current), "vs", JSON.stringify(cleaned), "from", source);
+        return;
+      }
+      if (current.trim().length >= cleaned.length) {
+        dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
+        return;
+      }
     }
+
     setTitle(cleaned);
-    dbg?.("≡ƒ¢í∩╕Å TITLE set:", source, JSON.stringify(cleaned));
+    dbg?.(
+      cleanedIsWeak ? "≡ƒ¢í∩╕Å TITLE forced weak candidate:" : "≡ƒ¢í∩╕Å TITLE set:",
+      source,
+      JSON.stringify(cleaned)
+    );
+
+    if (cleanedIsWeak && !strongTitleRef.current) {
+      strongTitleRef.current = cleaned;
+    }
   }
 
 
@@ -928,6 +950,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     snapCancelledRef.current = false;
     snapResolverRef.current = null;
     snapRejectRef.current = null;
+    strongTitleRef.current = "";
     setHudVisible(false);
     setImprovingSnap(false);
     setTikTokShots([]);
@@ -1635,6 +1658,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     ingredientSwipeRefs.current = [];
     stepSwipeRefs.current = [];
     setImg({ kind: "none" });
+    strongTitleRef.current = "";
     hardResetImport();
   }, [hardResetImport]);
   useFocusEffect(useCallback(() => { return () => { resetForm(); }; }, [resetForm]));
