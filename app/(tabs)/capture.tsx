@@ -323,7 +323,6 @@ function findDishTitleFromText(source: string, url: string): string | null {
   function safeSetTitle(
     candidate: string | null | undefined,
     url: string,
-    current: string,
     dbg?: (...args:any[])=>void,
     source = "candidate"
   ) {
@@ -827,6 +826,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const [debugLog, setDebugLog] = useState<string>("");
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
+  const titleRef = useRef<string>("");
   // ≡ƒ¢í∩╕Å strongest good title during this import run
   const strongTitleRef = useRef<string>("");
   const [timeMinutes, setTimeMinutes] = useState("");
@@ -836,6 +836,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const [img, setImg] = useState<ImageSourceState>({ kind: "none" });
   const ingredientSwipeRefs = useRef<Array<Swipeable | null>>([]);
   const stepSwipeRefs = useRef<Array<Swipeable | null>>([]);
+
+  useEffect(() => {
+    titleRef.current = title;
+  }, [title]);
 
   const dbg = useCallback((...args: any[]) => {
     try {
@@ -1042,7 +1046,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const tryImageUrl = useCallback(async (rawUrl: string, originUrl: string) => {
     const absolute = absolutizeImageUrl(rawUrl, originUrl);
     if (!absolute) return false;
-    const test = await isValidCandidate(absolute);
+    let test = await isValidCandidate(absolute);
+    if (!test.ok) {
+      const downloaded = await downloadRemoteToLocalImage(absolute, originUrl);
+      if (downloaded) {
+        test = await isValidCandidate(downloaded);
+        if (!test.ok && downloaded) {
+          try { await FileSystem.deleteAsync(downloaded, { idempotent: true }); } catch (e) { }
+        }
+      }
+    }
     if (test.ok && test.useUri) {
       bumpStage(1);
       if (test.useUri.startsWith("http")) setImg({ kind: "url-og", url: originUrl, resolvedImageUrl: test.useUri });
@@ -1073,8 +1086,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
     if (jsonLd) {
       dbg("≡ƒì│ JSON-LD recipe found");
       
-      if (jsonLd.title && isWeakTitle(title)) {
-        safeSetTitle(jsonLd.title, url, title, dbg, "jsonld");
+      if (jsonLd.title && isWeakTitle(titleRef.current) && !isWeakTitle(jsonLd.title)) {
+        safeSetTitle(jsonLd.title, url, dbg, "jsonld");
       }
       
       if (jsonLd.ingredients && jsonLd.ingredients.length >= 2) {
@@ -1107,8 +1120,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
     if (microdata) {
       dbg("≡ƒì│ Microdata recipe found");
       
-      if (microdata.title && isWeakTitle(title)) {
-        safeSetTitle(microdata.title, url, title, dbg, "microdata");
+      if (microdata.title && isWeakTitle(titleRef.current) && !isWeakTitle(microdata.title)) {
+        safeSetTitle(microdata.title, url, dbg, "microdata");
       }
       
       if (microdata.ingredients && microdata.ingredients.length >= 2) {
@@ -1129,7 +1142,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     dbg("ΓÜá∩╕Å Recipe site handler failed:", safeErr(e));
     return false;
   }
-  }, [title, bumpStage, tryImageUrl, dbg, safeErr]);
+  }, [bumpStage, tryImageUrl, dbg, safeErr]);
 
   
 
@@ -1300,8 +1313,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
           try {
             const og = await fetchOgForUrl(url);
             
-            if (og?.title && isWeakTitle(title)) {
-              safeSetTitle(og.title, url, title, dbg, "facebook:og");
+            if (og?.title && isWeakTitle(titleRef.current) && !isWeakTitle(og.title)) {
+              safeSetTitle(og.title, url, dbg, "facebook:og");
             }
             
             if (og?.description) {
@@ -1336,8 +1349,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
             } else {
               // Fallback to OG if structured data failed
               const og = await fetchOgForUrl(url);
-              if (og?.title && isWeakTitle(title)) {
-                safeSetTitle(og.title, url, title, dbg, "recipe-site:og");
+              if (og?.title && isWeakTitle(titleRef.current) && !isWeakTitle(og.title)) {
+                safeSetTitle(og.title, url, dbg, "recipe-site:og");
               }
               if (og?.image) await tryImageUrl(og.image, url);
             }
@@ -1362,7 +1375,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             try {
               const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
               const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
-              if (capTitle) safeSetTitle(capTitle, url, title, dbg, "tiktok:caption");
+              if (capTitle) safeSetTitle(capTitle, url, dbg, "tiktok:caption");
             } catch {}
 
             const domDishTitle = findDishTitleFromText(domPayload?.text || "", url);
@@ -1379,11 +1392,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
             const dishTitleFromCaption = findDishTitleFromText(cap, url);
             if (dishTitleFromCaption) {
-              safeSetTitle(dishTitleFromCaption, url, title, dbg, "tiktok:caption-dish");
+              safeSetTitle(dishTitleFromCaption, url, dbg, "tiktok:caption-dish");
             }
             const captionFallbackTitle = normalizeDishTitle(cleanTitle(captionToNiceTitle(cap), url));
             if (captionFallbackTitle) {
-              safeSetTitle(captionFallbackTitle, url, title, dbg, "tiktok:caption-fallback");
+              safeSetTitle(captionFallbackTitle, url, dbg, "tiktok:caption-fallback");
             }
 
             // A) build clean recipe text from CAPTION
@@ -1408,7 +1421,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             });
 
             if (socialParsed.title) {
-              safeSetTitle(socialParsed.title, url, title, dbg, "tiktok:social-title");
+              safeSetTitle(socialParsed.title, url, dbg, "tiktok:social-title");
             }
 
             if (socialParsed.servings) {
@@ -1478,8 +1491,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
               /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
 
-              if (og?.title && isWeakTitle(title)) {
-                safeSetTitle(og.title, url, title, dbg, "tiktok:og:title");
+              if (og?.title && isWeakTitle(titleRef.current) && !isWeakTitle(og.title)) {
+                safeSetTitle(og.title, url, dbg, "tiktok:og:title");
               }
 
               if (og?.description) {
@@ -1512,7 +1525,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
           // generic path
           try {
             const og = await fetchOgForUrl(url);
-            if (og?.title && isWeakTitle(title)) safeSetTitle(og?.title ?? og.title, url, title, dbg, 'og:title');
+            const ogTitle = og?.title;
+            if (ogTitle && isWeakTitle(titleRef.current) && !isWeakTitle(ogTitle)) {
+              safeSetTitle(ogTitle, url, dbg, 'og:title');
+            }
             if (og?.description) {
               const parsed = parseRecipeText(og.description);
               if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
@@ -1531,6 +1547,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
         Alert.alert("Import error", msg || "Could not read that webpage.");
       } finally {
         clearTimeout(watchdog);
+        const storedStrong = (strongTitleRef.current || "").trim();
+        if (storedStrong && !isWeakTitle(storedStrong) && isWeakTitle(titleRef.current)) {
+          setTitle(storedStrong);
+          titleRef.current = storedStrong;
+          dbg("≡ƒ¢í∩╕Å TITLE restored stored strong after import:", JSON.stringify(storedStrong));
+        }
         if (success || gotSomethingForRunRef.current) {
           setHudPhase("acquired");
           await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -1539,7 +1561,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
         setHudVisible(false);
         setSnapVisible(false);
       }
-  }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
+  }, [autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
 
   // -------------- import button flow --------------
   const resolveOg = useCallback(async () => {
