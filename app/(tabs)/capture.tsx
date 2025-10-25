@@ -272,7 +272,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     // trim site tails and tidy punctuation
     s = s.replace(/\s*[|\u2022\u2013-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
-    s = s.replace(/\s*\.$/, "");
+    s = s.replace(/[.!?]+$/, "");
     s = s.replace(/[\u2013-]/g, "-").replace(/\s+/g, " ").trim();
 
     if (/^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) return "";
@@ -309,9 +309,13 @@ function findDishTitleFromText(source: string, url: string): string | null {
     const firstSentence = s.split(/(?<=\.)\s+/)[0];
     s = firstSentence || s;
 
-    // Tidy whitespace and trailing dot; strip quotes
+    // Tidy whitespace and trailing punctuation; strip quotes
     s = s.replace(/["""']/g, "");
-    s = s.replace(/\s{2,}/g, " ").replace(/\s+\.$/, "").trim();
+    s = s.replace(/\s{2,}/g, " ")
+      .replace(/[.!?]+$/, "")
+      .trim();
+
+    if (!/[A-Za-z]/.test(s)) return "";
 
     return s;
   }
@@ -367,12 +371,15 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
   /** Decide if a TikTok-ish title is junk */
   function isTikTokJunkTitle(s?: string | null) {
-    const t = (s || "").toLowerCase().trim();
-    if (!t) return true;
-    if (t === "tiktok") return true;
-    if (t === "make your day") return true;
-    if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
-    if (t.includes("tiktok") && t.includes("make your day")) return true;
+    const lowered = (s || "").toLowerCase().replace(/[.!?]+$/, "").trim();
+    const normalized = lowered.replace(/[\s|\u2022-]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!normalized) return true;
+    if (normalized === "tiktok") return true;
+    if (normalized === "make your day") return true;
+    if (normalized === "tiktok make your day") return true;
+    if (normalized === "make your day tiktok") return true;
+    const words = normalized.split(" ").filter(Boolean);
+    if (words.length && words.every((w) => w === "tiktok" || w === "make" || w === "your" || w === "day")) return true;
     return false;
   }
 
