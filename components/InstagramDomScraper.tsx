@@ -129,9 +129,15 @@ export default function InstagramDomScraper({
         return total;
       }
 
+      function pickMetaContent(n){
+        try{
+          const selector='meta[name="' + n + '"], meta[property="' + n + '"]';
+          const el=document.querySelector(selector);
+          return el?(el.getAttribute("content")||""):"";
+        }catch(_){ return ""; }
+      }
       function readFromMeta(){
-        const pick=(n)=>{ const el=document.querySelector(\`meta[name="\${n}"], meta[property="\${n}"]\`); return el?(el.getAttribute("content")||""):""; };
-        return pick("og:description") || pick("twitter:description") || pick("description") || "";
+        return pickMetaContent("og:description") || pickMetaContent("twitter:description") || pickMetaContent("description") || "";
       }
       function readFromJsonLd(){
         try{
@@ -195,8 +201,7 @@ export default function InstagramDomScraper({
       }
       function getImageUrl(){
         try{
-          const pick=(n)=>{ const el=document.querySelector(\`meta[name="\${n}"], meta[property="\${n}"]\`); return el?(el.getAttribute("content")||""):""; };
-          let img = pick("og:image") || pick("twitter:image");
+          let img = pickMetaContent("og:image") || pickMetaContent("twitter:image");
           if (img) return img;
           const imgEl = document.querySelector('article img[srcset], article img[src]') || document.querySelector('img[srcset], img[src]');
           if (imgEl) return imgEl.getAttribute('src') || imgEl.getAttribute('srcset') || "";
@@ -241,16 +246,8 @@ export default function InstagramDomScraper({
         const cleanTitle = makeCleanTitle(best||"");
         const pageTitle = (() => {
           try {
-            const pick = (n) => {
-              const selector = 'meta[name="' + n + '"], meta[property="' + n + '"]';
-              const el = document.querySelector(selector);
-              return el ? (el.getAttribute("content") || "") : "";
-            };
-            return pick("og:title") || pick("twitter:title") || document.title || "";
-          } catch(_) { return ""; }
-            const pick=(n)=>{ const el=document.querySelector(`meta[name=\"${n}\"], meta[property=\"${n}\"]`); return el?(el.getAttribute(\"content\")||\"\"):\"\"; };
-            return pick(\"og:title\") || pick(\"twitter:title\") || document.title || \"\";
-          } catch(_) { return \"\"; }
+            return pickMetaContent("og:title") || pickMetaContent("twitter:title") || document.title || "";
+          } catch(_){ return ""; }
         })();
         const imageUrl = getImageUrl();
 
