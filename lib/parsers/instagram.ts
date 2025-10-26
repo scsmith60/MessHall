@@ -1,7 +1,7 @@
 import { ParsedRecipe } from "./types";
 
 const SERVING_PATTERN = /(serves?|servings?|serving size|makes|feeds|enough\s+for|yield|yields|portion|portions?)/i;
-const PROMO_PATTERN = /(^|\s)([#@][\w._-]+)\b|follow\s+|recipes?\b.*(bio|below)|tag\s+us|link\s+in\s+bio|more\s+recipes|messhall\s+app/i;
+const PROMO_PATTERN = /(^|\s)([#@][\w._-]+)\b|follow\s+|please\s+follow|recipes?\b.*(bio|below)|tag\s+us|link\s+in\s+bio|more\s+recipes|messhall\s+app/gi;
 const ING_HEADING_PATTERN = /^(ingredients?|ingredient list|what you need|things you need|for the (?:dough|sauce|crust|filling))/i;
 const STEP_HEADING_PATTERN = /^(steps?|directions?|instructions?|method)\b/i;
 const DISH_DISQUALIFIERS = /(add|mix|combine|stir|whisk|fold|pour|drizzle|cook|bake|heat|preheat|enjoy|subscribe|watch|prep|cook time|minutes|seconds|until|today|order)/i;
@@ -20,7 +20,15 @@ function normalizeLine(line: string): string {
 }
 
 function cleanPromo(line: string): string {
-  return line.replace(PROMO_PATTERN, "").trim();
+  if (!line) return "";
+  if (/\bfollow\b/i.test(line) && /\b(me|us|for|along|more|please)\b/i.test(line)) {
+    return "";
+  }
+  const cleaned = line.replace(PROMO_PATTERN, " ").replace(/\s{2,}/g, " ").trim();
+  if (/^please\b/i.test(cleaned) && cleaned.split(/\s+/).length <= 2) {
+    return "";
+  }
+  return cleaned;
 }
 
 function isServingLine(line: string): boolean {
@@ -122,7 +130,7 @@ export function parseSocialCaption(caption: string, options: InstagramParseOptio
     if (alt) titleCandidate = alt;
   }
 
-  const title = tidyTitle(titleCandidate, fallbackCandidate, options.fallbackTitle);
+  const title = tidyTitle(titleCandidate, options.fallbackTitle ?? null, fallbackCandidate);
   const servings = cleanServings(servingsCandidate);
 
   return {

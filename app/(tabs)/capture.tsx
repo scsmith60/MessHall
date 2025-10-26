@@ -144,8 +144,43 @@ export default function CaptureScreen() {
   }
   function cleanTitle(raw: string, url: string) {
     let s = decodeEntities((raw || "").trim());
+    if (!s) return "";
+    s = s.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'");
+    s = s
+      .replace(/(^|[\s,.;!?()])([#@][\w._-]+)(?=$|[\s,.;!?()])/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
     const host = (() => { try { return new URL(url).hostname; } catch (e) { return ""; } })();
     const brand = host ? hostToBrand(host) : "";
+    const socialPrefixes = [
+      /^(?:reel|video|post|photo) by [^:]+:?\s*/i,
+      /^(?:watch|see|view)(?:\s+(?:how|me|us|my|this|the|our))?[^:]{0,40}[:\-]\s*/i,
+      /^(?:instagram|tiktok|facebook|youtube)\s+(?:reel|video|post|photo)[:\-\s]+/i,
+      /^(?:from|by) [^:]{2,80}:\s*/i,
+    ];
+    for (const re of socialPrefixes) {
+      if (re.test(s)) {
+        const next = s.replace(re, "").trim();
+        if (next.length >= 3) { s = next; break; }
+      }
+    }
+    const socialWrapper = s.match(/^[^:]{2,120}\bon\s+(instagram|tiktok|facebook|youtube|pinterest|snapchat)\b[:\-\s]+/i);
+    if (socialWrapper) {
+      const next = s.slice(socialWrapper[0].length).trim();
+      if (next.length >= 3) s = next;
+    }
+    s = s.replace(/^(instagram|tiktok|facebook|youtube|pinterest)[:\-\s]+/i, "").trim();
+    const quoted = s.match(/['"]([^'"\n]{3,120})['"]/);
+    if (quoted) {
+      s = quoted[1];
+    }
+    const colonParts = s.split(/:\s+/);
+    if (colonParts.length > 1) {
+      const candidate = colonParts[colonParts.length - 1].trim();
+      if (candidate.length >= 3 && candidate.length <= 160) {
+        s = candidate;
+      }
+    }
     const splitters = [" | ", " - ", " \u2022 ", " - "];
     for (const sp of splitters) {
       const parts = s.split(sp);
@@ -154,7 +189,7 @@ export default function CaptureScreen() {
         if (brand && (last === brand || last.includes(brand))) { s = parts.slice(0, -1).join(sp).trim(); break; }
       }
     }
-    s = s.replace(/\s+[\-\|\u2022-]\s*(tiktok|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
+    s = s.replace(/\s+[\-\|\u2022-]\s*(instagram|tiktok|facebook|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
     s = s.replace(/\b\(?video\)?\b\s*$/i, "").trim();
     return s;
   }
@@ -287,11 +322,18 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (!input) return "";
     let s = String(input);
 
+    if (/^(?:please\s+)?follow\b/i.test(s)) return "";
+
     // Friendlier: replace ampersand
     s = s.replace(/&/g, " and ");
 
     // Cut off common promo/lead-in phrases that come after the dish name
-    s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
+    s = s.replace(/(.+?)\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "$1");
+    s = s.trim();
+
+    // Trim hype phrases when they lead the line ("How to make..." -> "make...")
+    s = s.replace(/^(?:How to|Learn to|Let's make|Let us make|We're making|We are making|Watch me make|Watch me cook|Watch us make|Time to make)\s+/i, "");
+    s = s.replace(/^(?:Make this|Make these|Try this|Try these|Watch this|Learn this)\s+/i, "");
 
     // Remove anything after exclamation || question marks
     s = s.replace(/\s*[!?].*$/, "");
@@ -309,34 +351,6 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     return s;
   }
-  /** ≡ƒ¢í∩╕Å safeSetTitle: only accept strong, cleaned titles and remember strongest. */
-  function safeSetTitle(
-    candidate: string | null | undefined,
-    url: string,
-    current: string,
-    dbg?: (...args:any[])=>void,
-    source = "candidate"
-  ) {
-    const raw = (candidate ?? "").trim();
-    if (!raw) return;
-    const cleaned = normalizeDishTitle(cleanTitle(raw, url));
-    if (isWeakTitle(cleaned)) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
-    const prev = (strongTitleRef.current || "").trim();
-    if (!prev || cleaned.length > prev.length) {
-      strongTitleRef.current = cleaned;
-      dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
-    }
-    if (!isWeakTitle(current) && current.trim().length >= cleaned.length) {
-      dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
-      return;
-    }
-    setTitle(cleaned);
-    dbg?.("≡ƒ¢í∩╕Å TITLE set:", source, JSON.stringify(cleaned));
-  }
-
-
-
-
   /** Decide if a TikTok-ish title is junk */
   function isTikTokJunkTitle(s?: string | null) {
     const t = (s || "").toLowerCase().trim();
@@ -353,7 +367,10 @@ function findDishTitleFromText(source: string, url: string): string | null {
     const s = (t || "").trim();
     if (!s) return true;
     if (isTikTokJunkTitle(s)) return true;
+    if (/[#@][\w._-]{2,}/.test(s)) return true;
+    if (/\bfollow\b/i.test(t || "") && /\b(me|us|for|along|more)\b/i.test(t || "")) return true;
     const lower = s.toLowerCase();
+    if (lower === "recipe") return true;
     if (lower === "food network" || lower === "allrecipes" || lower === "youtube") return true;
     // reject generic, non-dish phrases
     if (/^(delicious|tasty|yummy|good|amazing)\s+(food|recipe|dish)$/i.test(s)) return true;
@@ -792,8 +809,37 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const [debugLog, setDebugLog] = useState<string>("");
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
+  const titleRef = useRef<string>(title);
+  useEffect(() => {
+    titleRef.current = title;
+  }, [title]);
   // ≡ƒ¢í∩╕Å strongest good title during this import run
   const strongTitleRef = useRef<string>("");
+  /** ≡ƒ¢í∩╕Å safeSetTitle: only accept strong, cleaned titles and remember strongest. */
+  const safeSetTitle = useCallback((
+    candidate: string | null | undefined,
+    url: string,
+    dbg?: (...args:any[])=>void,
+    source = "candidate"
+  ) => {
+    const raw = (candidate ?? "").trim();
+    if (!raw) return;
+    const cleaned = normalizeDishTitle(cleanTitle(raw, url));
+    if (isWeakTitle(cleaned)) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
+    const prev = (strongTitleRef.current || "").trim();
+    if (!prev || cleaned.length > prev.length) {
+      strongTitleRef.current = cleaned;
+      dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
+    }
+    const current = (titleRef.current || "").trim();
+    if (!isWeakTitle(current) && current.trim().length >= cleaned.length) {
+      dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
+      return;
+    }
+    setTitle(cleaned);
+    titleRef.current = cleaned;
+    dbg?.("≡ƒ¢í∩╕Å TITLE set:", source, JSON.stringify(cleaned));
+  }, [titleRef, strongTitleRef, setTitle]);
   const [timeMinutes, setTimeMinutes] = useState("");
   const [servings, setServings] = useState("");
   const [ingredients, setIngredients] = useState<string[]>([""]);
@@ -1038,7 +1084,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       dbg("≡ƒì│ JSON-LD recipe found");
       
       if (jsonLd.title && isWeakTitle(title)) {
-        safeSetTitle(jsonLd.title, url, title, dbg, "jsonld");
+        safeSetTitle(jsonLd.title, url, dbg, "jsonld");
       }
       
       if (jsonLd.ingredients && jsonLd.ingredients.length >= 2) {
@@ -1072,7 +1118,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       dbg("≡ƒì│ Microdata recipe found");
       
       if (microdata.title && isWeakTitle(title)) {
-        safeSetTitle(microdata.title, url, title, dbg, "microdata");
+        safeSetTitle(microdata.title, url, dbg, "microdata");
       }
       
       if (microdata.ingredients && microdata.ingredients.length >= 2) {
@@ -1093,7 +1139,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     dbg("ΓÜá∩╕Å Recipe site handler failed:", safeErr(e));
     return false;
   }
-  }, [title, bumpStage, tryImageUrl, dbg, safeErr]);
+  }, [title, bumpStage, tryImageUrl, dbg, safeErr, safeSetTitle]);
 
   
 
@@ -1158,6 +1204,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
     let success = false;
     lastResolvedUrlRef.current = url;
 
+    strongTitleRef.current = "";
+    titleRef.current = "";
+    setTitle("");
+
     // STEP 0: try oEmbed title
     try {
         const siteType = detectSiteType(url);
@@ -1173,6 +1223,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
             dbg("[IG] Instagram payload length:", rawCaption.length);
 
             const heroFromDom = igDom?.imageUrl || igDom?.image_url || null;
+            if (igDom?.cleanTitle) {
+              safeSetTitle(igDom.cleanTitle, url, dbg, "instagram:dom-clean");
+            }
+            if (igDom?.pageTitle) {
+              safeSetTitle(igDom.pageTitle, url, dbg, "instagram:meta-title");
+            }
             const cleanedCaption = preCleanIgCaptionForParsing(rawCaption);
             const captionDishTitle = findDishTitleFromText(cleanedCaption, url);
             const fallbackDishTitle = captionDishTitle || normalizeDishTitle(cleanTitle(captionToNiceTitle(cleanedCaption), url));
@@ -1192,9 +1248,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
             ]);
 
             if (parsedInstagram.title) {
-              safeSetTitle(parsedInstagram.title, url, title, dbg, "instagram:caption-title");
+              safeSetTitle(parsedInstagram.title, url, dbg, "instagram:caption-title");
             } else if (captionDishTitle) {
-              safeSetTitle(captionDishTitle, url, title, dbg, "instagram:caption-fallback");
+              safeSetTitle(captionDishTitle, url, dbg, "instagram:caption-fallback");
             }
 
             const partitioned = partitionIngredientRows(mergedIngredients, mergedSteps);
@@ -1232,7 +1288,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             try {
               const og = await fetchOgForUrl(url);
               if (og?.title && isWeakTitle(title)) {
-                safeSetTitle(og.title, url, title, dbg, "instagram:og-title");
+                safeSetTitle(og.title, url, dbg, "instagram:og-title");
               }
               if (og?.image) {
                 await tryImageUrl(og.image, url);
@@ -1250,7 +1306,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const og = await fetchOgForUrl(url);
             
             if (og?.title && isWeakTitle(title)) {
-              safeSetTitle(og.title, url, title, dbg, "facebook:og");
+              safeSetTitle(og.title, url, dbg, "facebook:og");
             }
             
             if (og?.description) {
@@ -1286,7 +1342,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
               // Fallback to OG if structured data failed
               const og = await fetchOgForUrl(url);
               if (og?.title && isWeakTitle(title)) {
-                safeSetTitle(og.title, url, title, dbg, "recipe-site:og");
+                safeSetTitle(og.title, url, dbg, "recipe-site:og");
               }
               if (og?.image) await tryImageUrl(og.image, url);
             }
@@ -1297,6 +1353,22 @@ function stitchBrokenSteps(lines: string[]): string[] {
         } else if (siteType === "tiktok") {
           // EXISTING TIKTOK PATH (keep all your existing TikTok code here)
           dbg("≡ƒÄ» TikTok detected - unified import path begins");
+          let resolvedTikTokUrlForTitle = url;
+          try {
+            const { finalUrl } = await resolveTikTokEmbedUrl(url);
+            if (finalUrl) resolvedTikTokUrlForTitle = finalUrl;
+          } catch (err) {
+            dbg("Γ¥î TikTok final URL lookup failed:", safeErr(err));
+          }
+
+          try {
+            const oembedTitle = await getTikTokOEmbedTitle(resolvedTikTokUrlForTitle);
+            if (oembedTitle) {
+              safeSetTitle(oembedTitle, resolvedTikTokUrlForTitle, dbg, "tiktok:oembed-title");
+            }
+          } catch (err) {
+            dbg("Γ¥î TikTok oEmbed title failed:", safeErr(err));
+          }
           // STEP 1: DOM scrape
           let domPayload: { text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string } | null = null;
           try {
@@ -1311,7 +1383,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             try {
               const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
               const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
-              if (capTitle) safeSetTitle(capTitle, url, title, dbg, "tiktok:caption");
+              if (capTitle) safeSetTitle(capTitle, url, dbg, "tiktok:caption");
             } catch {}
           } catch (e) {
             dbg("Γ¥î STEP 1 (DOM scraper) failed:", safeErr(e));
@@ -1323,11 +1395,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
             const dishTitleFromCaption = findDishTitleFromText(cap, url);
             if (dishTitleFromCaption) {
-              safeSetTitle(dishTitleFromCaption, url, title, dbg, "tiktok:caption-dish");
+              safeSetTitle(dishTitleFromCaption, url, dbg, "tiktok:caption-dish");
             }
             const captionFallbackTitle = normalizeDishTitle(cleanTitle(captionToNiceTitle(cap), url));
             if (captionFallbackTitle) {
-              safeSetTitle(captionFallbackTitle, url, title, dbg, "tiktok:caption-fallback");
+              safeSetTitle(captionFallbackTitle, url, dbg, "tiktok:caption-fallback");
             }
 
             // A) build clean recipe text from CAPTION
@@ -1352,7 +1424,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             });
 
             if (socialParsed.title) {
-              safeSetTitle(socialParsed.title, url, title, dbg, "tiktok:social-title");
+              safeSetTitle(socialParsed.title, url, dbg, "tiktok:social-title");
             }
 
             if (socialParsed.servings) {
@@ -1423,7 +1495,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
               /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
 
               if (og?.title && isWeakTitle(title)) {
-                safeSetTitle(og.title, url, title, dbg, "tiktok:og:title");
+                safeSetTitle(og.title, url, dbg, "tiktok:og:title");
               }
 
               if (og?.description) {
@@ -1456,7 +1528,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           // generic path
           try {
             const og = await fetchOgForUrl(url);
-            if (og?.title && isWeakTitle(title)) safeSetTitle(og?.title ?? og.title, url, title, dbg, 'og:title');
+            if (og?.title && isWeakTitle(title)) safeSetTitle(og?.title ?? og.title, url, dbg, 'og:title');
             if (og?.description) {
               const parsed = parseRecipeText(og.description);
               if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
@@ -1483,7 +1555,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
         setHudVisible(false);
         setSnapVisible(false);
       }
-  }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
+  }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport, safeSetTitle]);
 
   // -------------- import button flow --------------
   const resolveOg = useCallback(async () => {
@@ -1612,11 +1684,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
     setPastedUrl(""); setTitle(""); setTimeMinutes(""); setServings("");
     setIngredients([""]);
     setSteps([""]);
+    titleRef.current = "";
+    strongTitleRef.current = "";
     ingredientSwipeRefs.current = [];
     stepSwipeRefs.current = [];
     setImg({ kind: "none" });
     hardResetImport();
-  }, [hardResetImport]);
+  }, [hardResetImport, titleRef, strongTitleRef]);
   useFocusEffect(useCallback(() => { return () => { resetForm(); }; }, [resetForm]));
 
   // -------------- RENDER --------------
