@@ -248,6 +248,9 @@ export default function InstagramDomScraper({
             };
             return pick("og:title") || pick("twitter:title") || document.title || "";
           } catch(_) { return ""; }
+            const pick=(n)=>{ const el=document.querySelector(`meta[name=\"${n}\"], meta[property=\"${n}\"]`); return el?(el.getAttribute(\"content\")||\"\"):\"\"; };
+            return pick(\"og:title\") || pick(\"twitter:title\") || document.title || \"\";
+          } catch(_) { return \"\"; }
         })();
         const imageUrl = getImageUrl();
 
