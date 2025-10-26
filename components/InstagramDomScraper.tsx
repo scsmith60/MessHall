@@ -17,6 +17,7 @@ type ResultPayload = {
   text: string;
   imageUrl?: string;
   cleanTitle?: string;
+  pageTitle?: string;
   debug: string;
 };
 
@@ -129,7 +130,7 @@ export default function InstagramDomScraper({
       }
 
       function readFromMeta(){
-        const pick=(n)=>{ const el=document.querySelector(\`meta[name="\${n}"], meta[property="\${n}"]\`); return el?(el.getAttribute("content")||""):""; };
+        const pick=(n)=>{ const el=document.querySelector('meta[name="'+n+'"], meta[property="'+n+'"]'); return el?(el.getAttribute("content")||""):""; };
         return pick("og:description") || pick("twitter:description") || pick("description") || "";
       }
       function readFromJsonLd(){
@@ -194,7 +195,7 @@ export default function InstagramDomScraper({
       }
       function getImageUrl(){
         try{
-          const pick=(n)=>{ const el=document.querySelector(\`meta[name="\${n}"], meta[property="\${n}"]\`); return el?(el.getAttribute("content")||""):""; };
+          const pick=(n)=>{ const el=document.querySelector('meta[name="'+n+'"], meta[property="'+n+'"]'); return el?(el.getAttribute("content")||""):""; };
           let img = pick("og:image") || pick("twitter:image");
           if (img) return img;
           const imgEl = document.querySelector('article img[srcset], article img[src]') || document.querySelector('img[srcset], img[src]');
@@ -238,6 +239,16 @@ export default function InstagramDomScraper({
         const cleanedCaption = stripIGBoilerplate(best||"");
         const safe = cleanedCaption.slice(0, MAX_CAPTION);
         const cleanTitle = makeCleanTitle(best||"");
+        const pageTitle = (() => {
+          try {
+            const pick = (n) => {
+              const selector = 'meta[name="' + n + '"], meta[property="' + n + '"]';
+              const el = document.querySelector(selector);
+              return el ? (el.getAttribute("content") || "") : "";
+            };
+            return pick("og:title") || pick("twitter:title") || document.title || "";
+          } catch(_) { return ""; }
+        })();
         const imageUrl = getImageUrl();
 
         finish({
@@ -246,6 +257,7 @@ export default function InstagramDomScraper({
           comments: [], bestComment: "",
           text: safe,
           imageUrl, cleanTitle,
+          pageTitle,
           debug: \`meta:\${metaCap.length} ld:\${ldCap.length} dom:\${domCap.length}\`
         });
       }
@@ -266,6 +278,7 @@ export default function InstagramDomScraper({
         text: String(data.text || ""),
         imageUrl: data.imageUrl ? String(data.imageUrl) : undefined,
         cleanTitle: data.cleanTitle ? String(data.cleanTitle) : undefined,
+        pageTitle: data.pageTitle ? String(data.pageTitle) : undefined,
         debug: String(data.debug || ""),
       };
       onResult(out);
