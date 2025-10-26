@@ -130,7 +130,7 @@ export default function InstagramDomScraper({
       }
 
       function readFromMeta(){
-        const pick=(n)=>{ const el=document.querySelector('meta[name="'+n+'"], meta[property="'+n+'"]'); return el?(el.getAttribute("content")||""):""; };
+        const pick=(n)=>{ const el=document.querySelector(\`meta[name="\${n}"], meta[property="\${n}"]\`); return el?(el.getAttribute("content")||""):""; };
         return pick("og:description") || pick("twitter:description") || pick("description") || "";
       }
       function readFromJsonLd(){
@@ -195,7 +195,7 @@ export default function InstagramDomScraper({
       }
       function getImageUrl(){
         try{
-          const pick=(n)=>{ const el=document.querySelector('meta[name="'+n+'"], meta[property="'+n+'"]'); return el?(el.getAttribute("content")||""):""; };
+          const pick=(n)=>{ const el=document.querySelector(\`meta[name="\${n}"], meta[property="\${n}"]\`); return el?(el.getAttribute("content")||""):""; };
           let img = pick("og:image") || pick("twitter:image");
           if (img) return img;
           const imgEl = document.querySelector('article img[srcset], article img[src]') || document.querySelector('img[srcset], img[src]');
@@ -248,6 +248,9 @@ export default function InstagramDomScraper({
             };
             return pick("og:title") || pick("twitter:title") || document.title || "";
           } catch(_) { return ""; }
+            const pick=(n)=>{ const el=document.querySelector(`meta[name=\"${n}\"], meta[property=\"${n}\"]`); return el?(el.getAttribute(\"content\")||\"\"):\"\"; };
+            return pick(\"og:title\") || pick(\"twitter:title\") || document.title || \"\";
+          } catch(_) { return \"\"; }
         })();
         const imageUrl = getImageUrl();
 
