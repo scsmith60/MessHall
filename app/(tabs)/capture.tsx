@@ -144,8 +144,39 @@ export default function CaptureScreen() {
   }
   function cleanTitle(raw: string, url: string) {
     let s = decodeEntities((raw || "").trim());
+    if (!s) return "";
+    s = s.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'");
     const host = (() => { try { return new URL(url).hostname; } catch (e) { return ""; } })();
     const brand = host ? hostToBrand(host) : "";
+    const socialPrefixes = [
+      /^(?:reel|video|post|photo) by [^:]+:?\s*/i,
+      /^(?:watch|see|view)(?:\s+(?:how|me|us|my|this|the|our))?[^:]{0,40}[:\-]\s*/i,
+      /^(?:instagram|tiktok|facebook|youtube)\s+(?:reel|video|post|photo)[:\-\s]+/i,
+      /^(?:from|by) [^:]{2,80}:\s*/i,
+    ];
+    for (const re of socialPrefixes) {
+      if (re.test(s)) {
+        const next = s.replace(re, "").trim();
+        if (next.length >= 3) { s = next; break; }
+      }
+    }
+    const socialWrapper = s.match(/^[^:]{2,120}\bon\s+(instagram|tiktok|facebook|youtube|pinterest|snapchat)\b[:\-\s]+/i);
+    if (socialWrapper) {
+      const next = s.slice(socialWrapper[0].length).trim();
+      if (next.length >= 3) s = next;
+    }
+    s = s.replace(/^(instagram|tiktok|facebook|youtube|pinterest)[:\-\s]+/i, "").trim();
+    const quoted = s.match(/['"]([^'"\n]{3,120})['"]/);
+    if (quoted) {
+      s = quoted[1];
+    }
+    const colonParts = s.split(/:\s+/);
+    if (colonParts.length > 1) {
+      const candidate = colonParts[colonParts.length - 1].trim();
+      if (candidate.length >= 3 && candidate.length <= 160) {
+        s = candidate;
+      }
+    }
     const splitters = [" | ", " - ", " \u2022 ", " - "];
     for (const sp of splitters) {
       const parts = s.split(sp);
@@ -154,7 +185,7 @@ export default function CaptureScreen() {
         if (brand && (last === brand || last.includes(brand))) { s = parts.slice(0, -1).join(sp).trim(); break; }
       }
     }
-    s = s.replace(/\s+[\-\|\u2022-]\s*(tiktok|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
+    s = s.replace(/\s+[\-\|\u2022-]\s*(instagram|tiktok|facebook|food\s*network|allrecipes|youtube)\s*$/i, "").trim();
     s = s.replace(/\b\(?video\)?\b\s*$/i, "").trim();
     return s;
   }
