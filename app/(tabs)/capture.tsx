@@ -1218,6 +1218,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
             if (igDom?.cleanTitle) {
               safeSetTitle(igDom.cleanTitle, url, dbg, "instagram:dom-clean");
             }
+            if (igDom?.pageTitle) {
+              safeSetTitle(igDom.pageTitle, url, dbg, "instagram:meta-title");
+            }
             const cleanedCaption = preCleanIgCaptionForParsing(rawCaption);
             const captionDishTitle = findDishTitleFromText(cleanedCaption, url);
             const fallbackDishTitle = captionDishTitle || normalizeDishTitle(cleanTitle(captionToNiceTitle(cleanedCaption), url));
