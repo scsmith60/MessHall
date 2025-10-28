@@ -1,13 +1,8 @@
-// components/InstagramDomScraper.tsx
-//
-// 🧒 ELI5: We open the Instagram page in a tiny browser.
-// We stop any "jump to app" links, scroll a little, click a FEW "more" buttons,
-// read the caption, make a tiny clean title like "Shrimp Scampi", try to grab the image,
-// and send it back safely (not too big).
-
+// InstagramDomScraper.tsx - Updated with enhanced title extraction
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from "react-native";
 import WebView, { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
+import { extractRecipeTitle } from "../lib/titleExtractor";
 
 type ResultPayload = {
   ok: boolean;
@@ -17,6 +12,7 @@ type ResultPayload = {
   text: string;
   imageUrl?: string;
   cleanTitle?: string;
+  pageTitle?: string;
   debug: string;
 };
 
@@ -128,9 +124,15 @@ export default function InstagramDomScraper({
         return total;
       }
 
+      function pickMetaContent(n){
+        try{
+          const selector='meta[name="' + n + '"], meta[property="' + n + '"]';
+          const el=document.querySelector(selector);
+          return el?(el.getAttribute("content")||""):"";
+        }catch(_){ return ""; }
+      }
       function readFromMeta(){
-          const pick=(n)=>{ const el=document.querySelector('meta[name="' + n + '"], meta[property="' + n + '"]'); return el ? (el.getAttribute(\"content\") || \"\") : \"\"; };
-        return pick("og:description") || pick("twitter:description") || pick("description") || "";
+        return pickMetaContent("og:description") || pickMetaContent("twitter:description") || pickMetaContent("description") || "";
       }
       function readFromJsonLd(){
         try{
@@ -149,64 +151,154 @@ export default function InstagramDomScraper({
       }
       function readFromDOM(){
         const root = getPostRoot();
-        const sels = ['h1[dir="auto"]','span[dir="auto"]','div[role="dialog"] span[dir="auto"]','article h1','article span','span._ap3a','div.C4VMK span'];
-        let best="";
-        for (const s of sels){
-          for (const el of qsa(s).filter(el => root.contains(el))){
-            const t=(el.innerText||el.textContent||"").trim();
-            if (t && t.length>best.length) best=t;
+        // Updated selectors based on new Instagram DOM structure
+        const sels = [
+          'h1[dir="auto"]',
+          'span[dir="auto"]',
+          'div[role="dialog"] span[dir="auto"]',
+          'article h1',
+          'article span',
+          'span._ap3a',
+          'div.C4VMK span',
+          // New selectors for latest IG structure
+          'div._a9zs',
+          'div._aagv',
+          'div[data-testid="post-content-root"] span',
+          'div[role="button"] div[dir="auto"]',
+          'div._a9zr span',
+          'div._ae5q span',
+          // Backup generic selectors
+          'article div[role="button"] > div',
+          'article div[tabindex="-1"] > div'
+        ];
+        
+        let best = "";
+        // First try direct caption containers
+        for (const s of sels) {
+          for (const el of qsa(s).filter(el => root.contains(el))) {
+            const t = (el.innerText || el.textContent || "").trim();
+            // Prefer longer content with recipe indicators
+            const score = t.length + (/ingredients|recipe|directions|steps/i.test(t) ? 1000 : 0);
+            if (t && score > (best.length + (/ingredients|recipe|directions|steps/i.test(best) ? 1000 : 0))) {
+              best = t;
+            }
           }
         }
-        if (!best){
-          const alts = qsa("img[alt]").map(img=>String(img.getAttribute("alt")||"").trim()).filter(Boolean);
-          if (alts.length) best = alts.sort((a,b)=>b.length-a.length)[0];
+        
+        // If no good caption found, try image alts and aria labels
+        if (!best || best.length < 50) {
+          const altSources = [
+            ...qsa("img[alt]").map(img => img.getAttribute("alt")),
+            ...qsa("[aria-label]").map(el => el.getAttribute("aria-label")),
+            ...qsa("figure figcaption").map(el => el.textContent)
+          ].filter(Boolean).map(String);
+          
+          if (altSources.length) {
+            const altBest = altSources.sort((a, b) => {
+              const scoreA = a.length + (/ingredients|recipe|directions|steps/i.test(a) ? 1000 : 0);
+              const scoreB = b.length + (/ingredients|recipe|directions|steps/i.test(b) ? 1000 : 0);
+              return scoreB - scoreA;
+            })[0];
+            if (altBest && (!best || altBest.length > best.length)) {
+              best = altBest;
+            }
+          }
         }
+        
         return best;
       }
 
       function stripIGBoilerplate(s){
         if (!s) return s;
-        let out = String(s);
-        out = out.replace(/^\s*\d[\d,.\s]*\s+likes?,?\s*\d[\d,.\s]*\s+comments?\s*-\s*[^:]+:\s*/i, "");
-        out = out.replace(/^\s*\d[\d,.\s]*\s+likes?.*$/gim, "");
-        out = out.replace(/^\s*\d[\d,.\s]*\s+comments?.*$/gim, "");
-        out = out.replace(/^\s*instagram\s+video\s*$/gim, "");
-        return out.trim();
+        s = s.replace(/^\\s*\\d[\\d,.\\s]*\\s+likes?,?\\s*\\d[\\d,.\\s]*\\s+comments?\\s*-\\s*[^:]+:\\s*/i, "");
+        s = s.replace(/^\\s*\\d[\\d,.\\s]*\\s+likes?\\s*$/gim, "").replace(/^\\s*\\d[\\d,.\\s]*\\s+comments?\\s*$/gim, "");
+        return s.trim();
       }
-      function makeCleanTitle(caption){
-        let c = stripIGBoilerplate(String(caption||""));
-        // 1) quoted phrase is best
-        const q = c.match(/[“"']([^“"']{3,80})[”"']/);
-        if (q && q[1]) c = q[1];
-        // 2) then split before ~ or newline
-        c = c.split(/\\s*~\\s*|\\r?\\n/)[0].trim();
-        // 3) drop leading handles/hashtags (with or without trailing space)
-        c = c.replace(/^(?:[#@][\\w._-]+\\b[\\s,:-]*){1,4}/, "").trim();
-        // 4) if still looks like a handle, nuke it
-        if (/^[@#][\\w._-]+$/.test(c)) c = "";
-        // 5) try to pull two-to-five capitalized words as a dish (e.g. Shrimp Scampi)
-        if (!c) {
-          const m = String(caption||"").match(/\\b([A-Z][a-z]+\\s+(?:[A-Z][a-z]+\\s+){0,3}[A-Z][a-z]+)\\b/);
-          if (m) c = m[1];
+      
+      // NEW: Using shared title extraction logic
+      function extractTitle(text) {
+        // Import the shared logic
+        const RecipeWords = /\\b(?:recipe|pasta|bread|sauce|chicken|beef|pork|fish|soup|salad|sandwich|cake|cookies)\\b/i;
+        const IntroVerbs = /^(?:made|making|try|trying|cook|cooking|baking|how\\s+to\\s+make)\\s+/i;
+        const HandlesTags = /^(?:[#@][\\w._-]+\\b[\\s,:-]*){1,4}/;
+        
+        const cleanText = stripIGBoilerplate(text);
+        
+        // Strategy 1: Recipe-specific patterns
+        const recipeMatches = [
+          // "Recipe for [dish]" or "[dish] recipe"
+          cleanText.match(/(?:recipe(?:\\s+for)?[\\s:-]+)?([^.,!?\\n@#]{5,60}(?:\\s+recipe\\b))/i),
+          // Dish name followed by recipe keyword
+          cleanText.match(/([^.,!?\\n@#]{5,60})\\s+(?:recipe|pasta|bread|sauce)\\b/i),
+          // "How to make [dish]"
+          cleanText.match(/how\\s+to\\s+make\\s+([^.,!?\\n@#]{5,60})/i),
+          // Recipe-like phrases after "this" or "delicious"
+          cleanText.match(/\\b(?:this|delicious|homemade|easy)\\s+([^.,!?\\n@#]{5,50}(?:\\b(?:recipe|pasta|bread|sauce|chicken|beef|pork|fish|soup|salad|sandwich|cake|cookies)\\b))/i)
+        ];
+        
+        for (const match of recipeMatches) {
+          if (match && match[1]) {
+            const candidate = cleanUpTitle(match[1]);
+            if (isValidTitle(candidate)) return candidate;
+          }
+        }
+
+        // Strategy 2: Quoted text
+        const quotedMatch = cleanText.match(/[""']([^""']{3,80})[""']/);
+        if (quotedMatch && quotedMatch[1]) {
+          const candidate = cleanUpTitle(quotedMatch[1]);
+          if (isValidTitle(candidate)) return candidate;
+        }
+
+        // Strategy 3: First line or sentence that looks recipe-like
+        const lines = cleanText.split(/\\s*[~|\\n\\u2022]\\s*/);
+        for (const line of lines) {
+          const candidate = cleanUpTitle(line);
+          if (isValidTitle(candidate) && RecipeWords.test(candidate)) {
+            return candidate;
+          }
+        }
+
+        // Strategy 4: Capitalized phrases
+        const capitalMatch = cleanText.match(/\\b([A-Z][a-z]+(?:\\s+[A-Za-z][a-z]+){1,4})\\b(?=\\s|$)/);
+        if (capitalMatch && capitalMatch[1]) {
+          const candidate = cleanUpTitle(capitalMatch[1]);
+          if (isValidTitle(candidate)) return candidate;
+        }
+
+        // Strategy 5: First non-weak line as fallback
+        for (const line of lines) {
+          const candidate = cleanUpTitle(line);
+          if (isValidTitle(candidate)) return candidate;
+        }
+
+        return "Recipe";
       }
-      // 6) final tidy
-      c = c.replace(/[“”‘’"<>]/g,"").trim();
-      if (c.length>72) c = c.slice(0,72).trim();
-      return c || "";
+
+      function cleanUpTitle(text) {
+        return text
+          .replace(HandlesTags, "") // Remove leading hashtags/handles
+          .replace(IntroVerbs, "") // Remove intro verbs
+          .replace(/\\s*[.,!?]\\s*$/, "") // Remove trailing punctuation
+          .replace(/[""''"<>]/g, "") // Remove quotes and brackets
+          .trim();
       }
+
+      function isValidTitle(text) {
+        const WeakTitles = /^(?:recipe|food|yummy|delicious|tasty|homemade|amazing|good|tiktok|instagram|youtube|facebook|pinterest|food\\s*network|allrecipes)$/i;
+        
+        const clean = text.trim();
+        if (!clean || clean.length < 3 || clean.length > 72) return false;
+        if (WeakTitles.test(clean)) return false;
+        if (/^[@#][\\w._-]+$/.test(clean)) return false; // Just a handle
+        if (/^\\d{6,}$/.test(clean)) return false; // Just numbers
+        if (/^\\s*ingredients?:/i.test(clean)) return false; // Ingredients list
+        return true;
+      }
+
       function getImageUrl(){
         try{
-          const pick=(n)=>{ const el=document.querySelector('meta[name="' + n + '"], meta[property="' + n + '"]'); return el ? (el.getAttribute("content") || "") : ""; };
-          const videoEl = document.querySelector('article video') || document.querySelector('video');
-          if (videoEl){
-            const poster = videoEl.getAttribute('poster');
-            if (poster) return poster;
-            const src = videoEl.getAttribute('src');
-            if (src) return src;
-            const source = videoEl.querySelector('source[src]');
-            if (source) return source.getAttribute('src') || '';
-          }
-          let img = pick('og:image') || pick('twitter:image');
+          let img = pickMetaContent("og:image") || pickMetaContent("twitter:image");
           if (img) return img;
           const imgEl = document.querySelector('article img[srcset], article img[src]') || document.querySelector('img[srcset], img[src]');
           if (imgEl) return imgEl.getAttribute('src') || imgEl.getAttribute('srcset') || "";
@@ -240,24 +332,35 @@ export default function InstagramDomScraper({
         const metaCap=readFromMeta(), ldCap=readFromJsonLd(), domCap=readFromDOM();
         send("log",{msg:"sources", extra:{ domLen:domCap.length, ldLen:ldCap.length, metaLen:metaCap.length }});
 
-        const candidates=[metaCap, ldCap, domCap].filter(Boolean).map(t=>({t, s:scoreRecipeText(t)}));
+        const candidates=[metaCap, ldCap, domCap].filter(Boolean).map(t=>({
+          t,
+          s: scoreRecipeText(t),
+          isRecipeTitle: /recipe|pasta|bread|cake|chicken|beef|pork|fish|soup|salad|sandwich/i.test(t)
+        }));
+        // Promote recipe-like titles
+        candidates.forEach(c => { if (c.isRecipeTitle) c.s += 300; });
         candidates.sort((a,b)=>(b.s-a.s) || (b.t.length-a.t.length));
         const best=candidates[0]?.t || "";
-        send("log",{msg:"result", extra:{ capLen:best.length, score:candidates[0]?.s || 0 }});
+        send("log",{msg:"result", extra:{ capLen:best.length, score:candidates[0]?.s || 0, isRecipe:candidates[0]?.isRecipeTitle }});
 
         const MAX_CAPTION=4000;
         const cleanedCaption = stripIGBoilerplate(best||"");
         const safe = cleanedCaption.slice(0, MAX_CAPTION);
-        const cleanTitle = makeCleanTitle(best||"");
+        const cleanTitle = extractTitle(best||"");
+        const pageTitle = (() => {
+          try {
+            return pickMetaContent("og:title") || pickMetaContent("twitter:title") || document.title || "";
+          } catch(_){ return ""; }
+        })();
         const imageUrl = getImageUrl();
-        const articleText = stripIGBoilerplate((getPostRoot()?.innerText || "").slice(0, MAX_CAPTION));
 
         finish({
-          ok: (safe.length>0) || (articleText.length>0),
+          ok: safe.length>0,
           caption: safe,
           comments: [], bestComment: "",
-          text: articleText || safe,
+          text: safe,
           imageUrl, cleanTitle,
+          pageTitle,
           debug: \`meta:\${metaCap.length} ld:\${ldCap.length} dom:\${domCap.length}\`
         });
       }
@@ -278,6 +381,7 @@ export default function InstagramDomScraper({
         text: String(data.text || ""),
         imageUrl: data.imageUrl ? String(data.imageUrl) : undefined,
         cleanTitle: data.cleanTitle ? String(data.cleanTitle) : undefined,
+        pageTitle: data.pageTitle ? String(data.pageTitle) : undefined,
         debug: String(data.debug || ""),
       };
       onResult(out);

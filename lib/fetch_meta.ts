@@ -17,6 +17,7 @@ export type RecipeMeta = {
   url: string;
   title?: string;
   image?: string;
+  needsClientRender?: boolean;
   ingredients: string[];
   steps: string[];
 };
@@ -41,11 +42,33 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
   }
 
   // 1) Blog structured data first (instant win when present)
+  let fallbackPartial: PartialPick = {};
+
   const fromLdRecipe = parseJsonLdRecipe(html);
-  if (fromLdRecipe) return finalize(url, fromLdRecipe, html, 'json-ld:Recipe');
+  if (fromLdRecipe) {
+    fallbackPartial = { ...fallbackPartial, ...fromLdRecipe };
+    if (hasMeaningfulRecipeData(fromLdRecipe)) {
+      return finalize(url, fromLdRecipe, html, 'json-ld:Recipe');
+    }
+  }
 
   const fromMicro = parseMicrodata(html);
-  if (fromMicro) return finalize(url, fromMicro, html, 'microdata');
+  if (fromMicro) {
+    fallbackPartial = { ...fallbackPartial, ...fromMicro };
+    if (hasMeaningfulRecipeData(fromMicro)) {
+      return finalize(url, fromMicro, html, 'microdata');
+    }
+  }
+
+  if (/gordonramsay\.com/i.test(url)) {
+    const gr = parseGordonRamsay(html, url);
+    if (gr) {
+      fallbackPartial = { ...fallbackPartial, ...gr };
+      if (hasMeaningfulRecipeData(gr)) {
+        return finalize(url, fallbackPartial, html, 'gordonramsay');
+      }
+    }
+  }
 
   // 2) TikTok focused paths (videos AND photos)
   if (isTikTok(url)) {
@@ -114,13 +137,8 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
   }
 
   // 6) fallback basics
-  return {
-    url,
-    title: pickBestTitle(html, url),
-    image: pickOgImage(html) || undefined,
-    ingredients: [],
-    steps: [],
-  };
+  const extracted = extractTitle(html, url);
+  return finalize(url, fallbackPartial, html, "fallback");
 }
 
 /* --------------------------- normalize + finalize --------------------------- */
@@ -131,7 +149,8 @@ function finalize(url: string, p: PartialPick, html: string, source: string): Re
   d('finalize from', source);
 
   // 1) robust title pass (JSON-LD/OG/Twitter/TikTok desc → cleaned)
-  const t = extractTitle(html, url)?.title;
+  const extracted = extractTitle(html, url);
+  const t = extracted?.title;
   const title = (p.title && p.title.trim()) || (t && t.trim()) || guessTitle(html) || undefined;
 
   // 2) image from OG/Twitter (unless caller already sent one)
@@ -145,6 +164,12 @@ function finalize(url: string, p: PartialPick, html: string, source: string): Re
   const steps = Array.isArray(p.steps) ? p.steps.map(s => String(s).trim()).filter(Boolean) : [];
 
   return { url, title, image, ingredients: canonical, steps };
+}
+
+function hasMeaningfulRecipeData(p: PartialPick): boolean {
+  const ingCount = p.ingredients?.length ?? 0;
+  const stepCount = p.steps?.length ?? 0;
+  return ingCount >= 2 || stepCount >= 1;
 }
 
 // Like I'm 5: lines look "real" if they have numbers/units ("1 cup").
@@ -328,19 +353,170 @@ function extractAnyTikTokDataJSON(html: string): any | null {
 }
 
 // 3) Turn that JSON into a caption (works for videos AND photos)
+function collectTikTokStructs(node: any, out: any[], seen: Set<any>, depth: number) {
+  if (!node || typeof node !== 'object') return;
+  if (seen.has(node) || depth > 6) return;
+  seen.add(node);
+  if (node.itemStruct && typeof node.itemStruct === 'object') {
+    out.push(node.itemStruct);
+  }
+  if (node.itemInfo && typeof node.itemInfo === 'object') {
+    collectTikTokStructs(node.itemInfo, out, seen, depth + 1);
+  }
+  if (node.state && typeof node.state === 'object') {
+    collectTikTokStructs(node.state, out, seen, depth + 1);
+  }
+  if (node.preload && typeof node.preload === 'object') {
+    collectTikTokStructs(node.preload, out, seen, depth + 1);
+  }
+  for (const val of Object.values(node)) {
+    if (val && typeof val === 'object') {
+      collectTikTokStructs(val, out, seen, depth + 1);
+    }
+  }
+}
+
+function parseGordonRamsay(html: string, url: string): { title?: string; ingredients: string[]; steps: string[]; image?: string } | null {
+  d('gordonramsay parse', url);
+  const clean = (s: string) =>
+    decodeHtmlEntities(s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+      .replace(/\u00A0/g, " ")
+      .replace(/\uFFFD/g, "")
+      .trim();
+
+  const asideMatch = html.match(/<aside[^>]*class=["'][^"']*recipe-ingredients[^"']*["'][^>]*>([\s\S]*?)<\/aside>/i);
+  const articleMatch = html.match(/<article[^>]*class=["'][^"']*recipe-instructions[^"']*["'][^>]*>([\s\S]*?)<\/article>/i);
+
+  if (!asideMatch && !articleMatch) return null;
+
+  const ingredients: string[] = [];
+  if (asideMatch) {
+    const section = asideMatch[1];
+    for (const item of section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
+      let text = clean(item[1]);
+      text = text.replace(/^\d+\.\s*/, "");
+      if (text) ingredients.push(text);
+    }
+  }
+
+  const steps: string[] = [];
+  if (articleMatch) {
+    const section = articleMatch[1];
+    for (const item of section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
+      const text = clean(item[1]);
+      if (text) steps.push(text);
+    }
+    if (!steps.length) {
+      const paragraphs = section.match(/<p[^>]*>([\s\S]*?)<\/p>/gi) || [];
+      for (const p of paragraphs) {
+        const text = clean(p);
+        if (text) steps.push(text);
+      }
+    }
+  }
+
+  d('gordonramsay counts', { ingredients: ingredients.length, steps: steps.length });
+  if (!ingredients.length && !steps.length) return null;
+
+  let image: string | undefined;
+  const heroMatch = html.match(/<img[^>]+src=["']([^"']*CroppedFocusedImage[^"']+)["'][^>]*>/i);
+  if (heroMatch?.[1]) {
+    const src = heroMatch[1].startsWith("http")
+      ? heroMatch[1]
+      : `https://www.gordonramsay.com${heroMatch[1]}`;
+    image = src;
+  }
+
+  return {
+    ingredients,
+    steps,
+    image,
+  };
+}
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&deg;/gi, "°");
+}
+
 function captionFromAnyTikTokJSON(json: any): string | null {
   if (!json) return null;
+
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: any) => {
+    if (!value) return;
+    const str = Array.isArray(value) ? value : [value];
+    for (const entry of str) {
+      if (entry == null) continue;
+      const text =
+        typeof entry === 'string'
+          ? entry
+          : typeof entry === 'number'
+          ? String(entry)
+          : typeof entry === 'object' && entry !== null && typeof entry.desc === 'string'
+          ? entry.desc
+          : typeof entry === 'object' && entry !== null && typeof entry.caption === 'string'
+          ? entry.caption
+          : typeof entry === 'object' && entry !== null && typeof entry.title === 'string'
+          ? entry.title
+          : null;
+      if (!text) continue;
+      const cleaned = text.toString().trim();
+      if (!cleaned || seen.has(cleaned)) continue;
+      seen.add(cleaned);
+      candidates.push(cleaned);
+    }
+  };
+
   // classic module
   const im = json?.ItemModule;
   if (im && typeof im === 'object') {
     const first: any = Object.values(im)[0];
-    const desc = (first?.desc || first?.shareInfo?.shareTitle || first?.title || '').toString().trim();
-    if (desc) return desc;
+    if (first && typeof first === 'object') {
+      push(first?.desc);
+      push(first?.shareInfo?.shareTitle);
+      push(first?.title);
+    }
   }
+
+  // universal data scopes (photo mode etc.)
+  const scope = json?.__DEFAULT_SCOPE__;
+  if (scope && typeof scope === 'object') {
+    const structs: any[] = [];
+    const visited = new Set<any>();
+    for (const node of Object.values(scope)) {
+      collectTikTokStructs(node, structs, visited, 0);
+    }
+    for (const itemStruct of structs) {
+      push(itemStruct?.desc);
+      push(itemStruct?.imagePost?.caption);
+      push(itemStruct?.imagePost?.title);
+      push(itemStruct?.video?.desc);
+      push(itemStruct?.video?.title);
+    }
+  }
+
   // SEO/share spots (photo pages sometimes use these)
-  const seo = json?.SEOState || json?.ShareMeta || json?.app || {};
-  const title = (seo?.metaParams?.title || seo?.shareMeta?.title || '').toString().trim();
-  if (title) return title;
+  const metaSources = [json?.SEOState, json?.ShareMeta, json?.app, json?.SEOMeta];
+  for (const source of metaSources) {
+    if (!source || typeof source !== 'object') continue;
+    push(source?.metaParams?.title);
+    push(source?.metaParams?.description);
+    push(source?.shareMeta?.title);
+    push(source?.shareMeta?.description);
+  }
+
+  if (candidates.length) {
+    candidates.sort((a, b) => b.length - a.length);
+    return candidates[0];
+  }
 
   // Generic hunt in the object
   try {

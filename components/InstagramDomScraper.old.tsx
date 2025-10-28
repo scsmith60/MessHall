@@ -17,6 +17,7 @@ type ResultPayload = {
   text: string;
   imageUrl?: string;
   cleanTitle?: string;
+  pageTitle?: string;
   debug: string;
 };
 
@@ -128,9 +129,15 @@ export default function InstagramDomScraper({
         return total;
       }
 
+      function pickMetaContent(n){
+        try{
+          const selector='meta[name="' + n + '"], meta[property="' + n + '"]';
+          const el=document.querySelector(selector);
+          return el?(el.getAttribute("content")||""):"";
+        }catch(_){ return ""; }
+      }
       function readFromMeta(){
-          const pick=(n)=>{ const el=document.querySelector('meta[name="' + n + '"], meta[property="' + n + '"]'); return el ? (el.getAttribute(\"content\") || \"\") : \"\"; };
-        return pick("og:description") || pick("twitter:description") || pick("description") || "";
+        return pickMetaContent("og:description") || pickMetaContent("twitter:description") || pickMetaContent("description") || "";
       }
       function readFromJsonLd(){
         try{
@@ -166,12 +173,9 @@ export default function InstagramDomScraper({
 
       function stripIGBoilerplate(s){
         if (!s) return s;
-        let out = String(s);
-        out = out.replace(/^\s*\d[\d,.\s]*\s+likes?,?\s*\d[\d,.\s]*\s+comments?\s*-\s*[^:]+:\s*/i, "");
-        out = out.replace(/^\s*\d[\d,.\s]*\s+likes?.*$/gim, "");
-        out = out.replace(/^\s*\d[\d,.\s]*\s+comments?.*$/gim, "");
-        out = out.replace(/^\s*instagram\s+video\s*$/gim, "");
-        return out.trim();
+        s = s.replace(/^\\s*\\d[\\d,.\\s]*\\s+likes?,?\\s*\\d[\\d,.\\s]*\\s+comments?\\s*-\\s*[^:]+:\\s*/i, "");
+        s = s.replace(/^\\s*\\d[\\d,.\\s]*\\s+likes?\\s*$/gim, "").replace(/^\\s*\\d[\\d,.\\s]*\\s+comments?\\s*$/gim, "");
+        return s.trim();
       }
       function makeCleanTitle(caption){
         let c = stripIGBoilerplate(String(caption||""));
@@ -188,25 +192,16 @@ export default function InstagramDomScraper({
         if (!c) {
           const m = String(caption||"").match(/\\b([A-Z][a-z]+\\s+(?:[A-Z][a-z]+\\s+){0,3}[A-Z][a-z]+)\\b/);
           if (m) c = m[1];
-      }
-      // 6) final tidy
-      c = c.replace(/[“”‘’"<>]/g,"").trim();
-      if (c.length>72) c = c.slice(0,72).trim();
-      return c || "";
+        }
+        // 6) final tidy
+        c = c.replace(/[“”‘’"<>]/g,"").trim();
+        if (c.length>72) c = c.slice(0,72).trim();
+        if (!c) c = "Recipe";
+        return c;
       }
       function getImageUrl(){
         try{
-          const pick=(n)=>{ const el=document.querySelector('meta[name="' + n + '"], meta[property="' + n + '"]'); return el ? (el.getAttribute("content") || "") : ""; };
-          const videoEl = document.querySelector('article video') || document.querySelector('video');
-          if (videoEl){
-            const poster = videoEl.getAttribute('poster');
-            if (poster) return poster;
-            const src = videoEl.getAttribute('src');
-            if (src) return src;
-            const source = videoEl.querySelector('source[src]');
-            if (source) return source.getAttribute('src') || '';
-          }
-          let img = pick('og:image') || pick('twitter:image');
+          let img = pickMetaContent("og:image") || pickMetaContent("twitter:image");
           if (img) return img;
           const imgEl = document.querySelector('article img[srcset], article img[src]') || document.querySelector('img[srcset], img[src]');
           if (imgEl) return imgEl.getAttribute('src') || imgEl.getAttribute('srcset') || "";
@@ -240,24 +235,35 @@ export default function InstagramDomScraper({
         const metaCap=readFromMeta(), ldCap=readFromJsonLd(), domCap=readFromDOM();
         send("log",{msg:"sources", extra:{ domLen:domCap.length, ldLen:ldCap.length, metaLen:metaCap.length }});
 
-        const candidates=[metaCap, ldCap, domCap].filter(Boolean).map(t=>({t, s:scoreRecipeText(t)}));
+        const candidates=[metaCap, ldCap, domCap].filter(Boolean).map(t=>({
+          t,
+          s: scoreRecipeText(t),
+          isRecipeTitle: /recipe|pasta|bread|cake|chicken|beef|pork|fish|soup|salad|sandwich/i.test(t)
+        }));
+        // Promote recipe-like titles
+        candidates.forEach(c => { if (c.isRecipeTitle) c.s += 300; });
         candidates.sort((a,b)=>(b.s-a.s) || (b.t.length-a.t.length));
         const best=candidates[0]?.t || "";
-        send("log",{msg:"result", extra:{ capLen:best.length, score:candidates[0]?.s || 0 }});
+        send("log",{msg:"result", extra:{ capLen:best.length, score:candidates[0]?.s || 0, isRecipe:candidates[0]?.isRecipeTitle }});
 
         const MAX_CAPTION=4000;
         const cleanedCaption = stripIGBoilerplate(best||"");
         const safe = cleanedCaption.slice(0, MAX_CAPTION);
         const cleanTitle = makeCleanTitle(best||"");
+        const pageTitle = (() => {
+          try {
+            return pickMetaContent("og:title") || pickMetaContent("twitter:title") || document.title || "";
+          } catch(_){ return ""; }
+        })();
         const imageUrl = getImageUrl();
-        const articleText = stripIGBoilerplate((getPostRoot()?.innerText || "").slice(0, MAX_CAPTION));
 
         finish({
-          ok: (safe.length>0) || (articleText.length>0),
+          ok: safe.length>0,
           caption: safe,
           comments: [], bestComment: "",
-          text: articleText || safe,
+          text: safe,
           imageUrl, cleanTitle,
+          pageTitle,
           debug: \`meta:\${metaCap.length} ld:\${ldCap.length} dom:\${domCap.length}\`
         });
       }
@@ -278,6 +284,7 @@ export default function InstagramDomScraper({
         text: String(data.text || ""),
         imageUrl: data.imageUrl ? String(data.imageUrl) : undefined,
         cleanTitle: data.cleanTitle ? String(data.cleanTitle) : undefined,
+        pageTitle: data.pageTitle ? String(data.pageTitle) : undefined,
         debug: String(data.debug || ""),
       };
       onResult(out);

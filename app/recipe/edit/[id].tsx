@@ -387,11 +387,20 @@ export default function EditRecipe() {
 
     setLoadingImport(true);
     try {
-      const meta: any = await fetchMeta(url);
+  const meta: any = await fetchMeta(url);
+  // Debug: log fetched meta so we can confirm title extraction in the app runtime
+  console.log('[IMPORT] fetchMeta result for', url, meta);
 
       if (meta.title) setTitle(meta.title);
       if (meta.ingredients?.length) setIngredients(meta.ingredients as string[]);
       if (meta.steps?.length) setSteps((meta.steps as string[]).map((t: any) => ({ text: String(t), seconds: null })));
+
+      // If the static extraction indicates a client-render is required, open the hidden WebView
+      if (meta.needsClientRender) {
+        console.log('[IMPORT] meta indicates client render needed, opening WebView for', url);
+        setWebSnapInProgress(true);
+        setWebSnapUrl(url);
+      }
 
       // 1) OG/Twitter image
       let usedImage = false;

@@ -77,12 +77,6 @@ export default function TTDomScraper({
           }catch(e){}
           if(!sig){
             try{
-              var u = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
-              if(u && u.textContent) sig = JSON.parse(u.textContent);
-            }catch(e){}
-          }
-          if(!sig){
-            try{
               var scripts = Array.from(document.getElementsByTagName('script'));
               for(var i=0;i<scripts.length;i++){
                 var t = scripts[i].textContent || '';

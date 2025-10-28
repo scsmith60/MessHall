@@ -12,15 +12,13 @@ const BULLET_RE = /^[\u2022*\-\s]+/;
 function normalizeLine(line: string): string {
   return (line || "")
     .replace(EMOJI_RE, "")
+    // remove zero-width / invisible control characters that can survive scraping
+    .replace(/[\u200B-\u200F\uFEFF\u2060-\u2064\uE000-\uF8FF]/g, "")
     .replace(BULLET_RE, "")
     .replace(/\s+/g, " ")
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201c\u201d]/g, '"')
     .trim();
-}
-
-function cleanPromo(line: string): string {
-  return line.replace(PROMO_PATTERN, "").trim();
 }
 
 function isServingLine(line: string): boolean {
@@ -38,6 +36,7 @@ function isDishLine(line: string): boolean {
   if (UNIT_TOKEN.test(s)) return false;
   if (/(?:salt|pepper)/i.test(s) && /(?:and|&)/i.test(s)) return false;
   if (/\bto taste\b/i.test(s)) return false;
+  if (/\b(community|video|followers?|likes?|comments?|global|watch|subscribe|follow|see more)\b/i.test(s)) return false;
   if (DISH_DISQUALIFIERS.test(s)) return false;
   return true;
 }
@@ -56,12 +55,45 @@ function tidyTitle(candidate?: string | null, ...fallbacks: Array<string | null 
 
   for (const line of normalized) {
     if (line && isDishLine(line)) {
-      return line;
+      // If the candidate contains an obvious sentence boundary or common sentence-starter
+      // tokens (e.g. "for", "to", "ingredients", "youll"), cut at that boundary so
+      // we return just the dish title and not the following explanatory sentence.
+      const lower = line.toLowerCase();
+      const cutTokens = [' for ', ' to ', ' ingredients', " you'll", " youll", ' ingredients:', ' serves', ' servings', ' recipe', ' prep ', ' cook ', ' directions', ' instructions'];
+      let cutIndex = -1;
+      for (const tok of cutTokens) {
+        const idx = lower.indexOf(tok);
+        if (idx > 6) { // ignore tokens that appear too early (likely part of the title)
+          if (cutIndex === -1 || idx < cutIndex) cutIndex = idx;
+        }
+      }
+      // Also detect sentence-starters that may be attached without space (e.g. "sauceFor")
+      const attachedMatch = line.match(/(For|To|Ingredients|You'll|Youll|Serves|Makes|Recipe)/);
+      if (attachedMatch && attachedMatch.index && attachedMatch.index > 6) {
+        const idx = attachedMatch.index;
+        if (cutIndex === -1 || idx < cutIndex) cutIndex = idx;
+      }
+      let trimmed = line
+        .replace(/\b\d[\d,.\s]*\s+likes?.*$/i, "")
+        .replace(/\b\d[\d,.\s]*\s+comments?.*$/i, "")
+        .trim();
+      const colonSplit = trimmed.match(/^[^:]+:\s*(.+)$/);
+      if (colonSplit && colonSplit[1]) trimmed = colonSplit[1].trim();
+      if (cutIndex !== -1) {
+        trimmed = trimmed.slice(0, cutIndex).trim();
+      }
+      // also split on punctuation (take first sentence)
+      const m = trimmed.match(/^(.*?[.!?])\s+/);
+      if (m && m[1]) trimmed = m[1].replace(/[.!?]$/g, "").trim();
+      trimmed = trimmed.replace(/\s*(?:for|to|ingredients?|directions?|instructions?|method)\b.*$/i, "").trim();
+      if (!trimmed || !isDishLine(trimmed)) continue;
+      return trimmed;
     }
   }
 
   for (const line of normalized) {
-    if (line) return line;
+    const fallback = (line || "").trim();
+    if (fallback && isDishLine(fallback)) return fallback;
   }
 
   return null;
@@ -80,6 +112,18 @@ export type InstagramParseOptions = {
   fallbackTitle?: string | null;
   heroImage?: string | null;
 };
+
+function cleanPromo(line: string): string {
+  let cleaned = line.replace(PROMO_PATTERN, "").trim();
+  cleaned = cleaned
+    .replace(/^\s*\d[\d,.\s]*\s+likes?,?\s*\d[\d,.\s]*\s+comments?\s*[-\u2013\u2014:]?\s*/i, "")
+    .replace(/^\s*\d[\d,.\s]*\s+likes?.*$/gim, "")
+    .replace(/^\s*\d[\d,.\s]*\s+comments?.*$/gim, "");
+  if (/^[^:]+:\s*["'\u201c\u201d]/.test(cleaned)) {
+    cleaned = cleaned.replace(/^[^:]+:\s*(?=["'\u201c\u201d])/, "");
+  }
+  return cleaned.trim();
+}
 
 export function parseSocialCaption(caption: string, options: InstagramParseOptions = {}): ParsedRecipe {
   const lines = caption
@@ -136,3 +180,4 @@ export function parseSocialCaption(caption: string, options: InstagramParseOptio
 }
 
 export const parseInstagramCaption = parseSocialCaption;
+

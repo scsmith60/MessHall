@@ -35,6 +35,7 @@ import InstagramDomScraper from "@/components/InstagramDomScraper";
 import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata } from "@/lib/recipeSiteHelpers";
 import { parseSocialCaption } from "@/lib/parsers/instagram";
 import { dedupeNormalized } from "@/lib/parsers/types";
+import { extractTikTokTitleFromState } from "@/lib/extractTitle";
 
 // -------------- theme --------------
 const MESSHALL_GREEN = "#2FAE66";
@@ -62,6 +63,78 @@ const MIN_IMG_W = 600, MIN_IMG_H = 600;
 const SOFT_MIN_W = 360, SOFT_MIN_H = 360;
 const MIN_LOCAL_BYTES = 30_000;
 const FOCUS_Y_DEFAULT = 0.4;
+
+type RecipeExtraction = {
+  title?: string;
+  ingredients?: string[];
+  steps?: string[];
+  image?: string;
+};
+
+function hasMeaningfulRecipeData(data?: RecipeExtraction | null): boolean {
+  if (!data) return false;
+  const ingCount = data.ingredients?.length ?? 0;
+  const stepCount = data.steps?.length ?? 0;
+  return ingCount >= 2 || stepCount >= 1;
+}
+
+function decodeHtmlEntitiesLite(input: string): string {
+  return input
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'");
+}
+
+function parseGordonRamsayRecipe(html: string, url: string): RecipeExtraction | null {
+  const clean = (raw: string) =>
+    decodeHtmlEntitiesLite(raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+      .replace(/\u00A0/g, " ")
+      .replace(/\uFFFD/g, "")
+      .trim();
+
+  const asideMatch = html.match(/<aside[^>]*class=["'][^"']*recipe-ingredients[^"']*["'][^>]*>([\s\S]*?)<\/aside>/i);
+  const articleMatch = html.match(/<article[^>]*class=["'][^"']*recipe-instructions[^"']*["'][^>]*>([\s\S]*?)<\/article>/i);
+
+  if (!asideMatch && !articleMatch) return null;
+
+  const ingredients: string[] = [];
+  if (asideMatch) {
+    const section = asideMatch[1];
+    for (const item of section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
+      let text = clean(item[1]);
+      text = text.replace(/^\d+\.\s*/, "");
+      if (text) ingredients.push(text);
+    }
+  }
+
+  const steps: string[] = [];
+  if (articleMatch) {
+    const section = articleMatch[1];
+    for (const item of section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
+      const text = clean(item[1]);
+      if (text) steps.push(text);
+    }
+    if (!steps.length) {
+      const paragraphs = section.match(/<p[^>]*>([\s\S]*?)<\/p>/gi) || [];
+      for (const paragraph of paragraphs) {
+        const text = clean(paragraph);
+        if (text) steps.push(text);
+      }
+    }
+  }
+
+  if (!ingredients.length && !steps.length) return null;
+
+  let image: string | undefined;
+  const heroMatch = html.match(/<img[^>]+src=["']([^"']*CroppedFocusedImage[^"']+)["'][^>]*>/i);
+  if (heroMatch?.[1]) {
+    image = heroMatch[1].startsWith("http") ? heroMatch[1] : `https://www.gordonramsay.com${heroMatch[1]}`;
+  }
+
+  return { ingredients, steps, image };
+}
 
 // -------------- screen state --------------
 type ImageSourceState =
@@ -180,6 +253,7 @@ export default function CaptureScreen() {
     if (!words.length) return false;
     const hasLetters = /[A-Za-z]/.test(s);
     if (!hasLetters) return false;
+    if (/\b(see more|open app|global|video|community|watch now)\b/i.test(s)) return false;
     const hasUnits = TITLE_ING_TOKEN.test(s);
     const hasQty = /\d/.test(s);
     if (hasUnits && hasQty) return false;
@@ -209,6 +283,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (TITLE_ING_TOKEN.test(s) && (/\d/.test(s) || TITLE_NUMBER_WORD.test(s))) return true;
     if (/^for\b/i.test(s)) return true;
     if (s.length > 120) return true;
+    if (/\b(see more|open app|global video community|watch now|watch video)\b/i.test(s)) return true;
     return false;
   }
   function scoreTitleCandidate(line: string): number {
@@ -229,19 +304,34 @@ function findDishTitleFromText(source: string, url: string): string | null {
     return score;
   }
   // Turns a TikTok caption into a short, neat title candidate (kid-friendly)
+  // Turns a TikTok caption into a short, neat title candidate (kid-friendly)
+  // Turns a TikTok caption into a short, neat title candidate (kid-friendly)
   function captionToNiceTitle(raw?: string): string {
     if (!raw) return "";
     const original = String(raw);
-    let s = original
-      .replace(/\r|\t/g, " ")                         // make spaces normal
-      .replace(/https?:\/\/\S+/gi, "")                // remove links
-      .replace(/[#@][\w_]+/g, "")                     // remove #tags and @users
-      // Γ£à SAFE EMOJI REMOVER (no \u{...}): surrogate pairs + misc symbols - keep on ONE LINE
-      .replace(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF])/g, "")
-      .replace(/\s{2,}/g, " ")                        // squash extra spaces
-      .trim();
+    const stripUiPrompts = (value: string) =>
+      String(value || "")
+        .replace(/^(?:\s*(?:see more|see less|open in app|open app|view more|watch now|watch video|read more|show more|continue reading|more|global video community)\b[:\-\s]*)+/i, "")
+        .trim();
+    const stripCountPrefix = (value: string) =>
+      value
+        .replace(/^\s*\d[\d,.\s]*\s+likes?,?\s*\d[\d,.\s]*\s+comments?\s*[-–:]?\s*/i, "")
+        .replace(/^\s*\d[\d,.\s]*\s+likes?\s*[-–:]?\s*/i, "")
+        .replace(/^\s*\d[\d,.\s]*\s+comments?\s*[-–:]?\s*/i, "");
+    const stripAuthorPrefix = (value: string) =>
+      value.replace(/^[^:]*\d[^:]*:\s*(?=["“']|$)/, "");
 
-    // stop before sections like "Ingredients", "Instructions", etc. or lead-ins
+    let s = stripCountPrefix(stripUiPrompts(original)).replace(/^[\s\n\r]+/, "");
+
+    s = s
+      .replace(/\r|\t/g, " ")
+      .replace(/https?:\/\/\S+/gi, "")
+      .replace(/[#@][\w_]+/g, "")
+      .replace(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2600-\u27BF])/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    s = stripAuthorPrefix(stripCountPrefix(stripUiPrompts(s)));
+
     const cutWords = /(ingredients?|directions?|instructions?|method|prep\s*time|cook\s*time|total\s*time|servings?|yields?|calories?|kcal|for\s+the\b|you'?ll\s+need)/i;
     const cutIdx = s.search(cutWords);
     if (cutIdx >= 0) {
@@ -250,34 +340,47 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     if (/^ingredients?\b/i.test(s)) s = "";
 
-    // first sentence if present, else first line
-    const firstLine = (s.split("\n")[0] || s).trim();
+    const firstLine = (s.split(/\n/)[0] || s).trim();
     const firstSentence = firstLine.split(/(?<=\.)\s+/)[0];
-    s = firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine;
+    s = stripAuthorPrefix(stripCountPrefix(stripUiPrompts(firstSentence && firstSentence.length >= 6 ? firstSentence.trim() : firstLine)));
 
     if (!s || /^ingredients?\b/i.test(s)) {
       const lines = original
         .split(/\r?\n/)
         .map((line) =>
-          line
-            .replace(/^[\s\u2022*\-]+/, "")
-            .replace(/[#@][\w_]+/g, "")
-            .replace(/https?:\/\/\S+/gi, "")
-            .trim()
+          stripAuthorPrefix(
+            stripCountPrefix(
+              stripUiPrompts(
+                line
+                  .replace(/^[\s\u2022*\-]+/, "")
+                  .replace(/[#@][\w_]+/g, "")
+                  .replace(/https?:\/\/\S+/gi, "")
+                  .trim()
+              )
+            )
+          )
         )
-        .filter(Boolean);
+        .filter((line) => line && !/^(see more|open app|global video community)$/i.test(line));
       const alt = lines.find((line) => !/^(ingredients?|directions?|instructions?|method)\b/i.test(line) && !/^for\b/i.test(line) && !/^to\b/i.test(line));
       if (alt) s = alt;
     }
 
-    // trim site tails and tidy punctuation
-    s = s.replace(/\s*[|\u2022\u2013-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "");
-    s = s.replace(/\s*\.$/, "");
-    s = s.replace(/[\u2013-]/g, "-").replace(/\s+/g, " ").trim();
+    s = stripAuthorPrefix(
+      stripCountPrefix(
+        stripUiPrompts(
+          s.replace(/\s*[|\u2022\u2013-]\s*(TikTok|YouTube|Instagram|Pinterest|Allrecipes|Food\s*Network|NYT\s*Cooking).*/i, "")
+           .replace(/\s*\.$/, "")
+           .replace(/[\u2013-]/g, "-")
+           .replace(/\s+/g, " ")
+        )
+      )
+    )
+      .replace(/^[\"“']+/, "")
+      .replace(/[\"”']+$/, "");
 
     if (/^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) return "";
 
-    return s; // ΓåÉ important semicolon so the chain ends here
+    return s;
   }
   /** ≡ƒº╝ normalizeDishTitle: trim hype and keep only the dish name.
    *  Example: "Smoky Poblano Chicken & Black Bean Soup Dive into..." 
@@ -289,6 +392,9 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     // Friendlier: replace ampersand
     s = s.replace(/&/g, " and ");
+    // Strip common emoji/pictographs that can wrap Instagram/TikTok titles
+    s = s.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, " ");
+    s = s.replace(/\uFE0F/g, " ");
 
     // Cut off common promo/lead-in phrases that come after the dish name
     s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
@@ -304,7 +410,9 @@ function findDishTitleFromText(source: string, url: string): string | null {
     s = firstSentence || s;
 
     // Tidy whitespace and trailing dot; strip quotes
-    s = s.replace(/["""']/g, "");
+  s = s.replace(/["""']/g, "");
+  // Remove invisible / zero-width characters that sometimes survive scraping
+  s = s.replace(/[\u200B-\u200F\uFEFF\u2060-\u2064]/g, "");
     s = s.replace(/\s{2,}/g, " ").replace(/\s+\.$/, "").trim();
 
     return s;
@@ -344,6 +452,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (t === "tiktok") return true;
     if (t === "make your day") return true;
     if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
+    if (t.startsWith("tiktok -") || t.startsWith("tiktok |") || t.startsWith("tiktok –")) return true;
     if (t.includes("tiktok") && t.includes("make your day")) return true;
     return false;
   }
@@ -354,6 +463,14 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (!s) return true;
     if (isTikTokJunkTitle(s)) return true;
     const lower = s.toLowerCase();
+    if (lower === "instagram" || lower === "see more" || lower === "global video community") return true;
+    // Reject obvious ingredient-only phrases like "salt and pepper"
+    try {
+      const ingredientToken = /\b(?:salt|pepper|garlic|onion|butter|sugar|oil|vinegar|soy sauce|olive oil|lemon|lime|parsley|cilantro|basil|tomato|cream|cheese)\b/i;
+      const joiners = /(?:\band\b|,|\/|&)/i;
+      const words = s.split(/\s+/).filter(Boolean).length;
+      if (ingredientToken.test(s) && (joiners.test(s) || words <= 3)) return true;
+    } catch {}
     if (lower === "food network" || lower === "allrecipes" || lower === "youtube") return true;
     // reject generic, non-dish phrases
     if (/^(delicious|tasty|yummy|good|amazing)\s+(food|recipe|dish)$/i.test(s)) return true;
@@ -471,6 +588,10 @@ function preCleanIgCaptionForParsing(s: string): string {
 
   // 3) tame ellipses so they do not leak as garbled characters
   out = out.replace(/\u2026/g, "...");
+
+  // 4) drop naked likes/comments counters
+  out = out.replace(/^\s*\d[\d,.\s]*\s+likes?.*$/gim, "");
+  out = out.replace(/^\s*\d[\d,.\s]*\s+comments?.*$/gim, "");
 
   return out;
 }
@@ -1169,19 +1290,23 @@ function stitchBrokenSteps(lines: string[]): string[] {
           try {
             bumpStage(1);
             igDom = await scrapeInstagramDom(url);
-            const rawCaption = (igDom?.text || igDom?.caption || "").trim();
+            const rawCaption = (igDom?.caption || "").trim();
             dbg("[IG] Instagram payload length:", rawCaption.length);
+            // collect title candidates but don't set title yet (avoid overwriting while parsing)
+            const igTitleCandidates: Array<{ v: string; src: string }> = [];
 
             const heroFromDom = igDom?.imageUrl || igDom?.image_url || null;
+            const articleTextRaw = typeof igDom?.text === "string" ? igDom.text : "";
             const cleanedCaption = preCleanIgCaptionForParsing(rawCaption);
-            const captionDishTitle = findDishTitleFromText(cleanedCaption, url);
-            const fallbackDishTitle = captionDishTitle || normalizeDishTitle(cleanTitle(captionToNiceTitle(cleanedCaption), url));
-            const parsedInstagram = parseSocialCaption(cleanedCaption, {
+            const cleanedArticle = preCleanIgCaptionForParsing(articleTextRaw);
+            const combinedBody = [cleanedCaption, cleanedArticle].filter(Boolean).join("\n\n");
+            const captionDishTitle = findDishTitleFromText(combinedBody, url);
+            const fallbackDishTitle = captionDishTitle || normalizeDishTitle(cleanTitle(captionToNiceTitle(combinedBody), url));
+            const parsedInstagram = parseSocialCaption(combinedBody, {
               fallbackTitle: fallbackDishTitle,
               heroImage: heroFromDom ?? null,
             });
-            const unifiedParse = parseRecipeText(cleanedCaption);
-
+            const unifiedParse = parseRecipeText(combinedBody);
             const mergedIngredients = dedupeNormalized([
               ...parsedInstagram.ingredients,
               ...unifiedParse.ingredients,
@@ -1191,11 +1316,24 @@ function stitchBrokenSteps(lines: string[]): string[] {
               ...unifiedParse.steps,
             ]);
 
-            if (parsedInstagram.title) {
-              safeSetTitle(parsedInstagram.title, url, title, dbg, "instagram:caption-title");
-            } else if (captionDishTitle) {
-              safeSetTitle(captionDishTitle, url, title, dbg, "instagram:caption-fallback");
-            }
+            // Prefer DOM-provided cleaned titles (scraper heuristics) before using long captions
+            try {
+              const domCandidates = [igDom?.cleanTitle, igDom?.pageTitle];
+              try { if ((igDom as any)?.sigi && (igDom as any).sigi?.item?.title) domCandidates.push((igDom as any).sigi.item.title); } catch {}
+              for (const dc of domCandidates) {
+                if (!dc) continue;
+                const c = normalizeDishTitle(cleanTitle(String(dc), url));
+                if (c && !isWeakTitle(c)) igTitleCandidates.push({ v: c, src: "instagram:dom:cleanTitle" });
+              }
+            } catch {}
+
+            if (parsedInstagram.title) igTitleCandidates.push({ v: normalizeDishTitle(cleanTitle(parsedInstagram.title, url)), src: "instagram:caption-title" });
+            if (captionDishTitle) igTitleCandidates.push({ v: captionDishTitle, src: "instagram:caption-fallback" });
+            // last attempt: try to find a short dish-like title in the scraped page text
+            try {
+              const txtCandidate = findDishTitleFromText(igDom?.text || rawCaption || "", url);
+              if (txtCandidate) igTitleCandidates.push({ v: txtCandidate, src: "instagram:dom-text" });
+            } catch {}
 
             const partitioned = partitionIngredientRows(mergedIngredients, mergedSteps);
             const normalizedSteps = mergeStepFragments(partitioned.steps);
@@ -1221,6 +1359,17 @@ function stitchBrokenSteps(lines: string[]): string[] {
               success = true;
             }
 
+            // choose best title candidate now that we parsed content (prefer short dish-like titles)
+            try {
+              if (igTitleCandidates && igTitleCandidates.length) {
+                igTitleCandidates.sort((a, b) => scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v));
+                for (const cand of igTitleCandidates) {
+                  if (!cand.v) continue;
+                  const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
+                  if (!isWeakTitle(cleaned)) { safeSetTitle(cleaned, url, title, dbg, cand.src); break; }
+                }
+              }
+            } catch {}
             if (!gotSomethingForRunRef.current && heroFromDom) {
               await tryImageUrl(heroFromDom, url);
             }
@@ -1299,19 +1448,53 @@ function stitchBrokenSteps(lines: string[]): string[] {
           dbg("≡ƒÄ» TikTok detected - unified import path begins");
           // STEP 1: DOM scrape
           let domPayload: { text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string } | null = null;
+          // title candidates collected across steps (declare in outer scope so available later)
+          let ttTitleCandidates: Array<{ v: string; src: string }> = [];
           try {
             bumpStage(1);
             domPayload = await scrapeTikTokDom(url);
+            // Collect TikTok title candidates without setting the title yet
             const len = (domPayload?.text || "").length;
             dbg("≡ƒôä STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
             // ≡ƒæç extra trace to know where it came from and if "see more" was clicked
             if (domPayload?.debug) dbg("≡ƒº¬ TTDOM DEBUG:", domPayload.debug);
+            // EXTRA DEBUG: log keys and a small sample of fields so we can see what the WebView actually returned
+            try {
+              dbg("≡ƒπ TTDOM payload keys:", domPayload ? Object.keys(domPayload) : null);
+              if (domPayload?.caption) dbg("≡ƒπ TTDOM caption (snippet):", (domPayload.caption || "").slice(0, 240));
+              if (domPayload?.text) dbg("≡ƒπ TTDOM text (snippet):", (domPayload.text || "").slice(0, 240));
+              if ((domPayload as any)?.sigi) dbg("≡ƒπ TTDOM sigi keys:", Object.keys((domPayload as any).sigi || {}).slice(0, 10));
+              if (domPayload?.comments && domPayload.comments.length) dbg("≡ƒπ TTDOM first comment:", domPayload.comments[0].slice(0, 160));
+            } catch (e) { dbg("≡ƒπ TTDOM debug failed:", safeErr(e)); }
           
             // ≡ƒæë NEW: try to set a nice title from the TikTok caption if ours is weak
             try {
-              const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
-              const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
-              if (capTitle) safeSetTitle(capTitle, url, title, dbg, "tiktok:caption");
+                // Prefer any DOM-provided short title first (cleanTitle/pageTitle/SIGI)
+                try {
+                  const domT = (domPayload as any)?.cleanTitle || (domPayload as any)?.pageTitle || null;
+                  const sigiTitle = extractTikTokTitleFromState((domPayload as any)?.sigi);
+                  const domCandidates = [domT, sigiTitle].filter(Boolean);
+                  for (const dt of domCandidates) {
+                    try {
+                      const ct = normalizeDishTitle(cleanTitle(String(dt), url));
+                      if (ct && !isWeakTitle(ct)) {
+                        safeSetTitle(ct, url, title, dbg, "tiktok:dom:cleanTitle");
+                        ttTitleCandidates.push({ v: ct, src: "tiktok:dom:cleanTitle" });
+                      }
+                    } catch {}
+                  }
+                } catch {}
+
+                // caption-based title (don't set yet)
+                const capTitleRaw = captionToNiceTitle(domPayload?.caption || "");
+                const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
+                if (capTitle && !isWeakTitle(capTitle)) ttTitleCandidates.push({ v: capTitle, src: "tiktok:caption" });
+
+                // also try to find a dish-like short title from the DOM text
+                try {
+                  const td = findDishTitleFromText(domPayload?.text || domPayload?.caption || "", url);
+                  if (td && !isWeakTitle(td)) ttTitleCandidates.push({ v: td, src: "tiktok:dom-text" });
+                } catch {}
             } catch {}
           } catch (e) {
             dbg("Γ¥î STEP 1 (DOM scraper) failed:", safeErr(e));
@@ -1383,6 +1566,18 @@ function stitchBrokenSteps(lines: string[]): string[] {
             } else {
               dbg("Γä╣∩╕Å STEP 2 caption parse still weak; will try OCR next");
             }
+
+            // Choose best title candidate for TikTok now that parsing is done
+            try {
+                if (ttTitleCandidates && ttTitleCandidates.length) {
+                ttTitleCandidates.sort((a: {v:string,src:string}, b: {v:string,src:string}) => scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v));
+                for (const cand of ttTitleCandidates) {
+                  if (!cand.v) continue;
+                  const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
+                  if (!isWeakTitle(cleaned)) { safeSetTitle(cleaned, url, title, dbg, cand.src); break; }
+                }
+              }
+            } catch {}
           } catch (e) {
             dbg("Γ¥î STEP 2 (parse) failed:", safeErr(e));
           }
@@ -1747,6 +1942,15 @@ function stitchBrokenSteps(lines: string[]): string[] {
             setTikTokShots((prev)=> (prev.includes(uri) ? prev : [...prev, uri]));
             console.log("≡ƒô╕ snap onFound", uri);
             gotSomethingForRunRef.current = true;
+            // Resolve any pending snap promise so autoSnapTikTok can continue.
+            try {
+              if (snapResolverRef.current) {
+                try { snapResolverRef.current(uri); } catch (e) { /* ignore resolver errors */ }
+                snapResolverRef.current = null;
+                snapRejectRef.current = null;
+              }
+            } catch {}
+
             const fixed = await validateOrRepairLocal(uri);
             if (fixed) setGoodPreview(fixed, lastResolvedUrlRef.current);
             else {
@@ -1761,7 +1965,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
           visible={domScraperVisible}
           url={domScraperUrl}
           onClose={() => setDomScraperVisible(false)}
-          onResult={(payload) => { domScraperResolverRef.current?.(payload); setDomScraperVisible(false); }}
+          onResult={(payload) => {
+            try {
+              dbg("≡ƒπ TTDomScraper onResult payload keys:", payload ? Object.keys(payload) : null);
+              if (payload?.caption) dbg("≡ƒπ onResult caption snippet:", (payload.caption || "").slice(0, 240));
+              if (payload?.text) dbg("≡ƒπ onResult text snippet:", (payload.text || "").slice(0, 240));
+              if ((payload as any)?.sigi) dbg("≡ƒπ onResult sigi keys:", Object.keys((payload as any).sigi || {}).slice(0, 10));
+            } catch (e) { dbg("≡ƒπ onResult debug failed:", safeErr(e)); }
+            domScraperResolverRef.current?.(payload);
+            setDomScraperVisible(false);
+          }}
         />
         {/* Instagram Scraper */}
         <InstagramDomScraper
