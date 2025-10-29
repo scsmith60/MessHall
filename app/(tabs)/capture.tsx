@@ -37,20 +37,7 @@ import { parseSocialCaption } from "@/lib/parsers/instagram";
 import { dedupeNormalized } from "@/lib/parsers/types";
 import { extractTikTokTitleFromState } from "@/lib/extractTitle";
 
-// -------------- theme --------------
-const MESSHALL_GREEN = "#2FAE66";
-const COLORS = {
-  bg: "#0B1120",
-  card: "#0E1726",
-  sunken: "#1F2937",
-  text: "#E5E7EB",
-  sub: "#A8B3BA",
-  subtext: "#A8B3BA",
-  accent: MESSHALL_GREEN,
-  green: MESSHALL_GREEN,
-  red: "#EF4444",
-  border: "#243042",
-};
+import { COLORS } from "@/lib/theme";
 
 // -------------- timings --------------
 const CAPTURE_DELAY_MS = 700;
@@ -1892,7 +1879,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: "900", marginBottom: 16 }}>Add Recipe</Text>
 
           <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
-          <TextInput value={title} onChangeText={setTitle} placeholder="My Tasty Pizza" placeholderTextColor="#64748b" style={{ color: "white", backgroundColor: COLORS.sunken, borderRadius: 12, padding: 12, marginBottom: 12 }} />
+          <TextInput value={title} onChangeText={setTitle} placeholder="My Tasty Pizza" placeholderTextColor={COLORS.subtext} style={{ color: COLORS.text, backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, marginBottom: 12 }} />
 
           <View style={{ backgroundColor: COLORS.card, borderRadius: 14, borderColor: COLORS.border, borderWidth: 1, padding: 12, marginBottom: 12 }}>
             <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Import from a link (YouTube/TikTok/blog)...</Text>
@@ -1901,16 +1888,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 value={pastedUrl}
                 onChangeText={setPastedUrl}
                 placeholder="Paste page URL..."
-                placeholderTextColor={COLORS.subtext}
+                  placeholderTextColor={COLORS.subtext}
                 autoCapitalize="none"
                 autoCorrect={false}
-                style={{ flex: 1, color: COLORS.text, backgroundColor: COLORS.sunken, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, marginRight: 8 }}
+                  style={{ flex: 1, color: COLORS.text, backgroundColor: COLORS.surface, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, marginRight: 8 }}
               />
-              <TouchableOpacity onPress={onPaste} disabled={hudVisible} style={{ backgroundColor: COLORS.sunken, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, marginRight: 8, opacity: hudVisible ? 0.6 : 1 }}>
+              <TouchableOpacity onPress={onPaste} disabled={hudVisible} style={{ backgroundColor: COLORS.surface, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, marginRight: 8, opacity: hudVisible ? 0.6 : 1 }}>
                 <Text style={{ color: COLORS.text, fontWeight: "600" }}>Paste</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={resolveOg} disabled={hudVisible} style={{ backgroundColor: COLORS.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, opacity: hudVisible ? 0.6 : 1 }}>
-                <Text style={{ color: "#0B1120", fontWeight: "700" }}>{hudVisible ? "Importing..." : "Import"}</Text>
+                <TouchableOpacity onPress={resolveOg} disabled={hudVisible} style={{ backgroundColor: COLORS.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, opacity: hudVisible ? 0.6 : 1 }}>
+                  <Text style={{ color: COLORS.onAccent, fontWeight: "700" }}>{hudVisible ? "Importing..." : "Import"}</Text>
               </TouchableOpacity>
             </View>
             {/* debug output is collected silently; no toggle is rendered for end users */}
@@ -1924,7 +1911,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                     {improvingSnap && <Text style={{ color: COLORS.subtext, marginTop: 6, textAlign: "center" }}>Improving image...</Text>}
                   </>
                 ) : (
-                  <View style={{ height: 220, borderRadius: 12, backgroundColor: COLORS.sunken, borderWidth: 1, borderColor: COLORS.border, alignItems: "center", justifyContent: "center" }}>
+                  <View style={{ height: 220, borderRadius: 12, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, alignItems: "center", justifyContent: "center" }}>
                     <Text style={{ color: COLORS.subtext }}>No imported image yet</Text>
                   </View>
                 );
@@ -1986,9 +1973,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
         </ScrollView>
 
         <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: 12, backgroundColor: COLORS.bg, borderTopWidth: 1, borderColor: COLORS.border }}>
-          <TouchableOpacity onPress={onSave} disabled={saving} style={{ backgroundColor: saving ? "#475569" : COLORS.green, paddingVertical: 14, borderRadius: 12, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, opacity: saving ? 0.7 : 1 }}>
-            {saving && <ActivityIndicator size="small" color="#fff" />}
-            <Text style={{ color: "#fff", fontWeight: "800" }}>{saving ? "Saving..." : "Save"}</Text>
+          <TouchableOpacity onPress={onSave} disabled={saving} style={{ backgroundColor: saving ? COLORS.muted : COLORS.accent, paddingVertical: 14, borderRadius: 12, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, opacity: saving ? 0.7 : 1 }}>
+            {saving && <ActivityIndicator size="small" color={COLORS.onAccent} />}
+            <Text style={{ color: COLORS.onAccent, fontWeight: "800" }}>{saving ? "Saving..." : "Save"}</Text>
           </TouchableOpacity>
         </View>
 
@@ -2080,11 +2067,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
 // -------------- styles for list rows --------------
 const styles = StyleSheet.create({
   swipeRightActionContainer: { justifyContent: "center", alignItems: "flex-end" },
-  swipeDeleteButton: { backgroundColor: COLORS.red, paddingHorizontal: 16, justifyContent: "center", alignItems: "center", minWidth: 88, borderTopRightRadius: 12, borderBottomRightRadius: 12 },
+  swipeDeleteButton: { backgroundColor: COLORS.danger, paddingHorizontal: 16, justifyContent: "center", alignItems: "center", minWidth: 88, borderTopRightRadius: 12, borderBottomRightRadius: 12 },
   swipeDeleteText: { color: "#fff", fontWeight: "700" },
   row: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 10, paddingHorizontal: 10 },
   rowIndex: { color: COLORS.subtext, width: 22, textAlign: "right", marginRight: 6 },
-  rowInput: { flex: 1, color: COLORS.text, backgroundColor: COLORS.sunken, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, fontSize: 16, borderWidth: 1, borderColor: COLORS.border },
+  rowInput: { flex: 1, color: COLORS.text, backgroundColor: COLORS.surface, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, fontSize: 16, borderWidth: 1, borderColor: COLORS.border },
   thinLine: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.border, marginHorizontal: 10 },
 });
 
@@ -2237,9 +2224,9 @@ const hudBackdrop = StyleSheet.create({
     backgroundColor: "rgba(47,174,102,0.12)",
   },
   beamPivot: { position: "absolute", left: 0, top: 0, width: RADAR_SIZE, height: RADAR_SIZE },
-  beamArm: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 1, width: RADAR_SIZE / 2, height: 2, backgroundColor: MESSHALL_GREEN },
+  beamArm: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 1, width: RADAR_SIZE / 2, height: 2, backgroundColor: COLORS.accent },
   beamGlow: { position: "absolute", left: RADAR_SIZE / 2, top: RADAR_SIZE / 2 - 8, width: RADAR_SIZE / 2, height: 16, backgroundColor: "rgba(47,174,102,0.22)" },
-  centerDot: { position: "absolute", width: 10, height: 10, borderRadius: 6, backgroundColor: MESSHALL_GREEN },
+  centerDot: { position: "absolute", width: 10, height: 10, borderRadius: 6, backgroundColor: COLORS.accent },
   acquiredWrap: { position: "absolute", top: "42%", alignSelf: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: "rgba(47,174,102,0.18)" },
   acquiredText: { color: "#d1fae5", fontSize: 22, fontWeight: "900", letterSpacing: 1.2 },
   stepsBox: { backgroundColor: "rgba(47,174,102,0.08)", borderColor: "rgba(47,174,102,0.35)", borderWidth: 1, borderRadius: 12, padding: 10, marginBottom: 12 },
@@ -2247,7 +2234,7 @@ const hudBackdrop = StyleSheet.create({
   checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: "rgba(47,174,102,0.45)", marginRight: 8, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.bg },
   stepText: { color: COLORS.subtext, fontSize: 14 },
   progressOuter: { height: 10, borderRadius: 8, overflow: "hidden", backgroundColor: "rgba(47,174,102,0.12)", borderWidth: 1, borderColor: "rgba(47,174,102,0.35)" },
-  progressInner: { height: "100%", backgroundColor: MESSHALL_GREEN },
+  progressInner: { height: "100%", backgroundColor: COLORS.accent },
 });
 
 // mini red pill
@@ -2283,8 +2270,8 @@ function MissionAbortedPopup({ visible, text = "MISSION ABORTED", onRequestClose
 }
 const abortStyles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", alignItems: "center", justifyContent: "center", padding: 24 },
-  pillWrap: { paddingVertical: 16, paddingHorizontal: 28, borderRadius: 28, backgroundColor: "rgba(239,68,68,0.12)", borderWidth: 1, borderColor: COLORS.red, shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 8, alignItems: "center", maxWidth: 320 },
-  pillText: { color: COLORS.red, fontSize: 18, fontWeight: "900", letterSpacing: 1.2, textAlign: "center" },
+  pillWrap: { paddingVertical: 16, paddingHorizontal: 28, borderRadius: 28, backgroundColor: "rgba(239,68,68,0.12)", borderWidth: 1, borderColor: COLORS.danger, shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 8, alignItems: "center", maxWidth: 320 },
+  pillText: { color: COLORS.danger, fontSize: 18, fontWeight: "900", letterSpacing: 1.2, textAlign: "center" },
   detailText: { color: "rgba(239,68,68,0.85)", fontSize: 13, textAlign: "center", marginTop: 6, lineHeight: 18 },
 });
 
@@ -2331,10 +2318,10 @@ function ThemedDialog({
 const dialogStyles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center", padding: 20 },
   card: { width: "92%", maxWidth: 420, backgroundColor: COLORS.card, borderRadius: 16, padding: 18, borderWidth: 1, borderColor: "rgba(47,174,102,0.25)", shadowColor: "#000", shadowOpacity: 0.35, shadowRadius: 18, shadowOffset: { width: 0, height: 12 }, elevation: 12, alignItems: "center" },
-  checkCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: MESSHALL_GREEN, alignItems: "center", justifyContent: "center", marginBottom: 8 },
+  checkCircle: { width: 44, height: 44, borderRadius: 22, backgroundColor: COLORS.accent, alignItems: "center", justifyContent: "center", marginBottom: 8 },
   title: { color: "#e2e8f0", fontSize: 20, fontWeight: "900", marginTop: 2, textAlign: "center" },
   message: { color: "#b6c2d0", fontSize: 14, marginTop: 6, textAlign: "center" },
-  okBtn: { marginTop: 14, backgroundColor: MESSHALL_GREEN, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 22 },
+  okBtn: { marginTop: 14, backgroundColor: COLORS.accent, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 22 },
   okText: { color: "#0B1120", fontSize: 14, fontWeight: "900", letterSpacing: 0.3 },
 });
 

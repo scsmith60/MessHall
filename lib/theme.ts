@@ -18,6 +18,10 @@ export const COLORS = {
   accentActive: '#17A84A',
   onAccent: '#FFFFFF',
 
+  // status
+  danger: '#EF4444',
+  success: '#1DB954',
+
   // typography
   text: '#E6F7F6', // primary text
   subtext: '#A9C7C6', // secondary text / captions

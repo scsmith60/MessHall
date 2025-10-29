@@ -38,19 +38,7 @@ import PlannerSlots from "@/components/PlannerSlots";
 
 dayjs.extend(isoWeek);
 
-// 🎨 Dark theme colors we use everywhere
-const COLORS = {
-  bg: "#0f172a",
-  card: "#111827",
-  card2: "#1f2937",
-  border: "#334155",
-  text: "#f8fafc",
-  subtext: "#94a3b8",
-  accent: "#38bdf8",
-  messhall: "#22c55e",
-  danger: "#ef4444",
-  overlay: "rgba(0,0,0,0.6)",
-};
+import { COLORS, RADIUS, SPACING } from "@/lib/theme";
 
 // 👇 Order of meal slots so we can sort and group
 const SLOT_ORDER: Record<string, number> = {
@@ -131,7 +119,7 @@ function useToast() {
           <Ionicons
             name={toast.type === "error" ? "alert-circle" : toast.type === "success" ? "checkmark-circle" : "information-circle"}
             size={18}
-            color={toast.type === "error" ? COLORS.danger : toast.type === "success" ? COLORS.messhall : COLORS.accent}
+            color={toast.type === "error" ? COLORS.danger : toast.type === "success" ? COLORS.success : COLORS.accent}
             style={{ marginRight: 8 }}
           />
           <Text style={styles.toastText}>{toast.text}</Text>
@@ -578,7 +566,7 @@ export default function PlannerScreen() {
                         <Image source={{ uri: sponsor.image_url }} style={styles.sponsorImg} />
                       ) : (
                         <View style={[styles.sponsorImg, { alignItems: "center", justifyContent: "center" }]}>
-                          <Ionicons name="leaf" size={28} color={COLORS.messhall} />
+                          <Ionicons name="leaf" size={28} color={COLORS.accent} />
                         </View>
                       )}
                     </View>
@@ -636,11 +624,11 @@ export default function PlannerScreen() {
                     }}
                     style={[
                       styles.dayPill,
-                      isSelected && { borderColor: COLORS.messhall, backgroundColor: "#0b1220" },
+                      isSelected && { borderColor: COLORS.accent, backgroundColor: COLORS.bg },
                     ]}
                     activeOpacity={0.9}
                   >
-                    <Text style={[styles.dayLabel, isSelected && { color: COLORS.messhall }]}>
+                    <Text style={[styles.dayLabel, isSelected && { color: COLORS.accent }]}>
                       {d.format("ddd").toUpperCase()}
                     </Text>
                     <View style={styles.dayBubbleColumn}>
@@ -838,7 +826,7 @@ export default function PlannerScreen() {
                             {r.minutes ? ` • ${r.minutes}m` : ""}
                           </Text>
                         </View>
-                        <Ionicons name="add-circle" size={22} color={COLORS.messhall} />
+                          <Ionicons name="add-circle" size={22} color={COLORS.accent} />
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -902,7 +890,7 @@ const styles = StyleSheet.create({
   // sponsor card
   sponsorWrap: { padding: 16, paddingBottom: 8 },
   sponsorCard: {
-    backgroundColor: COLORS.card2,
+  backgroundColor: COLORS.card,
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
@@ -910,14 +898,14 @@ const styles = StyleSheet.create({
   },
   sponsorEyebrow: { color: COLORS.subtext, fontSize: 12, marginBottom: 4 },
   sponsorTitle: { color: COLORS.text, fontSize: 16, fontWeight: "800", marginBottom: 8 },
-  sponsorImg: { width: 72, height: 72, borderRadius: 36, marginLeft: 12, backgroundColor: "#0b1220" },
+  sponsorImg: { width: 72, height: 72, borderRadius: 36, marginLeft: 12, backgroundColor: COLORS.bg },
   ctaPill: {
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
     paddingHorizontal: 10,
     paddingVertical: 6,
-    backgroundColor: COLORS.messhall,
+  backgroundColor: COLORS.accent,
     borderRadius: 999,
     gap: 6,
   },
@@ -938,7 +926,7 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: COLORS.card2,
+  backgroundColor: COLORS.card,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
@@ -948,10 +936,10 @@ const styles = StyleSheet.create({
     width: 84,
     padding: 10,
     marginRight: 10,
-    backgroundColor: COLORS.card2,
+  backgroundColor: COLORS.card,
     borderRadius: 14,
     borderWidth: 2,
-    borderColor: COLORS.card2,
+  borderColor: COLORS.card,
   },
   dayLabel: { color: COLORS.subtext, fontWeight: "800", fontSize: 12 },
   dayBubbleColumn: { marginTop: 6, flexDirection: "column", gap: 6, alignItems: "flex-start" },
@@ -983,8 +971,8 @@ const styles = StyleSheet.create({
   mealRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    backgroundColor: COLORS.card2,
+  gap: 10,
+  backgroundColor: COLORS.card,
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
@@ -1056,7 +1044,7 @@ const styles = StyleSheet.create({
   fab: {
     position: "absolute",
     alignSelf: "center",
-    backgroundColor: COLORS.messhall,
+  backgroundColor: COLORS.accent,
     paddingHorizontal: 16,
     height: 44,
     borderRadius: 999,
@@ -1085,20 +1073,20 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.card2,
+  borderColor: COLORS.border,
+  backgroundColor: COLORS.card,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
   searchInput: { color: COLORS.text, flex: 1, paddingVertical: 0 },
-  searchBtn: { backgroundColor: COLORS.messhall, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
+  searchBtn: { backgroundColor: COLORS.accent, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
   pickRow: {
     flexDirection: "row",
     gap: 12,
     alignItems: "center",
-    padding: 10,
-    backgroundColor: COLORS.card2,
+  padding: 10,
+  backgroundColor: COLORS.card,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -1118,7 +1106,7 @@ const styles = StyleSheet.create({
   sheet: {
     width: "100%",
     maxWidth: 480,
-    backgroundColor: COLORS.card2,
+  backgroundColor: COLORS.card,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -1133,7 +1121,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderRadius: 12,
-    backgroundColor: COLORS.messhall,
+  backgroundColor: COLORS.accent,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1158,7 +1146,7 @@ const styles = StyleSheet.create({
   toast: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.card2,
+  backgroundColor: COLORS.card,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#2b3342",
