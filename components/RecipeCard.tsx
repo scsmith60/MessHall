@@ -45,9 +45,7 @@ import { Share } from "react-native";
 import { recipeUrl } from "@/lib/links";
 import { isBlocked, unblockUser } from "@/lib/blocking"; // 👈 NEW
 
-// 🎯 NEW: unify surface colors so big RecipeCard matches horizontal rail cards
-const SURFACE = "#0b1220";        // dark navy (same as rails)
-const SURFACE_BORDER = "#2c3a4d"; // subtle outline used across app
+// Use semantic tokens from lib/theme for surface / borders to keep visuals uniform
 
 // 👉 tiny badge
 import CaloriePill from "@/components/CaloriePill";
@@ -431,7 +429,8 @@ function RecipeCard(props: Props) {
                 style={styles.editFab}
                 accessibilityLabel="Edit recipe"
               >
-                <MaterialCommunityIcons name="pencil" size={16} color="#e5e7eb" />
+                <MaterialCommunityIcons name="pencil" size={16} color={COLORS.text} />
+                
               </Pressable>
             )}
 
@@ -464,7 +463,7 @@ function RecipeCard(props: Props) {
             {/* 💚 author medal count */}
             {props.knives > 0 && (
               <View style={styles.pill}>
-                <MaterialCommunityIcons name="medal" size={12} color="#E5E7EB" />
+                <MaterialCommunityIcons name="medal" size={12} color={COLORS.text} />
                 <Text style={styles.pillText}>{compactNumber(props.knives)}</Text>
               </View>
             )}
@@ -509,13 +508,13 @@ function RecipeCard(props: Props) {
                 <Ionicons
                   name={props.isSaved ? "bookmark" : "bookmark-outline"}
                   size={16}
-                  color={props.isSaved ? "#CFF8D6" : COLORS.text}
+                  color={props.isSaved ? COLORS.accent : COLORS.text}
                   style={{ marginRight: 6 }}
                 />
                 <Text
                 style={([
                   styles.saveText,
-                  props.isSaved ? { color: "#CFF8D6", fontWeight: "800" } : undefined,
+                  props.isSaved ? { color: COLORS.accent, fontWeight: "800" } : undefined,
                   ] as any)}
                 >
                   {props.isSaved ? "Saved" : "Save"}
@@ -544,12 +543,12 @@ function RecipeCard(props: Props) {
                     </>
                   ) : cooked ? (
                     <>
-                      <Ionicons name="checkmark-circle" size={16} color="#CFF8D6" />
-                      <Text style={[styles.cookedText, { color: "#CFF8D6" }]}>Cooked</Text>
+                      <Ionicons name="checkmark-circle" size={16} color={COLORS.accent} />
+                      <Text style={[styles.cookedText, { color: COLORS.accent }]}>Cooked</Text>
                     </>
                   ) : (
                     <>
-                      <Ionicons name="restaurant-outline" size={16} color="#E5E7EB" />
+                      <Ionicons name="restaurant-outline" size={16} color={COLORS.text} />
                       <Text style={styles.cookedText}>I cooked</Text>
                     </>
                   )}
@@ -606,7 +605,7 @@ const AvatarTiny = memo(function AvatarTiny({
     return (
       <Image
         source={{ uri: creatorAvatar }}
-        style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: "#0b1220" }}
+  style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: COLORS.card }}
       />
     );
   }
@@ -616,11 +615,11 @@ const AvatarTiny = memo(function AvatarTiny({
         width: size,
         height: size,
         borderRadius: size / 2,
-        backgroundColor: "#0b1220",
+        backgroundColor: COLORS.card,
         alignItems: "center",
         justifyContent: "center",
         borderWidth: 1,
-        borderColor: "##1a2433",
+        borderColor: COLORS.border,
       }}
     >
       <Text style={{ color: COLORS.text, fontSize: size * 0.6, fontWeight: "800" }}>{letter}</Text>
@@ -670,7 +669,7 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.xl,
     backgroundColor:  COLORS.card,
     borderWidth: 1,
-    borderColor: "#1a2433",
+    borderColor: COLORS.border,
     padding: 10,
     shadowColor: "#000",
     shadowOpacity: 0.25,
@@ -683,9 +682,9 @@ const styles = StyleSheet.create({
 
   // 🧱 fallback block when there is no image URL
   imgFallback: {
-    backgroundColor: "#0b1220",
+    backgroundColor: COLORS.card,
     borderWidth: 1,
-    borderColor: "#1a2433",
+    borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -717,9 +716,9 @@ const styles = StyleSheet.create({
     width: 30,
     height: 30,
     borderRadius: 15,
-    backgroundColor: "rgba(2,6,23,0.7)",
+    backgroundColor: COLORS.overlay,
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
     zIndex: 10,
@@ -741,12 +740,12 @@ const styles = StyleSheet.create({
     right: 88,
     bottom: 16,
     //maxWidth: "85%",
-    backgroundColor: "rgba(2, 6, 23, 0.60)",
+    backgroundColor: COLORS.overlay,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#1a2433",
+    borderColor: COLORS.border,
   },
   titleText: { color: COLORS.text, fontSize: 16, fontWeight: "900" },
 
@@ -756,7 +755,7 @@ const styles = StyleSheet.create({
   creator: { color: COLORS.text, fontWeight: "600", fontSize: 14 },
   dim: { color: COLORS.subtext, fontSize: 12 },
   stat: { color: COLORS.subtext, fontSize: 13 },
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: "#2c3a4d", opacity: 0.8, marginTop: 2 },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.border, opacity: 0.9, marginTop: 2 },
 
   medalStat: { flexDirection: "row", alignItems: "center" },
   likeStat: { flexDirection: "row", alignItems: "center" },
@@ -765,15 +764,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "#0b3b2e",
+    backgroundColor: COLORS.surface,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#134e4a",
+    borderColor: COLORS.border,
     marginLeft: 8,
   },
-  pillText: { color: "#E5E7EB", fontSize: 11, fontWeight: "800" },
+  pillText: { color: COLORS.text, fontSize: 11, fontWeight: "800" },
 
   likeBtn: {
     flexDirection: "row",
@@ -782,11 +781,11 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: COLORS.border,
     backgroundColor: "transparent",
     marginRight: 8,
   },
-  likeBtnActive: { borderColor: COLORS.accent, backgroundColor: "#0b1220" },
+  likeBtnActive: { borderColor: COLORS.accent, backgroundColor: COLORS.surface },
   likeText: { color: COLORS.text, fontWeight: "700", fontSize: 13 },
 
   // 💾 SAVE button styles
@@ -797,16 +796,16 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: COLORS.border,
     backgroundColor: "transparent",
   },
-  saveBtnActive: { borderColor: "#2BAA6B", backgroundColor: "#183B2B" },
+  saveBtnActive: { borderColor: COLORS.accent, backgroundColor: COLORS.surface },
   saveText: { color: COLORS.text, fontWeight: "700", fontSize: 13 },
 
   actionRow: { marginTop: 6 },
   // CHANGE #2: cooked button uses unified surface + border
   cookedButton: {
-    backgroundColor: SURFACE,
+    backgroundColor: COLORS.surface,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 14,
@@ -815,20 +814,20 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
     borderWidth: 1,
-    borderColor: SURFACE_BORDER,
+    borderColor: COLORS.border,
   },
-  cookedButtonActive: { backgroundColor: "#14532d", borderColor: "#134e4a" },
-  cookedText: { color: "#E5E7EB", fontWeight: "900", fontSize: 14 },
+  cookedButtonActive: { backgroundColor: COLORS.accentActive, borderColor: COLORS.accent },
+  cookedText: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
 
   ownerChip: {
     marginTop: 8,
     alignSelf: "flex-start",
-    backgroundColor: "#1f2937",
+    backgroundColor: COLORS.elevated,
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: COLORS.border,
   },
   ownerChipText: { color: COLORS.subtext, fontWeight: "800" },
 
@@ -840,8 +839,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#2c3a4d",
-    backgroundColor: "#0b1220",
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
   },
   commentChipText: { color: COLORS.text, fontWeight: "700", fontSize: 12 },
 
@@ -851,7 +850,7 @@ const styles = StyleSheet.create({
     gap: 8,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#1a2433",
+    borderColor: COLORS.border,
     paddingVertical: 10,
     justifyContent: "center",
   },
@@ -863,7 +862,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "transparent",
     borderWidth: 1,
-    borderColor: "#2c3a4d",
+    borderColor: COLORS.border,
   },
   commentsBadgeText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
 });

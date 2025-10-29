@@ -7,13 +7,7 @@ import { Tabs, Redirect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth";
 import FloatingBell from "@/components/FloatingBell";
-
-const COLORS = {
-  bg: "#0b1220",
-  border: "#1f2937",
-  text: "#cbd5e1",
-  active: "#22c55e",
-};
+import { COLORS } from "../../lib/theme";
 
 const makeIcon =
   (name: React.ComponentProps<typeof Ionicons>["name"]) =>
@@ -47,8 +41,8 @@ export default function TabsLayout() {
       <Tabs
         screenOptions={{
           headerShown: false, // 👈 hide header to remove the empty bar
-          tabBarActiveTintColor: COLORS.active,
-          tabBarInactiveTintColor: COLORS.text,
+          tabBarActiveTintColor: COLORS.accent,
+          tabBarInactiveTintColor: COLORS.subtext,
           tabBarStyle: { backgroundColor: COLORS.bg, borderTopColor: COLORS.border },
         }}
       >

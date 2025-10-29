@@ -23,8 +23,8 @@ const Gate =
     (TutorialOverlay as any).default ??
     (({ children }: any) => <>{children}</>)) as React.ComponentType<any>;
 
-// 🎨 quick colors (bg is your screen background that will "shine" behind the status bar)
-const COLORS = { bg: "#0b1220", text: "#e5e7eb", sub: "#94a3b8", subtext: "#94a3b8", accent: "#53856b" };
+// 🎨 centralized colors
+import { COLORS } from "../lib/theme";
 
 /* -----------------------------------------------------------
    🧸 helper: am I at an auth route?
