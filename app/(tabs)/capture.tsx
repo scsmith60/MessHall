@@ -95,32 +95,61 @@ function parseGordonRamsayRecipe(html: string, url: string): RecipeExtraction | 
       .trim();
 
   const asideMatch = html.match(/<aside[^>]*class=["'][^"']*recipe-ingredients[^"']*["'][^>]*>([\s\S]*?)<\/aside>/i);
-  const articleMatch = html.match(/<article[^>]*class=["'][^"']*recipe-instructions[^"']*["'][^>]*>([\s\S]*?)<\/article>/i);
+  const stepSections: string[] = [];
+  const primarySection = html.match(/<article[^>]*class=["'][^"']*recipe-instructions[^"']*["'][^>]*>([\s\S]*?)<\/article>/i);
+  if (primarySection?.[1]) stepSections.push(primarySection[1]);
 
-  if (!asideMatch && !articleMatch) return null;
+  const altSectionRe =
+    /<(?:article|section|div)[^>]*class=["'][^"']*(?:recipe-(?:instructions|method)|method|directions?)[^"']*["'][^>]*>([\s\S]*?)<\/(?:article|section|div)>/gi;
+  for (const match of html.matchAll(altSectionRe)) {
+    if (match[1]) stepSections.push(match[1]);
+  }
+
+  if (!stepSections.length) {
+    const headingRe =
+      /<h[2-4][^>]*>\s*(?:Method|Methods|Directions?|Cooking\s+Instructions?|Cooking\s+Method|Instructions?)\s*<\/h[2-4]>([\s\S]{0,4000}?)(?=<h[2-4][^>]*>|<\/(?:section|article|div)>|$)/gi;
+    let headingMatch: RegExpExecArray | null;
+    while ((headingMatch = headingRe.exec(html))) {
+      if (headingMatch[1]) stepSections.push(headingMatch[1]);
+    }
+  }
+
+  if (!asideMatch && !stepSections.length) return null;
 
   const ingredients: string[] = [];
   if (asideMatch) {
     const section = asideMatch[1];
     for (const item of section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
       let text = clean(item[1]);
-      text = text.replace(/^\d+\.\s*/, "");
+      text = text.replace(/^(\d+)[.)]\s+/, "$1 ");
       if (text) ingredients.push(text);
     }
   }
 
   const steps: string[] = [];
-  if (articleMatch) {
-    const section = articleMatch[1];
+  const seenSteps = new Set<string>();
+  for (const section of stepSections) {
+    if (!section) continue;
+
+    let localAdded = false;
     for (const item of section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
       const text = clean(item[1]);
-      if (text) steps.push(text);
+      if (!text || seenSteps.has(text)) continue;
+      seenSteps.add(text);
+      steps.push(text);
+      localAdded = true;
     }
-    if (!steps.length) {
+
+    if (!localAdded) {
       const paragraphs = section.match(/<p[^>]*>([\s\S]*?)<\/p>/gi) || [];
       for (const paragraph of paragraphs) {
         const text = clean(paragraph);
-        if (text) steps.push(text);
+        if (!text) continue;
+        if (/^serves\b/i.test(text)) continue;
+        if (/^watch\b/i.test(text)) continue;
+        if (seenSteps.has(text)) continue;
+        seenSteps.add(text);
+        steps.push(text);
       }
     }
   }
@@ -454,6 +483,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
     if (t.startsWith("tiktok -") || t.startsWith("tiktok |") || t.startsWith("tiktok –")) return true;
     if (t.includes("tiktok") && t.includes("make your day")) return true;
+    if (/^original (sound|audio)\b/.test(t)) return true;
     return false;
   }
 
@@ -467,9 +497,13 @@ function findDishTitleFromText(source: string, url: string): string | null {
     // Reject obvious ingredient-only phrases like "salt and pepper"
     try {
       const ingredientToken = /\b(?:salt|pepper|garlic|onion|butter|sugar|oil|vinegar|soy sauce|olive oil|lemon|lime|parsley|cilantro|basil|tomato|cream|cheese)\b/i;
-      const joiners = /(?:\band\b|,|\/|&)/i;
-      const words = s.split(/\s+/).filter(Boolean).length;
-      if (ingredientToken.test(s) && (joiners.test(s) || words <= 3)) return true;
+      if (ingredientToken.test(s)) {
+        const words = s.split(/\s+/).filter(Boolean);
+        const ingredientCount = words.filter((w) => ingredientToken.test(w)).length;
+        const nonIngredientCount = words.length - ingredientCount;
+        if (words.length <= 3 && ingredientCount >= 2) return true;
+        if (nonIngredientCount <= 1 && words.length <= 4) return true;
+      }
     } catch {}
     if (lower === "food network" || lower === "allrecipes" || lower === "youtube") return true;
     // reject generic, non-dish phrases
@@ -1151,70 +1185,89 @@ function stitchBrokenSteps(lines: string[]): string[] {
     return false;
   }, [isValidCandidate, bumpStage]);
 
-  const handleRecipeSite = useCallback(async (url: string, html: string) => {
-  try {
-    // Try JSON-LD first (most reliable)
-    const jsonLd = extractRecipeFromJsonLd(html);
-    if (jsonLd) {
-      dbg("≡ƒì│ JSON-LD recipe found");
-      
-      if (jsonLd.title && isWeakTitle(title)) {
-        safeSetTitle(jsonLd.title, url, title, dbg, "jsonld");
+  const handleRecipeSite = useCallback(
+    async (url: string, html: string) => {
+      try {
+        const host = (() => {
+          try {
+            return new URL(url).hostname.toLowerCase();
+          } catch {
+            return "";
+          }
+        })();
+        const isGordon = host.includes("gordonramsay.com");
+
+        const applyExtraction = async (
+          data: RecipeExtraction | null | undefined,
+          source: string,
+          { includeMeta = false }: { includeMeta?: boolean } = {}
+        ) => {
+          if (!data) return false;
+          if (data.title && isWeakTitle(title)) {
+            safeSetTitle(data.title, url, title, dbg, source);
+          }
+          if (data.ingredients && data.ingredients.length >= 2) {
+            setIngredients(data.ingredients);
+            bumpStage(2);
+          }
+          if (data.steps && data.steps.length >= 1) {
+            setSteps(data.steps);
+            bumpStage(3);
+          }
+          if (data.image) {
+            await tryImageUrl(data.image, url);
+          }
+          if (includeMeta) {
+            const anyData = data as any;
+            if (anyData?.time && !timeMinutes.trim()) setTimeMinutes(anyData.time);
+            if (anyData?.servings && !servings.trim()) setServings(anyData.servings);
+          }
+          return hasMeaningfulRecipeData(data);
+        };
+
+        const jsonLd = extractRecipeFromJsonLd(html);
+        if (jsonLd) {
+          dbg('[RECIPE] JSON-LD recipe found');
+          const jsonApplied = await applyExtraction(jsonLd, 'jsonld', { includeMeta: true });
+          const hasSteps = (jsonLd.steps?.length ?? 0) > 0;
+          if (jsonApplied && (!isGordon || hasSteps)) {
+            return true;
+          }
+          if (isGordon) {
+            dbg('[RECIPE] Gordon Ramsay HTML fallback after weak JSON-LD');
+            const parsed = parseGordonRamsayRecipe(html, url);
+            if (await applyExtraction(parsed, 'gordonramsay:html')) {
+              return true;
+            }
+          }
+        }
+
+        const microdata = extractRecipeFromMicrodata(html);
+        if (microdata) {
+          dbg('[RECIPE] Microdata recipe found');
+          const microApplied = await applyExtraction(microdata, 'microdata', { includeMeta: true });
+          const hasMicroSteps = (microdata.steps?.length ?? 0) > 0;
+          if (microApplied && (!isGordon || hasMicroSteps)) {
+            return true;
+          }
+        }
+
+        if (isGordon) {
+          dbg('[RECIPE] Gordon Ramsay HTML path');
+          const parsed = parseGordonRamsayRecipe(html, url);
+          if (await applyExtraction(parsed, 'gordonramsay:html')) {
+            return true;
+          }
+        }
+
+        return false;
+      } catch (e) {
+        dbg('[RECIPE] handler failed:', safeErr(e));
+        return false;
       }
-      
-      if (jsonLd.ingredients && jsonLd.ingredients.length >= 2) {
-        setIngredients(jsonLd.ingredients);
-        bumpStage(2);
-      }
-      
-      if (jsonLd.steps && jsonLd.steps.length >= 1) {
-        setSteps(jsonLd.steps);
-        bumpStage(3);
-      }
-      
-      if (jsonLd.image) {
-        await tryImageUrl(jsonLd.image, url);
-      }
-      
-      if (jsonLd.time) {
-        setTimeMinutes(jsonLd.time);
-      }
-      
-      if (jsonLd.servings) {
-        setServings(jsonLd.servings);
-      }
-      
-      return true;
-    }
-    
-    // Try microdata as fallback
-    const microdata = extractRecipeFromMicrodata(html);
-    if (microdata) {
-      dbg("≡ƒì│ Microdata recipe found");
-      
-      if (microdata.title && isWeakTitle(title)) {
-        safeSetTitle(microdata.title, url, title, dbg, "microdata");
-      }
-      
-      if (microdata.ingredients && microdata.ingredients.length >= 2) {
-        setIngredients(microdata.ingredients);
-        bumpStage(2);
-      }
-      
-      if (microdata.steps && microdata.steps.length >= 1) {
-        setSteps(microdata.steps);
-        bumpStage(3);
-      }
-      
-      return true;
-    }
-    
-    return false;
-  } catch (e) {
-    dbg("ΓÜá∩╕Å Recipe site handler failed:", safeErr(e));
-    return false;
-  }
-  }, [title, bumpStage, tryImageUrl, dbg, safeErr]);
+    },
+    [title, bumpStage, tryImageUrl, dbg, safeErr, timeMinutes, servings]
+  );
 
   
 

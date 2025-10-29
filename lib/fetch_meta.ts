@@ -47,7 +47,9 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
   const fromLdRecipe = parseJsonLdRecipe(html);
   if (fromLdRecipe) {
     fallbackPartial = { ...fallbackPartial, ...fromLdRecipe };
-    if (hasMeaningfulRecipeData(fromLdRecipe)) {
+    const hasSteps = (fromLdRecipe.steps?.length ?? 0) > 0;
+    const canReturnEarly = hasMeaningfulRecipeData(fromLdRecipe) && (!/gordonramsay\.com/i.test(url) || hasSteps);
+    if (canReturnEarly) {
       return finalize(url, fromLdRecipe, html, 'json-ld:Recipe');
     }
   }
@@ -55,7 +57,9 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
   const fromMicro = parseMicrodata(html);
   if (fromMicro) {
     fallbackPartial = { ...fallbackPartial, ...fromMicro };
-    if (hasMeaningfulRecipeData(fromMicro)) {
+    const hasSteps = (fromMicro.steps?.length ?? 0) > 0;
+    const canReturnEarly = hasMeaningfulRecipeData(fromMicro) && (!/gordonramsay\.com/i.test(url) || hasSteps);
+    if (canReturnEarly) {
       return finalize(url, fromMicro, html, 'microdata');
     }
   }
@@ -385,32 +389,62 @@ function parseGordonRamsay(html: string, url: string): { title?: string; ingredi
       .trim();
 
   const asideMatch = html.match(/<aside[^>]*class=["'][^"']*recipe-ingredients[^"']*["'][^>]*>([\s\S]*?)<\/aside>/i);
-  const articleMatch = html.match(/<article[^>]*class=["'][^"']*recipe-instructions[^"']*["'][^>]*>([\s\S]*?)<\/article>/i);
 
-  if (!asideMatch && !articleMatch) return null;
+  const stepSections: string[] = [];
+  const primarySection = html.match(/<article[^>]*class=["'][^"']*recipe-instructions[^"']*["'][^>]*>([\s\S]*?)<\/article>/i);
+  if (primarySection?.[1]) stepSections.push(primarySection[1]);
+
+  const altSectionRe =
+    /<(?:article|section|div)[^>]*class=["'][^"']*(?:recipe-(?:instructions|method)|method|directions?)[^"']*["'][^>]*>([\s\S]*?)<\/(?:article|section|div)>/gi;
+  for (const match of html.matchAll(altSectionRe)) {
+    if (match[1]) stepSections.push(match[1]);
+  }
+
+  if (!stepSections.length) {
+    const headingRe =
+      /<h[2-4][^>]*>\s*(?:Method|Methods|Directions?|Cooking\s+Instructions?|Cooking\s+Method|Instructions?)\s*<\/h[2-4]>([\s\S]{0,4000}?)(?=<h[2-4][^>]*>|<\/(?:section|article|div)>|$)/gi;
+    let headingMatch: RegExpExecArray | null;
+    while ((headingMatch = headingRe.exec(html))) {
+      if (headingMatch[1]) stepSections.push(headingMatch[1]);
+    }
+  }
+
+  if (!asideMatch && !stepSections.length) return null;
 
   const ingredients: string[] = [];
   if (asideMatch) {
     const section = asideMatch[1];
     for (const item of section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
       let text = clean(item[1]);
-      text = text.replace(/^\d+\.\s*/, "");
+      text = text.replace(/^(\d+)[.)]\s+/, "$1 ");
       if (text) ingredients.push(text);
     }
   }
 
   const steps: string[] = [];
-  if (articleMatch) {
-    const section = articleMatch[1];
+  const seenSteps = new Set<string>();
+  for (const section of stepSections) {
+    if (!section) continue;
+
+    let localAdded = false;
     for (const item of section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
       const text = clean(item[1]);
-      if (text) steps.push(text);
+      if (!text || seenSteps.has(text)) continue;
+      seenSteps.add(text);
+      steps.push(text);
+      localAdded = true;
     }
-    if (!steps.length) {
+
+    if (!localAdded) {
       const paragraphs = section.match(/<p[^>]*>([\s\S]*?)<\/p>/gi) || [];
       for (const p of paragraphs) {
         const text = clean(p);
-        if (text) steps.push(text);
+        if (!text) continue;
+        if (/^serves\b/i.test(text)) continue;
+        if (/^watch\b/i.test(text)) continue;
+        if (seenSteps.has(text)) continue;
+        seenSteps.add(text);
+        steps.push(text);
       }
     }
   }
