@@ -494,6 +494,12 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (isTikTokJunkTitle(s)) return true;
     const lower = s.toLowerCase();
     if (lower === "instagram" || lower === "see more" || lower === "global video community") return true;
+    if (/^(?:\d+|[¼½¾⅛⅜⅝⅞⅓⅔⅙⅚⅕⅖⅗⅘])/.test(s.trim())) return true;
+    if (/\b(likes?|views?|comments?|followers?|shares?)\b/.test(lower)) return true;
+    if (/@/.test(s)) return true;
+    if (/\b on (jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/.test(lower)) return true;
+    if (/\bjuice of\b/.test(lower)) return true;
+    if (/\d/.test(s) && /\b(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|clove|cloves|garlic|lemon|salt|pepper|stick|sticks|ml|g|gram|kg)\b/i.test(s)) return true;
     // Reject obvious ingredient-only phrases like "salt and pepper"
     try {
       const ingredientToken = /\b(?:salt|pepper|garlic|onion|butter|sugar|oil|vinegar|soy sauce|olive oil|lemon|lime|parsley|cilantro|basil|tomato|cream|cheese)\b/i;
@@ -654,7 +660,9 @@ function partitionIngredientRows(rows: string[], existingSteps: string[]): { ing
   for (const raw of rows) {
     const trimmed = (raw || "").trim();
     if (!trimmed) continue;
-    const key = sanitize(trimmed);
+    const normalized = trimmed.replace(/^\d{4}:\s*/, "").trim();
+    if (!normalized) continue;
+    const key = sanitize(normalized);
     if (!key) continue;
     keyCounts.set(key, (keyCounts.get(key) || 0) + 1);
   }
@@ -662,10 +670,19 @@ function partitionIngredientRows(rows: string[], existingSteps: string[]): { ing
   const seen = new Set<string>();
 
   for (const raw of rows) {
-    const trimmed = (raw || "").trim();
+    const original = (raw || "").trim();
+    if (!original) continue;
+
+    let trimmed = original.replace(/^\d{4}:\s*/, "").replace(/^["']+|["']+$/g, "").trim();
     if (!trimmed) continue;
-    const key = sanitize(trimmed);
+
     const lower = trimmed.toLowerCase();
+
+    if (/^(?:https?:\/\/|@)/i.test(trimmed)) continue;
+    if (/\b(likes?|views?|comments?|followers?|shares?)\b/.test(lower)) continue;
+    if (/\b on (jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/.test(lower)) continue;
+
+    const key = sanitize(trimmed);
     const hasMeasurement =
       ING_AMOUNT_CLUE.test(trimmed) || ING_UNIT_CLUE.test(trimmed) || TEXT_NUMBER_PATTERN.test(trimmed);
 
