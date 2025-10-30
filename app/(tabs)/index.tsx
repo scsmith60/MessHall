@@ -389,7 +389,16 @@ export default function HomeScreen() {
 
       // 1) OWNER SHELF
       try {
-        const { data: shelves } = await supabase.from("rail_shelves").select("*").limit(25);
+        const nowIso = new Date().toISOString();
+        const { data: shelves } = await supabase
+          .from("rail_shelves")
+          .select("*")
+          .eq("is_active", true)
+          .or(`starts_at.is.null,starts_at.lte.${nowIso}`)
+          .or(`ends_at.is.null,ends_at.gte.${nowIso}`)
+          .order("weight", { ascending: false })
+          .order("created_at", { ascending: false })
+          .limit(100);
         const activeShelves = (shelves ?? []).filter((s: any) => {
           const on = booly(firstDefined(s.is_active, s.active, true));
           if (!on) return false;
@@ -397,7 +406,14 @@ export default function HomeScreen() {
           const end = toDate(firstDefined<string>(s.ends_at, s.active_to));
           return within(now, start, end);
         });
-        const chosenShelf = weightedPick(activeShelves, (s: any) => Number(s.weight ?? 1));
+        const chosenShelf = [...activeShelves].sort((a: any, b: any) => {
+          const wa = Number(a.weight ?? 1);
+          const wb = Number(b.weight ?? 1);
+          if (wb !== wa) return wb - wa;
+          const ca = new Date(a.created_at ?? 0).getTime();
+          const cb = new Date(b.created_at ?? 0).getTime();
+          return cb - ca;
+        })[0];
         if (chosenShelf) {
           const { data: items } = await supabase
             .from("rail_shelf_items")
