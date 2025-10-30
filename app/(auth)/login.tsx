@@ -20,6 +20,10 @@ import {
   Image, // <-- we add Image to show your logo
 } from "react-native";
 import { Link, router } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
+import * as Linking from "expo-linking";
+import { makeRedirectUri } from "expo-auth-session";
+import { GoogleButton, AppleButton } from "../../components/ui/SocialButtons";
 import { supabase } from "../../lib/supabase";
 import { waitForSignedIn } from "../../lib/auth-wait";
 import { COLORS } from "@/lib/theme";
@@ -89,12 +93,32 @@ export default function Login() {
     }
   }
 
-  // 🌐 Google/Apple buttons
+  // 🌐 Google/Apple buttons (mobile-friendly OAuth with PKCE + deep links)
   async function loginWithProvider(provider: "google" | "apple") {
     try {
+      if (provider === "apple") {
+        Alert.alert("Coming soon", "Apple Sign in will be enabled after keys are added.");
+        return;
+      }
+
       setBusy(true);
-      const { error } = await supabase.auth.signInWithOAuth({ provider });
+      const redirectTo = makeRedirectUri({ scheme: "messhall" });
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo, skipBrowserRedirect: true },
+      });
       if (error) throw error;
+
+      if (data?.url) {
+        await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+        // After returning, wait briefly for Supabase to finalize session (AuthProvider will react)
+        const t0 = Date.now();
+        while (Date.now() - t0 < 4000) {
+          const { data: s } = await supabase.auth.getSession();
+          if (s.session) break;
+          await new Promise((r) => setTimeout(r, 120));
+        }
+      }
     } catch (e: any) {
       Alert.alert("Login failed", e?.message ?? String(e));
     } finally {
@@ -275,41 +299,9 @@ export default function Login() {
           </Text>
 
           {/* --------------- OAuth buttons --------------- */}
-          <View
-            style={{
-              flexDirection: "row",
-              gap: 10,
-              justifyContent: "center",
-              marginTop: 4,
-            }}
-          >
-            <TouchableOpacity
-              onPress={() => loginWithProvider("google")}
-              style={{
-                backgroundColor: LOCAL.field,
-                paddingVertical: 12,
-                paddingHorizontal: 16,
-                borderRadius: 10,
-                borderColor: "#334155",
-                borderWidth: 1,
-              }}
-            >
-              <Text style={{ color: LOCAL.text }}>Google</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => loginWithProvider("apple")}
-              style={{
-                backgroundColor: LOCAL.field,
-                paddingVertical: 12,
-                paddingHorizontal: 16,
-                borderRadius: 10,
-                borderColor: "#334155",
-                borderWidth: 1,
-              }}
-            >
-              <Text style={{ color: LOCAL.text }}>Apple</Text>
-            </TouchableOpacity>
+          <View style={{ flexDirection: "column", gap: 10, marginTop: 6 }}>
+            <GoogleButton label="Sign in with Google" onPress={() => loginWithProvider("google")} />
+            <AppleButton label="Continue with Apple" onPress={() => loginWithProvider("apple")} />
           </View>
         </View>
 

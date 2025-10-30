@@ -26,6 +26,8 @@ export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON
     persistSession: true,      // ✅ remember session on device
     autoRefreshToken: true,    // ✅ refresh tokens automatically
     detectSessionInUrl: false, // ✅ no web URL parsing in RN
+    // PKCE is the recommended OAuth flow for native apps (Expo/React Native)
+    flowType: "pkce",
   },
 });
 

@@ -18,10 +18,12 @@
     "babel-plugin-module-resolver": "^5.0.2",
     "dayjs": "^1.11.18",
     "expo": "~53.0.23",
+    "expo-auth-session": "^7.0.8",
     "expo-blur": "~14.1.5",
     "expo-build-properties": "~0.14.8",
     "expo-clipboard": "~7.1.5",
     "expo-constants": "~17.1.7",
+    "expo-crypto": "^15.0.7",
     "expo-file-system": "~18.1.11",
     "expo-haptics": "~14.1.4",
     "expo-image": "~2.4.0",
@@ -55,7 +57,7 @@
   "devDependencies": {
     "@types/react": "~19.0.0",
     "patch-package": "^8.0.0",
-    "typescript": "~5.8.3",
-    "puppeteer": "^21.8.0"
+    "puppeteer": "^24.27.0",
+    "typescript": "~5.8.3"
   }
 }

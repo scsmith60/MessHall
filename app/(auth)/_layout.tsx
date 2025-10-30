@@ -14,7 +14,7 @@ export default function AuthLayout() {
     pathname?.endsWith("/logout-complete");
 
   if (!loading && isLoggedIn && !inLogoutFlow) {
-    return <Redirect href="/(tabs)" />;
+    return <Redirect href="/(tabs)/index" />;
   }
 
   return <Stack screenOptions={{ headerShown: false }} />;

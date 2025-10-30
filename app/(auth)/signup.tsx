@@ -17,6 +17,10 @@ import {
   Image, // <-- show logo
 } from "react-native";
 import { Link, router } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
+import * as Linking from "expo-linking";
+import { makeRedirectUri } from "expo-auth-session";
+import { GoogleButton, AppleButton } from "../../components/ui/SocialButtons";
 import { supabase } from "../../lib/supabase";
 import { COLORS as THEME } from "@/lib/theme";
 
@@ -121,6 +125,32 @@ export default function SignUp() {
       router.replace({ pathname: "/verify", params: { email } });
     } catch (e: any) {
       Alert.alert("Sign up failed", e.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 🌐 Google OAuth (same flow as login)
+  async function signupWithGoogle() {
+    try {
+      setBusy(true);
+      const redirectTo = makeRedirectUri({ scheme: "messhall" });
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo, skipBrowserRedirect: true },
+      });
+      if (error) throw error;
+      if (data?.url) {
+        await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+        const t0 = Date.now();
+        while (Date.now() - t0 < 4000) {
+          const { data: s } = await supabase.auth.getSession();
+          if (s.session) break;
+          await new Promise((r) => setTimeout(r, 120));
+        }
+      }
+    } catch (e: any) {
+      Alert.alert("Google sign in failed", e?.message ?? String(e));
     } finally {
       setBusy(false);
     }
@@ -236,6 +266,16 @@ export default function SignUp() {
           {busy ? "Please wait..." : "CREATE ACCOUNT"}
         </Text>
       </TouchableOpacity>
+
+      {/* -------------------- Divider + OAuth -------------------- */}
+      <Text style={{ color: COLORS.subtext, textAlign: "center", marginTop: 10 }}>or continue with</Text>
+      <View style={{ flexDirection: "column", gap: 10, marginTop: 6 }}>
+        <GoogleButton label="Sign in with Google" onPress={signupWithGoogle} />
+        <AppleButton
+          label="Continue with Apple"
+          onPress={() => Alert.alert("Coming soon", "Apple Sign in will be enabled after keys are added.")}
+        />
+      </View>
 
       {/* -------------------- Bottom link -------------------- */}
       <View style={{ flexDirection: "row", gap: 6, justifyContent: "center", marginTop: 16 }}>

@@ -7,6 +7,9 @@
 // We kept your startup guard, error boundary, push token, and share-intent logic.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+// Polyfills needed by Supabase auth (URL, random values, WebCrypto)
+import "../lib/polyfills";
+import * as Linking from "expo-linking";
 import { View, ActivityIndicator, Platform, Text, TouchableOpacity } from "react-native";
 import { Slot, usePathname, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -192,6 +195,36 @@ function InnerApp() {
     }
   }, [hasShareIntent, shareIntent, router, resetShareIntent]);
 
+  // Handle OAuth deep link: exchange ?code=... for a session
+  useEffect(() => {
+    let active = true;
+    async function handle(url?: string | null) {
+      try {
+        if (!url) return;
+        const parsed = Linking.parse(url) as any;
+        let code = parsed?.queryParams?.code as any;
+        if (Array.isArray(code)) code = code[0];
+        if (code && typeof code !== "string") code = String(code);
+        if (code) {
+          const { error } = await (supabase.auth as any).exchangeCodeForSession(code);
+          if (error) console.warn("[oauth] exchange failed", error);
+        }
+      } catch (e) {
+        console.warn("[oauth] deep link handler failed", e);
+      }
+    }
+
+    (async () => {
+      const initial = await Linking.getInitialURL();
+      if (active) await handle(initial);
+    })();
+    const sub = Linking.addEventListener("url", (e) => handle(e.url));
+    return () => {
+      active = false;
+      sub.remove();
+    };
+  }, []);
+
   const content = (
     <>
       {/* ⭐ NEW: Transparent & translucent status bar — removes the "green strip" */}
@@ -279,20 +312,15 @@ export default function RootLayout() {
       }
     }, 4000);
 
-    // 2) Do the actual first check
+    // 2) Do the actual first check (don't hard-redirect; let screens render)
     (async () => {
       try {
         const { data } = await supabase.auth.getSession();
-        const hasSession = !!data?.session;
-        if (!hasSession && !inAuthFlow && !watchdogFiredRef.current) {
-          router.replace("/login");
-        }
+        const _hasSession = !!data?.session;
+        // We no longer force navigation here to avoid flicker/race conditions
       } catch (e) {
         // If it errors, we still want to render something (not black screen)
         console.warn("[startup] getSession failed:", e);
-        if (!inAuthFlow && !watchdogFiredRef.current) {
-          router.replace("/login");
-        }
       } finally {
         if (alive) setCheckedOnce(true);
       }
@@ -307,13 +335,18 @@ export default function RootLayout() {
   // 3) Listen for auth flips (same as before)
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
+      // Ensure we stop the initial warm screen once any event fires
+      setCheckedOnce(true);
+
       if (event === "SIGNED_OUT") {
-        // use rAF to let router mount
-        requestAnimationFrame(() => router.replace("/logout"));
+        // Only push to login if we're not already on an auth screen
+        if (!inAuthFlow) {
+          requestAnimationFrame(() => router.replace("/login"));
+        }
       }
       if (event === "SIGNED_IN") {
         if (inAuthFlow) {
-          requestAnimationFrame(() => router.replace("/(tabs)"));
+          requestAnimationFrame(() => router.replace("/(tabs)/index"));
         }
       }
     });
