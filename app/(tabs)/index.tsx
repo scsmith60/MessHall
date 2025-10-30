@@ -164,12 +164,41 @@ type FeedMode = "trending" | "top_week" | "newest";
 
 /* ───────── seasonal labels ───────── */
 function getSeasonalContext(now = new Date()) {
-  const m = now.getMonth();
-  const d = now.getDay();
-  if (d === 0 || d === 6) return "gameday";
-  if (m === 10) return "thanksgiving";
-  if (m === 11) return "christmas";
-  if (m >= 4 && m <= 7) return "grill";
+  const month = now.getMonth(); // 0-11
+  const date = now.getDate(); // 1-31
+  const day = now.getDay(); // 0=Sun
+
+  // Weekend default to gameday/snacks
+  if (day === 0 || day === 6) return "gameday";
+
+  // Winter (Dec-Feb)
+  if (month === 11) return "holiday"; // December
+  if (month === 0) return date <= 7 ? "new year" : "cozy"; // January
+  if (month === 1) {
+    if (date <= 14) return "gameday"; // early Feb (Super Bowl period)
+    if (date === 14) return "date night"; // Valentine's
+    return "cozy";
+  }
+
+  // Spring (Mar-May)
+  if (month === 2) return date >= 15 ? "spring" : "cozy"; // March
+  if (month === 3) return "spring"; // April
+  if (month === 4) {
+    if (date <= 7) return "cinco"; // lead-in to Cinco de Mayo
+    return "spring"; // May
+  }
+
+  // Summer (Jun-Aug)
+  if (month >= 5 && month <= 7) return "bbq";
+
+  // Back to school (Sep)
+  if (month === 8) return "back to school";
+
+  // Fall (Oct-Nov)
+  if (month === 9) return "halloween"; // October
+  if (month === 10) return "thanksgiving"; // November
+
+  // Fallback
   return "quick";
 }
 function labelForTopic(topic: string) {
@@ -177,7 +206,14 @@ function labelForTopic(topic: string) {
   if (t.includes("gameday")) return "Game Day Foods";
   if (t.includes("thanksgiving")) return "Thanksgiving Table";
   if (t.includes("christmas") || t.includes("holiday")) return "Holiday Hits";
-  if (t.includes("grill")) return "Grill & Chill";
+  if (t.includes("new year")) return "New Year Fresh Starts";
+  if (t.includes("date night")) return "Date Night In";
+  if (t.includes("spring")) return "Spring Fresh";
+  if (t.includes("bbq") || t.includes("grill")) return "Grill & Chill";
+  if (t.includes("back to school")) return "Back-to-School Quick Wins";
+  if (t.includes("halloween")) return "Spooky & Cozy";
+  if (t.includes("cozy")) return "Cozy Comforts";
+  if (t.includes("cinco")) return "Cinco de Mayo";
   if (t.includes("quick")) return "Quick Dinners";
   return "Seasonal Picks";
 }
@@ -454,6 +490,22 @@ export default function HomeScreen() {
 
       // 3) FALLBACK suggestions (seasonal, smart, latest)
       const topic = getSeasonalContext(new Date());
+      const synonyms: string[] = (() => {
+        const t = topic.toLowerCase();
+        if (t === "holiday") return ["christmas", "holiday", "holidays"];
+        if (t === "bbq") return ["bbq", "barbecue", "grill", "cookout"];
+        if (t === "spring") return ["spring", "fresh", "asparagus", "salad"];
+        if (t === "gameday") return ["game day", "gameday", "wings", "snacks"];
+        if (t === "cozy") return ["cozy", "soup", "stew", "chili"];
+        if (t === "back to school") return ["back to school", "lunch", "meal prep", "quick"];
+        if (t === "date night") return ["date night", "romantic", "steak", "pasta"];
+        if (t === "new year") return ["new year", "light", "healthy"];
+        if (t === "cinco") return ["cinco", "taco", "mexican"];
+        if (t === "halloween") return ["halloween", "pumpkin", "fall"];
+        if (t === "thanksgiving") return ["thanksgiving", "turkey", "sides"];
+        if (t === "quick") return ["quick", "30-minute", "easy"];
+        return [t];
+      })();
       let suggestions: RailItem[] = [];
       try {
         const smart = await (dataAPI as any).getSmartSuggestionsForContext?.(topic);
@@ -462,14 +514,17 @@ export default function HomeScreen() {
         }
       } catch {}
       if (!suggestions.length) {
-        const { data: rows } = await supabase
-          .from("recipes")
-          .select("id, title, image_url, is_private")
-          .ilike("title", `%${topic}%`)
-          .limit(12);
-        (rows ?? []).forEach((r: any) => {
-          if (!isPrivateFlag(r.is_private)) suggestions.push({ kind: "recipe", id: String(r.id), title: r.title ?? "Recipe", image: r.image_url ?? null });
-        });
+        for (const word of synonyms) {
+          if (suggestions.length) break;
+          const { data: rows } = await supabase
+            .from("recipes")
+            .select("id, title, image_url, is_private")
+            .ilike("title", `%${word}%`)
+            .limit(12);
+          (rows ?? []).forEach((r: any) => {
+            if (!isPrivateFlag(r.is_private)) suggestions.push({ kind: "recipe", id: String(r.id), title: r.title ?? "Recipe", image: r.image_url ?? null });
+          });
+        }
       }
       if (!suggestions.length) {
         const { data: rows2 } = await supabase

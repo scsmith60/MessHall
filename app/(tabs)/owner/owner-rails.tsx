@@ -42,7 +42,7 @@ export default function OwnerRails() {
       <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
         <Text style={{ color: "#fff", fontWeight: "900", fontSize: 22, flex: 1 }}>Shelves</Text>
         <TouchableOpacity
-          onPress={() => router.push("/owner/create-rail")}
+          onPress={() => router.push("/(tabs)/owner/create-rail")}
           style={{ backgroundColor: COLORS.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12 }}
         >
           <Text style={{ color: "#001018", fontWeight: "900" }}>New Shelf</Text>
@@ -59,7 +59,7 @@ export default function OwnerRails() {
           ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
           renderItem={({ item }) => (
             <TouchableOpacity
-              onPress={() => router.push({ pathname: "/owner/create-rail", params: { id: item.id } })}
+              onPress={() => router.push({ pathname: "/(tabs)/owner/create-rail", params: { id: item.id } })}
               style={{
                 backgroundColor: "rgba(255,255,255,0.06)",
                 borderColor: "rgba(255,255,255,0.08)",
