@@ -19,26 +19,28 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../../lib/supabase";
+import { COLORS as THEME } from "@/lib/theme";
 
 /* ----------------------------- Tiny theme ----------------------------- */
 // 🟢 MessHall-like theme (works in dark/light). Keep or wire to your design system.
 function useTheme() {
+  // This screen follows the app's dark theme tokens; light fallback keeps readable defaults
   const scheme = useColorScheme();
   if (scheme === "dark") {
     return {
-      bg: "#0b1220",
-      card: "#111827",
-      border: "#1f2937",
-      text: "#F8FAFC",
-      textMuted: "#93A3B8",
-      accent: "#22c55e", // MessHall green
-      primary: "#3b82f6",
+      bg: THEME.bg,
+      card: THEME.card,
+      border: THEME.border,
+      text: THEME.text,
+      textMuted: THEME.subtext,
+      accent: THEME.accent,
+      primary: THEME.accent,
       pillBg: "rgba(255,255,255,0.08)",
       pillBorder: "rgba(255,255,255,0.12)",
-      pillText: "#E5E7EB",
-      trim: "#166534",
+      pillText: THEME.text,
+      trim: THEME.accentActive,
       danger: "#ef4444",
-    };
+    } as const;
   }
   return {
     bg: "#F8FAFC",
@@ -53,7 +55,7 @@ function useTheme() {
     pillText: "#E5E7EB",
     trim: "#065f46",
     danger: "#ef4444",
-  };
+  } as const;
 }
 
 /* ----------------------------- Pill Button ---------------------------- */

@@ -22,23 +22,18 @@ import {
 import { Link, router } from "expo-router";
 import { supabase } from "../../lib/supabase";
 import { waitForSignedIn } from "../../lib/auth-wait";
+import { COLORS } from "@/lib/theme";
 
-// 🎨 Colors (pulled from your logo)
-//   - M_GREEN is the main green from your image (#53856b).
-//   - M_GREEN_DIM is a tiny bit darker for disabled states.
-const M_GREEN = "#53856b";
-const M_GREEN_DIM = "#3f6b55";
-
-const COLORS = {
-  // nice dark background that your logo sits on
-  bg: "#0f172a",
-  text: "#e5e7eb",
-  sub: "#9ca3af",
-  subtext: "#9ca3af",
-  field: "#1f2937",
-  green: M_GREEN,
-  greenDim: M_GREEN_DIM,
-  buttonText: "#0b0f19", // dark text on green so it pops
+// Theme-provided color aliases used locally in this screen
+const LOCAL = {
+  bg: COLORS.bg,
+  text: COLORS.text,
+  sub: COLORS.subtext,
+  subtext: COLORS.subtext,
+  field: COLORS.card,
+  green: COLORS.accent,
+  greenDim: COLORS.accentActive,
+  buttonText: COLORS.onAccent,
 };
 
 // 🧼 turn spaces into underscores for safe usernames
@@ -112,7 +107,7 @@ export default function Login() {
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: COLORS.bg }}
+      style={{ flex: 1, backgroundColor: LOCAL.bg }}
       behavior={Platform.select({ ios: "padding", android: undefined })}
     >
       {/* Outer safe padding */}
@@ -124,10 +119,10 @@ export default function Login() {
             style={{ width: 120, height: 120, marginBottom: 12 }}
             resizeMode="contain"
           />
-          <Text style={{ color: COLORS.text, fontSize: 28, fontWeight: "800" }}>
+          <Text style={{ color: LOCAL.text, fontSize: 28, fontWeight: "800" }}>
             Welcome to MessHall
           </Text>
-          <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
+          <Text style={{ color: LOCAL.subtext, marginTop: 4 }}>
             Sign in to cook, share, and shop.
           </Text>
         </View>
@@ -135,8 +130,8 @@ export default function Login() {
         {/* ---------- CARD: Fields ---------- */}
         <View
           style={{
-            backgroundColor: "#0b1220",
-            borderColor: "#1f2937",
+            backgroundColor: COLORS.card,
+            borderColor: COLORS.border,
             borderWidth: 1,
             borderRadius: 16,
             padding: 16,
@@ -145,7 +140,7 @@ export default function Login() {
         >
           {/* Identifier (email or username) */}
           <View style={{ gap: 6 }}>
-            <Text style={{ color: COLORS.subtext, fontSize: 12 }}>
+            <Text style={{ color: LOCAL.subtext, fontSize: 12 }}>
               Email or Username
             </Text>
             <TextInput
@@ -157,8 +152,8 @@ export default function Login() {
               placeholderTextColor="#6b7280"
               keyboardType="email-address"
               style={{
-                backgroundColor: COLORS.field,
-                color: COLORS.text,
+                backgroundColor: LOCAL.field,
+                color: LOCAL.text,
                 borderRadius: 10,
                 paddingHorizontal: 12,
                 paddingVertical: Platform.select({ ios: 14, android: 10 }),
@@ -171,7 +166,7 @@ export default function Login() {
 
           {/* Password */}
           <View style={{ gap: 6 }}>
-            <Text style={{ color: COLORS.subtext, fontSize: 12 }}>Password</Text>
+            <Text style={{ color: LOCAL.subtext, fontSize: 12 }}>Password</Text>
             <TextInput
               value={password}
               onChangeText={setPassword}
@@ -181,8 +176,8 @@ export default function Login() {
               placeholder="••••••••"
               placeholderTextColor="#6b7280"
               style={{
-                backgroundColor: COLORS.field,
-                color: COLORS.text,
+                backgroundColor: LOCAL.field,
+                color: LOCAL.text,
                 borderRadius: 10,
                 paddingHorizontal: 12,
                 paddingVertical: Platform.select({ ios: 14, android: 10 }),
@@ -198,10 +193,10 @@ export default function Login() {
               <Switch
                 value={show}
                 onValueChange={setShow}
-                trackColor={{ false: "#283548", true: COLORS.greenDim }}
-                thumbColor={show ? COLORS.green : "#94a3b8"}
+                trackColor={{ false: "#283548", true: LOCAL.greenDim }}
+                thumbColor={show ? LOCAL.green : "#94a3b8"}
               />
-              <Text style={{ color: COLORS.subtext }}>Show password</Text>
+              <Text style={{ color: LOCAL.subtext }}>Show password</Text>
             </View>
           </View>
 
@@ -247,7 +242,7 @@ export default function Login() {
           >
             <Text
               style={{
-                color: COLORS.subtext,
+                color: LOCAL.subtext,
                 textDecorationLine: "underline",
                 fontSize: 13,
               }}
@@ -261,7 +256,7 @@ export default function Login() {
             onPress={handleLogin}
             disabled={!canLogin}
             style={{
-              backgroundColor: canLogin ? COLORS.green : COLORS.greenDim,
+              backgroundColor: canLogin ? LOCAL.green : LOCAL.greenDim,
               borderRadius: 12,
               alignItems: "center",
               marginTop: 8,
@@ -269,13 +264,13 @@ export default function Login() {
               opacity: busy ? 0.8 : 1,
             }}
           >
-            <Text style={{ color: COLORS.buttonText, fontWeight: "800" }}>
+            <Text style={{ color: LOCAL.buttonText, fontWeight: "800" }}>
               {busy ? "Please wait..." : "ENTER MESS HALL"}
             </Text>
           </TouchableOpacity>
 
           {/* --------------- Divider text --------------- */}
-          <Text style={{ color: COLORS.subtext, textAlign: "center", marginTop: 8 }}>
+          <Text style={{ color: LOCAL.subtext, textAlign: "center", marginTop: 8 }}>
             or continue with
           </Text>
 
@@ -291,7 +286,7 @@ export default function Login() {
             <TouchableOpacity
               onPress={() => loginWithProvider("google")}
               style={{
-                backgroundColor: COLORS.field,
+                backgroundColor: LOCAL.field,
                 paddingVertical: 12,
                 paddingHorizontal: 16,
                 borderRadius: 10,
@@ -299,13 +294,13 @@ export default function Login() {
                 borderWidth: 1,
               }}
             >
-              <Text style={{ color: COLORS.text }}>Google</Text>
+              <Text style={{ color: LOCAL.text }}>Google</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               onPress={() => loginWithProvider("apple")}
               style={{
-                backgroundColor: COLORS.field,
+                backgroundColor: LOCAL.field,
                 paddingVertical: 12,
                 paddingHorizontal: 16,
                 borderRadius: 10,
@@ -313,7 +308,7 @@ export default function Login() {
                 borderWidth: 1,
               }}
             >
-              <Text style={{ color: COLORS.text }}>Apple</Text>
+              <Text style={{ color: LOCAL.text }}>Apple</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -321,15 +316,15 @@ export default function Login() {
         {/* ---------- BOTTOM LINKS ---------- */}
         <View style={{ alignItems: "center", marginTop: 16, gap: 8 }}>
           <View style={{ flexDirection: "row", gap: 6 }}>
-            <Text style={{ color: COLORS.subtext }}>Don’t have an account?</Text>
+            <Text style={{ color: LOCAL.subtext }}>Don’t have an account?</Text>
             {/* NOTE: If your project uses /sign-in instead of /signup, change this href accordingly */}
             <Link href="/signup">
-              <Text style={{ color: COLORS.green, fontWeight: "700" }}>
+              <Text style={{ color: LOCAL.green, fontWeight: "700" }}>
                 Create account.
               </Text>
             </Link>
           </View>
-          <Text style={{ color: COLORS.subtext }}>Terms & Privacy</Text>
+          <Text style={{ color: LOCAL.subtext }}>Terms & Privacy</Text>
         </View>
       </View>
     </KeyboardAvoidingView>

@@ -480,7 +480,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (!s) return true;
     if (isTikTokJunkTitle(s)) return true;
     const lower = s.toLowerCase();
-    if (lower === "instagram" || lower === "see more" || lower === "global video community") return true;
+    if (lower === "instagram" || lower === "see more" || lower === "global video community" || lower === "continue on web") return true;
     if (/^(?:\d+|[¼½¾⅛⅜⅝⅞⅓⅔⅙⅚⅕⅖⅗⅘])/.test(s.trim())) return true;
     if (/\b(likes?|views?|comments?|followers?|shares?)\b/.test(lower)) return true;
     if (/@/.test(s)) return true;
@@ -630,6 +630,7 @@ const STEP_INSTRUCTION_CUE = /\b(minutes?|seconds?|hour|hours|until|meanwhile|on
 const ING_AMOUNT_CLUE = /(\d+(?:\s+\d+\/\d+)?|\d+\/\d+|[\u00BC-\u00BE\u2150-\u215E])/i;
 const ING_UNIT_CLUE = /\b(cups?|cup|tsp|teaspoon|teaspoons|tbsp|tablespoon|tablespoons|oz|ounce|ounces|lb|pound|pounds|g|gram|grams|kg|ml|milliliter|milliliters|l|liter|litre|pinch|dash|clove|cloves|stick|sticks|sprig|sprigs|can|cans|head|heads|slice|slices|package|pack|packs|sheet|sheets|bag|bags|bunch|bunches|egg|eggs)\b/i;
 const ING_NOTE_START = /^(enough|serve|garnish|enjoy|store|keep|makes|yield|transfer|pour)\b/i;
+const SERVINGS_KEYWORD_ANYWHERE = /(\bservings?\b|\bper\s+person\b)/i;
 const ING_DUPLICATE_SANITIZE = /[^a-z0-9]+/gi;
 
 function partitionIngredientRows(rows: string[], existingSteps: string[]): { ingredients: string[]; steps: string[] } {
@@ -668,6 +669,10 @@ function partitionIngredientRows(rows: string[], existingSteps: string[]): { ing
     if (/^(?:https?:\/\/|@)/i.test(trimmed)) continue;
     if (/\b(likes?|views?|comments?|followers?|shares?)\b/.test(lower)) continue;
     if (/\b on (jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/.test(lower)) continue;
+    // Drop serving/yield notes that slipped into ingredients
+    if (SERVINGS_KEYWORD_ANYWHERE.test(lower) || /^[)\s]*ervings?\b/i.test(trimmed)) continue;
+    // Drop dangling fragments like "2 to" or "2-" that are usually part of a servings line
+    if (/^\d+\s*(?:to|-)?\s*$/i.test(trimmed)) continue;
 
     const key = sanitize(trimmed);
     const hasMeasurement =
@@ -1099,14 +1104,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
       const url = pendingImportUrl;
       setPendingImportUrl(null);
       (async () => {
+        bringHudToFront();
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         await startImport(url);
       })();
     }
-  }, [hudVisible, pendingImportUrl]);
+  }, [hudVisible, pendingImportUrl, bringHudToFront]);
 
   // ≡ƒº▓ HUD "z-index key" - we bump this whenever a helper modal opens,
   // so the HUD remounts LAST and stays on top like a blanket.
+  // Keep a z-index key so we can remount HUD on top of newly opened modals (WebViews)
   const [hudZKey, setHudZKey] = useState(0);
   const bringHudToFront = useCallback(() => setHudZKey((k) => k + 1), []);
 
@@ -1141,11 +1148,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
     text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string;
   } | null> => {
     const finalUrl = await resolveFinalUrl(ensureHttps(rawUrl.trim()));
-    return new Promise((resolve) => {
+    async function runOnce(): Promise<any> {
+      return new Promise((resolve) => {
       let resolved = false;
       const timeout = setTimeout(() => {
         if (!resolved) { resolved = true; setInstagramScraperVisible(false); resolve(null); }
-      }, 16000);
+      }, 22000);
       
       setInstagramScraperUrl(finalUrl);
       setInstagramScraperVisible(true);
@@ -1159,7 +1167,18 @@ function stitchBrokenSteps(lines: string[]): string[] {
           resolve(payload || null);
         }
       };
-    });
+      });
+    }
+
+    // First attempt
+    let payload: any = await runOnce();
+    const weak = !payload || (!payload.caption && !payload.text);
+    // If the first run yielded nothing, retry once after a short delay (first load often needs cookies/expander clicks)
+    if (weak) {
+      try { await new Promise(r => setTimeout(r, 600)); } catch {}
+      payload = await runOnce();
+    }
+    return payload;
   }, [bringHudToFront]);
 
   const tryImageUrl = useCallback(async (rawUrl: string, originUrl: string) => {
@@ -1284,7 +1303,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     snapCancelledRef.current = false;
     setSnapUrl(target);
     setSnapVisible(true);
-    bringHudToFront(); // ≡ƒºÆ HUD back on top when the snapper opens
+    bringHudToFront();
     setImprovingSnap(true);
 
     let best: string | null = null;
@@ -1395,8 +1414,42 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const partitioned = partitionIngredientRows(mergedIngredients, mergedSteps);
             const normalizedSteps = mergeStepFragments(partitioned.steps);
 
+            // Instagram-only: aggressively clean ingredient noise (attribution and title echoes)
             if (partitioned.ingredients.length) {
-              setIngredients(partitioned.ingredients);
+              try {
+                const monthPattern = /(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i;
+                const possibleTitles = [parsedInstagram.title, captionDishTitle, fallbackDishTitle]
+                  .filter(Boolean)
+                  .map((t) => normalizeDishTitle(cleanTitle(String(t), url)));
+                const cleanedRows = partitioned.ingredients.filter((row) => {
+                  const t = String(row || "").trim();
+                  if (!t) return false;
+                  const low = t.toLowerCase();
+                  // creator/date attributions like "alfskitchen on July 18"
+                  if (/^@?\w+\s+on\s+/.test(low) && monthPattern.test(low)) return false;
+                  // drop year-prefixed quoted lines that look like a title and not an ingredient
+                  const m = t.match(/^\s*\d{4}\s*[:\-]\s*["“'’]?([^"”'’]{3,80})["”'’]?\s*$/);
+                  if (m) {
+                    const candidate = m[1].trim();
+                    const hasMeasure = ING_AMOUNT_CLUE.test(candidate) || ING_UNIT_CLUE.test(candidate);
+                    if (!hasMeasure) return false;
+                  }
+                  // if the row equals a likely title (after removing year/quotes) drop it
+                  const normalizedRow = normalizeDishTitle(
+                    cleanTitle(
+                      t
+                        .replace(/^\s*\d{4}\s*[:\-]\s*/, "")
+                        .replace(/^['"”’]+|['"“‘]+$/g, ""),
+                      url
+                    )
+                  );
+                  if (possibleTitles.includes(normalizedRow)) return false;
+                  return true;
+                });
+                setIngredients(cleanedRows);
+              } catch {
+                setIngredients(partitioned.ingredients);
+              }
             }
 
             if (normalizedSteps.length) {
@@ -1423,7 +1476,42 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 for (const cand of igTitleCandidates) {
                   if (!cand.v) continue;
                   const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
-                  if (!isWeakTitle(cleaned)) { safeSetTitle(cleaned, url, title, dbg, cand.src); break; }
+                  if (!isWeakTitle(cleaned)) {
+                    // Set a strong title for Instagram
+                    safeSetTitle(cleaned, url, title, dbg, cand.src);
+
+                    // Instagram-only cleanup: drop attribution and title-duplicate rows
+                    try {
+                      const monthPattern = /(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i;
+                      const filtered = (partitioned.ingredients || []).filter((row) => {
+                        const t = String(row || "").trim();
+                        if (!t) return false;
+                        const low = t.toLowerCase();
+                        // Creator/date attributions like "alfskitchen on July 18"
+                        if (/^@?\w+\s+on\s+/.test(low) && monthPattern.test(low)) return false;
+                        // Obvious non-ingredients
+                        if (/^@/.test(t)) return false; // handles
+                        if (/^(https?:\/\/)/i.test(t)) return false; // links
+                        if (/\b(likes?|views?|comments?|followers?|shares?)\b/.test(low)) return false; // social counters
+
+                        // Normalize for title comparison: strip leading 4-digit year + colon/hyphen and surrounding quotes
+                        const normalizedRowForCompare = normalizeDishTitle(
+                          cleanTitle(
+                            t
+                              .replace(/^\s*\d{4}\s*[:\-]\s*/, "")
+                              .replace(/^['"”’]+|['"“‘]+$/g, ""),
+                            url
+                          )
+                        );
+                        if (normalizedRowForCompare === cleaned) return false;
+
+                        return true;
+                      });
+                      if (filtered.length !== (partitioned.ingredients || []).length) setIngredients(filtered);
+                    } catch {}
+
+                    break;
+                  }
                 }
               }
             } catch {}
@@ -2044,7 +2132,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           }}
         />
 
-        {/* HUD - key={hudZKey} means "remount on demand" so itΓÇÖs ALWAYS on top */}
+        {/* HUD: remount key ensures it is ALWAYS on top of any subsequently opened modals */}
         <MilitaryImportOverlay
           key={hudZKey}
           visible={hudVisible}
@@ -2185,7 +2273,7 @@ function MilitaryImportOverlay({
               return (
                 <View key={label} style={hudBackdrop.stepRow}>
                   <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(47,174,102,0.26)", borderColor: "rgba(47,174,102,0.6)" }, active && { borderColor: "#86efac" }]}>
-                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>\u2022</Text> : null}
+                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
                   </View>
                   <Text style={[hudBackdrop.stepText, done && { color: "#bbf7d0" }, active && { color: COLORS.text, fontWeight: "600" }]}>{label}</Text>
                 </View>

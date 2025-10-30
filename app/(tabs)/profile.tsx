@@ -38,23 +38,7 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
 import { getConnectedProviders } from "@/lib/cart/providers";
-
-const COLORS = {
-  bg: "#0f172a",
-  card: "#1f2937",
-  card2: "#111827",
-  text: "#e5e7eb",
-  sub: "#9ca3af",
-  subtext: "#9ca3af",
-  green: "#22c55e",
-  red: "#ef4444",
-  accent: "#38bdf8",
-  button: "#6EE7B7",
-  disabled: "#334155",
-  overlay: "rgba(0,0,0,0.5)",
-  glass: "rgba(255,255,255,0.06)",
-  border: "#1f2937",
-};
+import { COLORS } from "@/lib/theme";
 
 type ProfileRow = {
   id: string;

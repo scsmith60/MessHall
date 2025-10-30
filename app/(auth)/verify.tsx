@@ -5,15 +5,15 @@ import React, { useEffect, useRef, useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, Alert } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import { supabase } from "../../lib/supabase";
+import { COLORS } from "@/lib/theme";
 
-const COLORS = {
-  bg: "#0f172a",
-  text: "#e5e7eb",
-  sub: "#9ca3af",
-  subtext: "#9ca3af",
-  field: "#1f2937",
-  green: "#22c55e",
-  greenDim: "#16a34a",
+const LOCAL = {
+  bg: COLORS.bg,
+  text: COLORS.text,
+  subtext: COLORS.subtext,
+  field: COLORS.card,
+  green: COLORS.accent,
+  greenDim: COLORS.accentActive,
 };
 
 export default function Verify() {
@@ -100,33 +100,33 @@ export default function Verify() {
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.bg, padding: 24, justifyContent: "center" }}>
-      <Text style={{ color: COLORS.green, fontSize: 28, fontWeight: "800", textAlign: "center", marginBottom: 16 }}>
+    <View style={{ flex: 1, backgroundColor: LOCAL.bg, padding: 24, justifyContent: "center" }}>
+      <Text style={{ color: LOCAL.green, fontSize: 28, fontWeight: "800", textAlign: "center", marginBottom: 16 }}>
         Verify Your Email
       </Text>
 
-      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Email</Text>
+      <Text style={{ color: LOCAL.subtext, marginBottom: 6 }}>Email</Text>
       <TextInput
         placeholder="you@example.com"
-        placeholderTextColor={COLORS.subtext}
+        placeholderTextColor={LOCAL.subtext}
         autoCapitalize="none"
         keyboardType="email-address"
         value={email}
         onChangeText={setEmail}
-        style={{ backgroundColor: COLORS.field, color: COLORS.text, padding: 14, borderRadius: 10, marginBottom: 12 }}
+        style={{ backgroundColor: LOCAL.field, color: LOCAL.text, padding: 14, borderRadius: 10, marginBottom: 12 }}
       />
 
-      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>6-digit code</Text>
+      <Text style={{ color: LOCAL.subtext, marginBottom: 6 }}>6-digit code</Text>
       <TextInput
         placeholder="123456"
-        placeholderTextColor={COLORS.subtext}
+        placeholderTextColor={LOCAL.subtext}
         keyboardType="number-pad"
         value={code}
         onChangeText={handleCodeChange}
         maxLength={6}
         style={{
-          backgroundColor: COLORS.field,
-          color: COLORS.text,
+          backgroundColor: LOCAL.field,
+          color: LOCAL.text,
           padding: 14,
           borderRadius: 10,
           letterSpacing: 6,
@@ -139,7 +139,7 @@ export default function Verify() {
         onPress={verify}
         disabled={!canVerify}
         style={{
-          backgroundColor: canVerify ? COLORS.green : COLORS.greenDim,
+          backgroundColor: canVerify ? LOCAL.green : LOCAL.greenDim,
           padding: 14,
           borderRadius: 12,
           alignItems: "center",
@@ -152,8 +152,8 @@ export default function Verify() {
       </TouchableOpacity>
 
       <TouchableOpacity onPress={resend} disabled={busy} style={{ marginTop: 16, alignItems: "center" }}>
-        <Text style={{ color: COLORS.text, fontWeight: "700" }}>Resend Code</Text>
-        {resent && <Text style={{ color: COLORS.subtext, marginTop: 4 }}>Check your inbox.</Text>}
+        <Text style={{ color: LOCAL.text, fontWeight: "700" }}>Resend Code</Text>
+        {resent && <Text style={{ color: LOCAL.subtext, marginTop: 4 }}>Check your inbox.</Text>}
       </TouchableOpacity>
     </View>
   );

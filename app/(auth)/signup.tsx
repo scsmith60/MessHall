@@ -18,19 +18,16 @@ import {
 } from "react-native";
 import { Link, router } from "expo-router";
 import { supabase } from "../../lib/supabase";
-
-// 🎨 colors that match the logo
-const M_GREEN = "#53856b";
-const M_GREEN_DIM = "#3f6b55";
+import { COLORS as THEME } from "@/lib/theme";
 
 const COLORS = {
-  bg: "#0f172a",
-  text: "#e5e7eb",
-  sub: "#9ca3af",
-  subtext: "#9ca3af",
-  field: "#1f2937",
-  green: M_GREEN,      // logo green
-  greenDim: M_GREEN_DIM,
+  bg: THEME.bg,
+  text: THEME.text,
+  sub: THEME.subtext,
+  subtext: THEME.subtext,
+  field: THEME.card,
+  green: THEME.accent,
+  greenDim: THEME.accentActive,
   red: "#ef4444",
 };
 

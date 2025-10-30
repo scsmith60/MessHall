@@ -22,22 +22,12 @@ import {
 import { useLocalSearchParams, router } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { supabase } from "@/lib/supabase";
+import { COLORS } from "@/lib/theme";
 
 // 👇 blocking helpers you already have
 import { isBlocked, blockUser, unblockUser } from "@/lib/blocking";
 
-// -----------------------------------------
-// COLORS (match your app theme)
-// -----------------------------------------
-const COLORS = {
-  bg: "#0f172a",     // slate-900
-  card: "#1f2937",   // gray-800
-  card2: "#111827",  // gray-900
-  text: "#e5e7eb",   // gray-200
-  sub: "#9ca3af",    // gray-400
-  subtext: "#9ca3af",
-  accent: "#38bdf8", // sky-400
-};
+// use centralized COLORS from lib/theme
 
 // -----------------------------------------
 // TYPES (simple)
@@ -117,7 +107,7 @@ function GridCard({ item, onPress }: { item: RecipeRow; onPress: () => void }) {
         style={{
           width: "100%",
           height: CARD_W * 0.66,
-          backgroundColor: COLORS.card2,
+          backgroundColor: COLORS.card,
         }}
       >
         {img ? (

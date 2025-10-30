@@ -10,8 +10,8 @@ import { View, Text, ActivityIndicator } from "react-native";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../../lib/supabase";
-
-const COLORS = { bg: "#0b1220", text: "#e5e7eb", sub: "#9ca3af" };
+import { COLORS } from "@/lib/theme";
+const LOCAL = { bg: COLORS.bg, text: COLORS.text, sub: COLORS.subtext };
 
 // 🧽 sweep local Supabase keys so we don't wake up "anonymous"
 async function clearSupabaseKeys() {
@@ -62,10 +62,10 @@ export default function Logout() {
 
   // you barely see this, we navigate away instantly above
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.bg, alignItems: "center", justifyContent: "center" }}>
+    <View style={{ flex: 1, backgroundColor: LOCAL.bg, alignItems: "center", justifyContent: "center" }}>
       <ActivityIndicator />
-      <Text style={{ color: COLORS.text, marginTop: 12, fontWeight: "600" }}>Signing you out…</Text>
-      <Text style={{ color: COLORS.sub, marginTop: 6, fontSize: 12 }}>Moving along…</Text>
+      <Text style={{ color: LOCAL.text, marginTop: 12, fontWeight: "600" }}>Signing you out…</Text>
+      <Text style={{ color: LOCAL.sub, marginTop: 6, fontSize: 12 }}>Moving along…</Text>
     </View>
   );
 }

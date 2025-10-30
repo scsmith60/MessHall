@@ -23,19 +23,20 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
+import { COLORS as THEME } from "@/lib/theme";
 
 const COLORS = {
-  bg: "#0b1220",
-  card: "#111827",
-  card2: "#0f172a",
-  border: "#1f2937",
-  text: "#e5e7eb",
-  sub: "#94a3b8",
-  subtext: "#94a3b8",
-  good: "#22c55e",
-  bad: "#ef4444",
-  accent: "#38bdf8",
-  glass: "rgba(255,255,255,0.06)",
+  bg: THEME.bg,
+  card: THEME.card,
+  card2: THEME.surface,
+  border: THEME.border,
+  text: THEME.text,
+  sub: THEME.subtext,
+  subtext: THEME.subtext,
+  good: THEME.accent,
+  bad: '#EF4444',
+  accent: THEME.accent,
+  glass: 'rgba(255,255,255,0.06)',
 };
 
 // 🧁 tiny dark popup we control (no more white OS Alert)

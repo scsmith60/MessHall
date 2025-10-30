@@ -96,7 +96,8 @@ export default function InstagramDomScraper({
       let finished = false;
       function finish(payload){ if (finished) return; finished = true; send("done", payload); }
 
-      setTimeout(() => { if (!finished) finish({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"timeout" }); }, 12000);
+      // Give the Instagram page a bit more time on first load; sometimes scripts and consent overlays delay content
+      setTimeout(() => { if (!finished) finish({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"timeout" }); }, 20000);
 
       async function smoothScroll(){ for (const y of [150, 500, 900, 0]) { window.scrollTo({ top: y, behavior: 'instant' }); await sleep(150); } }
 
