@@ -6,11 +6,12 @@
 // - Set dates, weight, and Active toggle. Save.
 
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, FlatList, ActivityIndicator, Image, Alert, ScrollView, Switch } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, FlatList, ActivityIndicator, Image, ScrollView, Switch } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { supabase } from "../../../lib/supabase";
 import { COLORS, SPACING } from "../../../lib/theme";
+import ThemedNotice from "../../../components/ui/ThemedNotice";
 
 type RecipeRow = { id: string; title: string; image_url: string | null };
 
@@ -33,6 +34,10 @@ export default function CreateRail() {
   const [finding, setFinding] = useState(false);
   const [results, setResults] = useState<RecipeRow[]>([]);
   const [selected, setSelected] = useState<RecipeRow[]>([]); // up to 7
+
+  const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>(
+    { visible: false, title: "", message: "" }
+  );
 
   const isEditing = !!id;
 
@@ -119,14 +124,8 @@ export default function CreateRail() {
 
   // save (insert or update)
   async function save() {
-    if (!title.trim()) {
-      Alert.alert("Give it a title", "Like Quick Dinners or Game Day.");
-      return;
-    }
-    if (!selected.length) {
-      Alert.alert("Pick recipes", "Add at least 1 recipe for the shelf.");
-      return;
-    }
+    if (!title.trim()) { setNotice({ visible: true, title: "Give it a title", message: "Like Quick Dinners or Game Day." }); return; }
+    if (!selected.length) { setNotice({ visible: true, title: "Pick recipes", message: "Add at least 1 recipe for the shelf." }); return; }
 
     const shelfRow = {
       title: title.trim(),
@@ -144,10 +143,10 @@ export default function CreateRail() {
 
     if (isEditing) {
       const { error } = await supabase.from("rail_shelves").update(shelfRow).eq("id", id);
-      if (error) { Alert.alert("Save failed", error.message); return; }
+      if (error) { setNotice({ visible: true, title: "Save failed", message: error.message }); return; }
     } else {
       const { data, error } = await supabase.from("rail_shelves").insert(shelfRow).select("id").single();
-      if (error) { Alert.alert("Save failed", error.message); return; }
+      if (error) { setNotice({ visible: true, title: "Save failed", message: error.message }); return; }
       shelfId = data?.id;
     }
 
@@ -161,17 +160,23 @@ export default function CreateRail() {
         is_active: true,
       }));
       const { error: itemsErr } = await supabase.from("rail_shelf_items").insert(rows);
-      if (itemsErr) { Alert.alert("Items save failed", itemsErr.message); return; }
+      if (itemsErr) { setNotice({ visible: true, title: "Items save failed", message: itemsErr.message }); return; }
     }
 
-    Alert.alert("Saved!", "Your shelf is ready.");
-    router.back();
+    setNotice({ visible: true, title: "Saved!", message: "Your shelf is ready." });
+    setTimeout(() => { try { router.back(); } catch {} }, 250);
   }
 
   const canSave = useMemo(() => title.trim().length > 0 && selected.length > 0, [title, selected]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      <ThemedNotice
+        visible={notice.visible}
+        title={notice.title}
+        message={notice.message}
+        onClose={() => setNotice({ visible: false, title: "", message: "" })}
+      />
       <ScrollView contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 40 }}>
         <Text style={{ color: "#fff", fontWeight: "900", fontSize: 22, marginBottom: 12 }}>
           {isEditing ? "Edit Shelf" : "New Shelf"}

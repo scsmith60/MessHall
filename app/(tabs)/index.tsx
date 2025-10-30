@@ -42,7 +42,8 @@ import RecipeCard from "../../components/RecipeCard";
 import SponsoredCard from "../../components/SponsoredCard";
 import { success, tap, warn } from "../../lib/haptics";
 import { recipeStore } from "../../lib/store";
-import { logAdEvent } from "../../lib/ads";
+import { logAdEvent as logAd } from "../../lib/ads";
+import { logAdEvent as logAdEventV2 } from "../../lib/ads/logAdEvent";
 import SearchFab from "../../components/SearchFab";
 import { useUserId } from "../../lib/auth";
 import { supabase } from "../../lib/supabase";
@@ -600,23 +601,29 @@ export default function HomeScreen() {
     railItems.forEach((it) => {
       if (it.kind === "creative" && !seenRailImpressions.current.has(`creative_${it.id}`)) {
         seenRailImpressions.current.add(`creative_${it.id}`);
-        logAdEvent(it.id, "impression", { where: "home_rail", unit: "slot_creative" });
+        // placement-aware logger
+        logAdEventV2({ placement: "rail", event_type: "impression", slot_id: String(it.id), meta: { unit: "slot_creative", where: "home_rail" } });
       }
       if (railShelfId && it.kind === "recipe" && !seenRailImpressions.current.has(`shelf_${it.id}`)) {
         seenRailImpressions.current.add(`shelf_${it.id}`);
-        logAdEvent(railShelfId, "impression", { where: "home_rail", unit: "rail_shelf" }, it.id);
+        // impression for shelf tile (attribute via meta to avoid slot FK)
+        logAdEventV2({ placement: "rail", event_type: "impression", slot_id: null, meta: { unit: "rail_shelf", where: "home_rail", recipe_id: it.id, shelf_id: railShelfId } });
       }
     });
   }, [railItems, railShelfId]);
 
   const onPressRail = async (it: RailItem) => {
     if (it.kind === "recipe") {
-      if (railShelfId) logAdEvent(railShelfId, "click", { where: "home_rail", unit: "rail_shelf" }, it.id);
+      if (railShelfId) {
+        // placement-aware click for shelf (send shelf_id in meta, slot_id null to avoid FK fail)
+        logAdEventV2({ placement: "rail", event_type: "click", slot_id: null, meta: { unit: "rail_shelf", where: "home_rail", recipe_id: it.id, shelf_id: railShelfId } });
+      }
       await persistScrollOffset(lastOffsetY.current);
       router.push(`/recipe/${it.id}`);
       return;
     }
-    logAdEvent(it.id, "click", { where: "home_rail", unit: "slot_creative" });
+    // creative click on rail
+    logAdEventV2({ placement: "rail", event_type: "click", slot_id: String(it.id), meta: { unit: "slot_creative", where: "home_rail" } });
     if (it.cta_url) {
       const url = it.cta_url.match(/^https?:\/\//i) ? it.cta_url : `https://${it.cta_url}`;
       try { await Linking.openURL(url); } catch {}

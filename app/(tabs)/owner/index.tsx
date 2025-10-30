@@ -24,36 +24,19 @@ import { COLORS as THEME } from "@/lib/theme";
 /* ----------------------------- Tiny theme ----------------------------- */
 // 🟢 MessHall-like theme (works in dark/light). Keep or wire to your design system.
 function useTheme() {
-  // This screen follows the app's dark theme tokens; light fallback keeps readable defaults
-  const scheme = useColorScheme();
-  if (scheme === "dark") {
-    return {
-      bg: THEME.bg,
-      card: THEME.card,
-      border: THEME.border,
-      text: THEME.text,
-      textMuted: THEME.subtext,
-      accent: THEME.accent,
-      primary: THEME.accent,
-      pillBg: "rgba(255,255,255,0.08)",
-      pillBorder: "rgba(255,255,255,0.12)",
-      pillText: THEME.text,
-      trim: THEME.accentActive,
-      danger: "#ef4444",
-    } as const;
-  }
+  // Force dark tokens for Owner to avoid bright white in any system theme
   return {
-    bg: "#F8FAFC",
-    card: "#FFFFFF",
-    border: "#E5E7EB",
-    text: "#0F172A",
-    textMuted: "#475569",
-    accent: "#16a34a",
-    primary: "#2563eb",
-    pillBg: "#1f2937",
-    pillBorder: "#111827",
-    pillText: "#E5E7EB",
-    trim: "#065f46",
+    bg: THEME.bg,
+    card: THEME.card,
+    border: THEME.border,
+    text: THEME.text,
+    textMuted: THEME.subtext,
+    accent: THEME.accent,
+    primary: THEME.accent,
+    pillBg: "rgba(255,255,255,0.08)",
+    pillBorder: "rgba(255,255,255,0.12)",
+    pillText: THEME.text,
+    trim: THEME.accentActive,
     danger: "#ef4444",
   } as const;
 }
