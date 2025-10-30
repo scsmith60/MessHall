@@ -44,16 +44,36 @@ export function AuthProvider({ children }: PropsWithChildren) {
     let alive = true;
 
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!alive) return;
-      setSession(data.session ?? null);
-      setLoading(false);
+      const withTimeout = <T,>(p: Promise<T>, ms: number) =>
+        new Promise<T>((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error("auth getSession timeout")), ms);
+          p.then((v) => {
+            clearTimeout(t);
+            resolve(v);
+          }).catch((e) => {
+            clearTimeout(t);
+            reject(e);
+          });
+        });
 
-      d.log("[auth-hook]", "initial getSession()", {
-        hasSession: !!data.session,
-        userId: data.session?.user?.id ?? null,
-        email: data.session?.user?.email ?? null,
-      });
+      try {
+        const { data } = (await withTimeout(supabase.auth.getSession(), 3500)) as any;
+        if (!alive) return;
+        setSession(data.session ?? null);
+
+        d.log("[auth-hook]", "initial getSession()", {
+          hasSession: !!data?.session,
+          userId: data?.session?.user?.id ?? null,
+          email: data?.session?.user?.email ?? null,
+        });
+      } catch (e) {
+        if (!alive) return;
+        // Treat as signed-out if we can't confirm quickly
+        setSession(null);
+        d.log("[auth-hook]", "initial getSession failed", String(e));
+      } finally {
+        if (alive) setLoading(false);
+      }
     })();
 
     // 2) react to auth flips
@@ -61,9 +81,26 @@ export function AuthProvider({ children }: PropsWithChildren) {
       // 🔒 hold navigation while we settle the new truth
       setLoading(true);
 
-      // 🆕 re-check the REAL session (prevents “half-ready” states)
-      const { data } = await supabase.auth.getSession();
-      const freshest = nextFromEvent ?? data.session ?? null;
+      // 🆕 re-check the REAL session (prevents “half-ready” states) with timeout
+      let freshest: Session | null = null;
+      try {
+        const withTimeout = <T,>(p: Promise<T>, ms: number) =>
+          new Promise<T>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error("auth getSession timeout")), ms);
+            p.then((v) => {
+              clearTimeout(t);
+              resolve(v);
+            }).catch((e) => {
+              clearTimeout(t);
+              reject(e);
+            });
+          });
+        const { data } = (await withTimeout(supabase.auth.getSession(), 3500)) as any;
+        freshest = nextFromEvent ?? data?.session ?? null;
+      } catch (e) {
+        freshest = nextFromEvent ?? null;
+        d.log("[auth-hook]", "onAuthStateChange getSession failed", String(e));
+      }
 
       setSession(freshest);
 

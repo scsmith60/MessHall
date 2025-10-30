@@ -11,6 +11,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import "../lib/polyfills";
 import * as Linking from "expo-linking";
 import { View, ActivityIndicator, Platform, Text, TouchableOpacity } from "react-native";
+import { AppState } from "react-native";
 import { Slot, usePathname, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -308,26 +309,69 @@ export default function RootLayout() {
     }
   }, [segments]);
 
+  // 3a) When app comes back to foreground after a long idle, re-check and nudge navigation
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", async (state) => {
+      if (state !== "active") return;
+      try {
+        const { data } = await supabase.auth.getSession();
+        const hasSession = !!data?.session;
+        // ensure we never hang on warm screen after resume
+        setCheckedOnce(true);
+
+        const hasSegments = Array.isArray(segments) && segments.length > 0;
+        const inAuthGroup = hasSegments && typeof segments[0] === "string" && String(segments[0]).startsWith("(auth)");
+
+        const nav = () => {
+          if (!hasSession) {
+            if (!inAuthGroup) router.replace("/login");
+          } else {
+            if (inAuthGroup) router.replace("/(tabs)/index");
+          }
+        };
+
+        if (hasSegments) requestAnimationFrame(nav);
+        else pendingNavRef.current = nav;
+      } catch {
+        // still unlock UI on errors
+        setCheckedOnce(true);
+      }
+    });
+    return () => sub.remove();
+  }, [router, segments]);
+
   useEffect(() => {
     let alive = true;
 
-    // 1) Start a watchdog: if first check takes > 4s, bail to /login so no black screen.
+    // 1) Start a watchdog: if first check takes too long, unlock UI.
     const watchdog = setTimeout(() => {
-      if (alive && !checkedOnce && !inAuthFlow) {
-        watchdogFiredRef.current = true;
-        // Send to login as a safe fallback
+      if (!alive || checkedOnce) return;
+      watchdogFiredRef.current = true;
+      // Always end warm screen; only navigate if clearly off auth stack
+      setCheckedOnce(true);
+      if (!inAuthFlow) {
         try {
           router.replace("/login");
         } catch {}
-        // We still end the "checking" state so UI renders
-        setCheckedOnce(true);
       }
     }, 4000);
 
-    // 2) Do the actual first check (don't hard-redirect; let screens render)
+    // 2) Do the actual first check (with a short timeout so we never hang)
     (async () => {
       try {
-        const { data } = await supabase.auth.getSession();
+        const withTimeout = <T,>(p: Promise<T>, ms: number) =>
+          new Promise<T>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error("getSession timeout")), ms);
+            p.then((v) => {
+              clearTimeout(t);
+              resolve(v);
+            }).catch((e) => {
+              clearTimeout(t);
+              reject(e);
+            });
+          });
+
+        const { data } = await withTimeout(supabase.auth.getSession(), 3000) as any;
         const _hasSession = !!data?.session;
         // We no longer force navigation here to avoid flicker/race conditions
       } catch (e) {
@@ -344,7 +388,7 @@ export default function RootLayout() {
     };
   }, [router, inAuthFlow, checkedOnce]);
 
-  // 3) Listen for auth flips and navigate based on current stack group
+  // 4) Listen for auth flips and navigate based on current stack group
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
       // Ensure we stop the initial warm screen once any event fires
