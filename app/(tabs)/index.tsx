@@ -64,18 +64,39 @@ async function getStorage(): Promise<StorageLike> {
   return MemoryStorage;
 }
 const SCROLL_KEY = "HomeFeedList:offset";
+const SESSION_ID = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 async function persistScrollOffset(y: number) {
   try {
     const storage = await getStorage();
-    await storage.setItem(SCROLL_KEY, String(Math.max(0, Math.floor(y))));
+    const payload = {
+      y: Math.max(0, Math.floor(y)),
+      ts: Date.now(),
+      sessionId: SESSION_ID,
+    };
+    await storage.setItem(SCROLL_KEY, JSON.stringify(payload));
   } catch {}
 }
 async function loadScrollOffset(): Promise<number> {
   try {
     const storage = await getStorage();
     const raw = await storage.getItem(SCROLL_KEY);
-    const y = raw ? parseInt(raw, 10) : 0;
-    return Number.isFinite(y) && y >= 0 ? y : 0;
+    if (!raw) return 0;
+    try {
+      const obj = JSON.parse(raw);
+      const y = Number(obj?.y ?? 0);
+      const ts = Number(obj?.ts ?? 0);
+      const sid = String(obj?.sessionId ?? "");
+      // cold start: different session → ignore
+      if (sid !== SESSION_ID) return 0;
+      // TTL: older than 6h → ignore
+      if (!Number.isFinite(ts) || Date.now() - ts > SIX_HOURS_MS) return 0;
+      return Number.isFinite(y) && y >= 0 ? y : 0;
+    } catch {
+      // legacy numeric format fallback
+      const y = parseInt(raw, 10);
+      return Number.isFinite(y) && y >= 0 ? y : 0;
+    }
   } catch { return 0; }
 }
 
@@ -968,6 +989,8 @@ export default function HomeScreen() {
       }
     }
 
+    // reset saved scroll on manual refresh so users see newest
+    await persistScrollOffset(0);
     await loadPage(0, true);
     await success();
     setRefreshing(false);
