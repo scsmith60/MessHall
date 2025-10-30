@@ -11,7 +11,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import "../lib/polyfills";
 import * as Linking from "expo-linking";
 import { View, ActivityIndicator, Platform, Text, TouchableOpacity } from "react-native";
-import { Slot, usePathname, useRouter } from "expo-router";
+import { Slot, usePathname, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { supabase } from "../lib/supabase";
@@ -289,12 +289,24 @@ function InnerApp() {
 export default function RootLayout() {
   const router = useRouter();
   const inAuthFlow = useInAuthFlow();
+  const segments = useSegments() as any;
 
   // ✅ We track if the first check finished
   const [checkedOnce, setCheckedOnce] = useState(false);
 
   // ⏱️ watchdog timer so we never hang forever
   const watchdogFiredRef = useRef(false);
+  const pendingNavRef = useRef<null | (() => void)>(null);
+
+  // if we queued a navigation before the router tree was ready, run it once segments exist
+  useEffect(() => {
+    const hasSegments = Array.isArray(segments) && segments.length > 0;
+    if (hasSegments && pendingNavRef.current) {
+      const run = pendingNavRef.current;
+      pendingNavRef.current = null;
+      requestAnimationFrame(run);
+    }
+  }, [segments]);
 
   useEffect(() => {
     let alive = true;
@@ -332,26 +344,32 @@ export default function RootLayout() {
     };
   }, [router, inAuthFlow, checkedOnce]);
 
-  // 3) Listen for auth flips (same as before)
+  // 3) Listen for auth flips and navigate based on current stack group
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
       // Ensure we stop the initial warm screen once any event fires
       setCheckedOnce(true);
 
-      if (event === "SIGNED_OUT") {
-        // Only push to login if we're not already on an auth screen
-        if (!inAuthFlow) {
-          requestAnimationFrame(() => router.replace("/login"));
+      const hasSegments = Array.isArray(segments) && segments.length > 0;
+      const inAuthGroup = hasSegments && typeof segments[0] === "string" && String(segments[0]).startsWith("(auth)");
+
+      const nav = () => {
+        if (event === "SIGNED_OUT") {
+          if (!inAuthGroup) router.replace("/login");
+        } else if (event === "SIGNED_IN") {
+          if (inAuthGroup) router.replace("/(tabs)/index");
         }
-      }
-      if (event === "SIGNED_IN") {
-        if (inAuthFlow) {
-          requestAnimationFrame(() => router.replace("/(tabs)/index"));
-        }
+      };
+
+      if (hasSegments) {
+        requestAnimationFrame(nav);
+      } else {
+        // queue until router tree is ready to avoid lost navigations on Android
+        pendingNavRef.current = nav;
       }
     });
     return () => data.subscription?.unsubscribe();
-  }, [router, inAuthFlow]);
+  }, [router, segments]);
 
   // ⛑️ First render while checking: show a spinner with a real background.
   if (!checkedOnce) {
