@@ -289,6 +289,7 @@ export default function HomeScreen() {
   const lastOffsetY = useRef(0);
   const pendingRestoreY = useRef<number | null>(null);   // NEW
   const restoreTries = useRef(0);                        // NEW
+  const restoreDeadlineAt = useRef<number>(0);           // NEW: hard deadline to stop trying
 
   // privacy: only show your own private recipes
   const safetyFilter = useCallback(
@@ -983,7 +984,7 @@ export default function HomeScreen() {
       const id = item.id || item.slot?.id;
       if (id && !seenAdsRef.current.has(id)) {
         seenAdsRef.current.add(id);
-        logAdEvent(id, "impression", { where: "home_feed", unit: "inline_card" });
+        logAd(id, "impression", { where: "home_feed", unit: "inline_card" });
       }
     }
   }).current;
@@ -992,18 +993,24 @@ export default function HomeScreen() {
   const attemptRestoreScroll = () => {
     if (pendingRestoreY.current == null) return;
     const y = pendingRestoreY.current;
+    if (restoreDeadlineAt.current && Date.now() > restoreDeadlineAt.current) {
+      pendingRestoreY.current = null;
+      return;
+    }
     InteractionManager.runAfterInteractions(() => {
       setTimeout(() => {
         listRef.current?.scrollToOffset({ offset: y, animated: false });
         restoreTries.current += 1;
-        if (restoreTries.current < 5 && pendingRestoreY.current != null) {
-          setTimeout(() => attemptRestoreScroll(), 80);
-        } else {
-          pendingRestoreY.current = null;
+        if (pendingRestoreY.current != null) {
+          setTimeout(() => attemptRestoreScroll(), 100);
         }
       }, 0);
     });
   };
+  // Persist last known offset if this screen blurs or unmounts
+  useEffect(() => {
+    return () => { persistScrollOffset(lastOffsetY.current); };
+  }, []);
   useFocusEffect(
     React.useCallback(() => {
       let alive = true;
@@ -1012,6 +1019,7 @@ export default function HomeScreen() {
         if (!alive) return;
         pendingRestoreY.current = y;
         restoreTries.current = 0;
+        restoreDeadlineAt.current = Date.now() + 6000; // try for up to 6s
         attemptRestoreScroll();
       })();
       return () => { alive = false; };
@@ -1154,6 +1162,9 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
         viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
         initialNumToRender={8}
         windowSize={11}
+        // track position continuously so we always know latest offset
+        onScroll={(e) => { const y = e?.nativeEvent?.contentOffset?.y ?? 0; lastOffsetY.current = y; }}
+        scrollEventThrottle={16}
         // remember place when the scroll stops
         onMomentumScrollEnd={handleMomentumEnd}
         onScrollEndDrag={handleEndDrag}
