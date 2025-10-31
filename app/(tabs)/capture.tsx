@@ -11,6 +11,8 @@ import {
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import ThemedNotice from "../../components/ui/ThemedNotice";
+import { playDonutEasterEgg } from "@/lib/sounds";
 import { Swipeable, RectButton } from "react-native-gesture-handler";
 import { useFocusEffect } from "@react-navigation/native";
 import WebView from "react-native-webview";
@@ -24,11 +26,12 @@ import { supabase } from "@/lib/supabase";
 import { fetchOgForUrl } from "@/lib/og";
 import { uploadFromUri } from "@/lib/uploads";
 import { parseRecipeText } from "@/lib/unified_parser";
+import { recognizeImageText } from "@/lib/ocr";
 
 import TikTokSnap from "@/lib/tiktok";
 import TTDomScraper from "@/components/TTDomScraper";
 
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Line, Circle } from "react-native-svg";
 import InstagramDomScraper from "@/components/InstagramDomScraper";
@@ -49,7 +52,7 @@ const ATTEMPT_TIMEOUT_SOFT_MS = 2200;
 const MIN_IMG_W = 600, MIN_IMG_H = 600;
 const SOFT_MIN_W = 360, SOFT_MIN_H = 360;
 const MIN_LOCAL_BYTES = 30_000;
-const FOCUS_Y_DEFAULT = 0.4;
+const FOCUS_Y_DEFAULT = 0.40;
 
 type RecipeExtraction = {
   title?: string;
@@ -445,14 +448,20 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (!raw) return;
     const cleaned = normalizeDishTitle(cleanTitle(raw, url));
     if (isWeakTitle(cleaned)) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
+    // Don't allow junk TikTok titles to override good ones
+    if (isTikTokJunkTitle(cleaned)) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (junk):", source, JSON.stringify(cleaned)); return; }
     const prev = (strongTitleRef.current || "").trim();
     if (!prev || cleaned.length > prev.length) {
       strongTitleRef.current = cleaned;
       dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
     }
-    if (!isWeakTitle(current) && current.trim().length >= cleaned.length) {
-      dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
-      return;
+    // If we already have a good title, don't let weaker/later ones override it
+    if (!isWeakTitle(current) && !isTikTokJunkTitle(current) && current.trim().length > 0) {
+      // Only override if the new title is significantly better (longer and not junk)
+      if (!(cleaned.length > current.length * 1.2 && !isTikTokJunkTitle(cleaned))) {
+        dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
+        return;
+      }
     }
     setTitle(cleaned);
     dbg?.("≡ƒ¢í∩╕Å TITLE set:", source, JSON.stringify(cleaned));
@@ -471,6 +480,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (t.startsWith("tiktok -") || t.startsWith("tiktok |") || t.startsWith("tiktok –")) return true;
     if (t.includes("tiktok") && t.includes("make your day")) return true;
     if (/^original (sound|audio)\b/.test(t)) return true;
+    if (/today'?s top videos?/.test(t)) return true;
     return false;
   }
 
@@ -877,16 +887,19 @@ function stitchBrokenSteps(lines: string[]): string[] {
   // -------------- OCR --------------
   async function ocrImageToText(localUri: string): Promise<string | null> {
     try {
-      const prepped = await ImageManipulator.manipulateAsync(localUri, [], { compress: 0.96, format: ImageManipulator.SaveFormat.JPEG });
-      const path = `ocr/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
-      let publicUrl: string | null = null;
-      try { publicUrl = await uploadFromUri({ uri: prepped.uri, storageBucket: "tmp-uploads", path, contentType: "image/jpeg" }); } catch (e) { publicUrl = null; }
-      if (!publicUrl) return null;
-      const { data, error } = await (supabase as any).functions.invoke("ocr", { body: { url: publicUrl } });
-      if (error) return null;
-      const text = (data && (data.text || data.ocr || data.result)) ? String(data.text || data.ocr || data.result) : "";
-      return text.trim() || null;
-    } catch (e) { return null; try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+      // Preprocess image: compress and ensure it's in a format OCR can handle
+      const prepped = await ImageManipulator.manipulateAsync(localUri, [], { 
+        compress: 0.96, 
+        format: ImageManipulator.SaveFormat.JPEG 
+      });
+      
+      // Use the OCR helper with the preprocessed image
+      const { text } = await recognizeImageText(prepped.uri);
+      return text?.trim() || null;
+    } catch (e) { 
+      return null; 
+      try { dbg('OCR failed:', safeErr(e)); } catch {} 
+    }
   }
 
   // -------------- NEW: comment scoring & fusion --------------
@@ -1014,7 +1027,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const instagramScraperResolverRef = useRef<((payload: any) => void) | null>(null);
 
   const [snapFocusY, setSnapFocusY] = useState(FOCUS_Y_DEFAULT);
-  const [snapZoom, setSnapZoom] = useState(1.2);
+  const [snapZoom, setSnapZoom] = useState(1.4);
 
   const [pendingImportUrl, setPendingImportUrl] = useState<string | null>(null);
   const [abortVisible, setAbortVisible] = useState(false);
@@ -1348,7 +1361,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       if (importRunIdRef.current !== runId) return;
       if (!gotSomethingForRunRef.current) {
         hardResetImport();
-        Alert.alert("Import took too long", "We tried our best. You can try again.");
+        setNotice({ visible: true, title: "Mission Timeout", message: "Import took too long. Try again." });
       }
     }, IMPORT_HARD_TIMEOUT_MS);
 
@@ -1638,7 +1651,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 // also try to find a dish-like short title from the DOM text
                 try {
                   const td = findDishTitleFromText(domPayload?.text || domPayload?.caption || "", url);
-                  if (td && !isWeakTitle(td)) ttTitleCandidates.push({ v: td, src: "tiktok:dom-text" });
+                  // Double-check it's not junk before adding to candidates
+                  if (td && !isWeakTitle(td) && !isTikTokJunkTitle(td)) {
+                    ttTitleCandidates.push({ v: td, src: "tiktok:dom-text" });
+                  }
                 } catch {}
             } catch {}
           } catch (e) {
@@ -1715,11 +1731,17 @@ function stitchBrokenSteps(lines: string[]): string[] {
             // Choose best title candidate for TikTok now that parsing is done
             try {
                 if (ttTitleCandidates && ttTitleCandidates.length) {
-                ttTitleCandidates.sort((a: {v:string,src:string}, b: {v:string,src:string}) => scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v));
-                for (const cand of ttTitleCandidates) {
-                  if (!cand.v) continue;
+                // Filter out junk titles before sorting
+                const filtered = ttTitleCandidates.filter(cand => {
+                  if (!cand.v) return false;
                   const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
-                  if (!isWeakTitle(cleaned)) { safeSetTitle(cleaned, url, title, dbg, cand.src); break; }
+                  return !isWeakTitle(cleaned) && !isTikTokJunkTitle(cleaned);
+                });
+                filtered.sort((a: {v:string,src:string}, b: {v:string,src:string}) => scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v));
+                for (const cand of filtered) {
+                  const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
+                  safeSetTitle(cleaned, url, title, dbg, cand.src);
+                  break; // Only use the best one
                 }
               }
             } catch {}
@@ -1812,7 +1834,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
         dbg("Γ¥î Import error:", msg);
         if (!gotSomethingForRunRef.current) setImg({ kind: "none" });
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        Alert.alert("Import error", msg || "Could not read that webpage.");
+        setNotice({ visible: true, title: "Mission Aborted", message: msg || "Could not read that webpage." });
       } finally {
         clearTimeout(watchdog);
         if (success || gotSomethingForRunRef.current) {
@@ -1832,7 +1854,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     const url = extractFirstUrl(candidateInput);
     if (!url || !/^https?:\/\//i.test(url)) {
       setImg({ kind: "none" });
-      return Alert.alert("Link error", "Please paste a full link that starts with http(s)://");
+      return setNotice({ visible: true, title: "Mission Aborted", message: "Must paste a full link that starts with http(s)://" });
     }
     const isDup = await checkDuplicateSourceUrl(url);
     if (isDup) {
@@ -1857,13 +1879,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
     Alert.alert("Add Photo", "Choose where to get your picture", [
       { text: "Camera", onPress: async () => {
           const { status } = await ImagePicker.requestCameraPermissionsAsync();
-          if (status !== "granted") return Alert.alert("Camera permission is required.");
+          if (status !== "granted") return setNotice({ visible: true, title: "Permission Denied", message: "Camera access required." });
           const r = await ImagePicker.launchCameraAsync({ quality: 0.92, allowsEditing: true, aspect: [4, 3] });
           if (!r.canceled && r.assets?.[0]?.uri) setImg({ kind: "camera", localUri: r.assets[0].uri });
         } },
       { text: "Gallery", onPress: async () => {
           const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-          if (status !== "granted") return Alert.alert("Photo permission is required.");
+          if (status !== "granted") return setNotice({ visible: true, title: "Permission Denied", message: "Photo library access required." });
           const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.92, allowsEditing: true, aspect: [4, 3] });
           if (!r.canceled && r.assets?.[0]?.uri) setImg({ kind: "picker", localUri: r.assets[0].uri });
         } },
@@ -1874,7 +1896,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const previewUri = useMemo(() => currentPreviewUri(), [currentPreviewUri]);
 
   const onSave = useCallback(async () => {
-    if (!title.trim()) return Alert.alert("Please add a title");
+    if (!title.trim()) return setNotice({ visible: true, title: "Mission Brief", message: "Add a title before saving." });
     setSaving(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -1918,15 +1940,23 @@ function stitchBrokenSteps(lines: string[]): string[] {
       }
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // fun easter egg: donuts/doughnuts trigger the drill sergeant clip
+      const signal = `${title} \n ${ingredients.join("\n")}`.toLowerCase();
+      if (/\b(donut|doughnut|donut\s|doughnut\s)/i.test(signal)) {
+        playDonutEasterEgg().catch(() => {});
+      }
       setOkModalVisible(true);
       router.replace("/(tabs)/home");
     } catch (e: any) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Save failed", e?.message ?? "Please try again.");
+      setNotice({ visible: true, title: "Save Failed", message: e?.message ?? "Please try again." });
     } finally {
       setSaving(false);
     }
   }, [title, timeMinutes, servings, ingredients, steps, previewUri]);
+
+  // themed notice modal state
+  const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>({ visible: false, title: "", message: "" });
 
   const handleDeleteIngredient = useCallback((index: number) => {
     ingredientSwipeRefs.current[index]?.close();
@@ -1963,6 +1993,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "bottom"]}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        {/* Themed notice for errors */}
+        <ThemedNotice
+          visible={notice.visible}
+          title={notice.title}
+          message={notice.message}
+          onClose={() => setNotice({ visible: false, title: "", message: "" })}
+          confirmText="OK"
+        />
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 160 }}>
           <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: "900", marginBottom: 16 }}>Add Recipe</Text>
 
@@ -2075,6 +2113,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           resnapKey={snapResnapKey}
           zoom={snapZoom}
           focusY={snapFocusY}
+          focusCenter={0.2}
           captureDelayMs={CAPTURE_DELAY_MS}
           onCancel={() => {
             snapCancelledRef.current = true;

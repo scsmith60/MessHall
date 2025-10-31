@@ -1,8 +1,8 @@
 {
   "expo": {
     "name": "MessHall",
-    "slug": "messhall",
-    "scheme": "messhall",
+    "slug": "messHall",
+    "scheme": "messHall",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,

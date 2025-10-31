@@ -16,7 +16,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Image,
   ScrollView,
   Text,
@@ -40,6 +39,7 @@ import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
 import { getConnectedProviders } from "@/lib/cart/providers";
 import { COLORS } from "@/lib/theme";
+import ThemedNotice from "@/components/ui/ThemedNotice";
 
 type ProfileRow = {
   id: string;
@@ -170,6 +170,9 @@ export default function Profile() {
   const [showDelete, setShowDelete] = useState(false); // delete modal
   const [deleting, setDeleting] = useState(false);
 
+  // themed notice modal
+  const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>({ visible: false, title: "", message: "" });
+
   // =============== 1) load profile row (core — unchanged) ===============
   useEffect(() => {
     let alive = true;
@@ -184,7 +187,7 @@ export default function Profile() {
         .single();
       if (!alive) return;
       if (error) {
-        Alert.alert("Error", error.message);
+        setNotice({ visible: true, title: "Mission Aborted", message: error.message });
         setLoading(false);
         return;
       }
@@ -308,9 +311,9 @@ export default function Profile() {
       if (metaErr) throw metaErr;
       setOriginalUsername(u);
       setAvailable(null);
-      Alert.alert("Saved", "Your username has been updated.");
+      setNotice({ visible: true, title: "Saved", message: "Your username has been updated." });
     } catch (e: any) {
-      Alert.alert("Could not save", e.message ?? String(e));
+      setNotice({ visible: true, title: "Could not save", message: e.message ?? String(e) });
     } finally {
       setSaving(false);
     }
@@ -427,7 +430,7 @@ export default function Profile() {
         status = req.status;
       }
       if (status !== "granted") {
-        Alert.alert("Permission needed", "We need access to your photos to set an avatar.");
+        setNotice({ visible: true, title: "Permission Denied", message: "We need access to your photos to set an avatar." });
         return;
       }
       const options: any = { allowsEditing: true, aspect: [1, 1], quality: 1 };
@@ -435,10 +438,10 @@ export default function Profile() {
       const res = await ImagePicker.launchImageLibraryAsync(options);
       if (res.canceled) return;
       const uri = res.assets?.[0]?.uri;
-      if (!uri) { Alert.alert("Oops", "Could not read selected image."); return; }
+      if (!uri) { setNotice({ visible: true, title: "Oops", message: "Could not read selected image." }); return; }
       setEditAvatar(uri);
     } catch (e: any) {
-      Alert.alert("Picker error", e?.message ?? String(e));
+      setNotice({ visible: true, title: "Picker Error", message: e?.message ?? String(e) });
     }
   }
 
@@ -460,7 +463,7 @@ export default function Profile() {
         return editAvatar.trim();
       }
       const sess = await requireSession();
-      if (!sess || !userId) { Alert.alert("Not logged in", "Please log in again to upload your avatar."); return null; }
+    if (!sess || !userId) { setNotice({ visible: true, title: "Sign-In Required", message: "Please log in again to upload your avatar." }); return null; }
       setUploading(true);
       const manipulated = await ImageManipulator.manipulateAsync(
         editAvatar,
@@ -481,7 +484,7 @@ export default function Profile() {
       return publicUrl;
     } catch (e: any) {
       console.log("uploadAvatarIfNeeded error:", e?.message || e);
-      Alert.alert("Upload failed", e?.message ?? String(e));
+      setNotice({ visible: true, title: "Upload Failed", message: e?.message ?? String(e) });
       return null;
     } finally { setUploading(false); }
   }
@@ -500,10 +503,10 @@ export default function Profile() {
       setAvatarUrl(bust);
       setShowEdit(false);
       setEditAvatar("");
-      Alert.alert("Saved", "Profile updated.");
+      setNotice({ visible: true, title: "Saved", message: "Profile updated." });
     } catch (e: any) {
       console.log("saveProfileFields error:", e?.message || e);
-      Alert.alert("Could not save", e?.message ?? String(e));
+      setNotice({ visible: true, title: "Could not save", message: e?.message ?? String(e) });
     }
   }
 
@@ -542,7 +545,7 @@ export default function Profile() {
       setSavedRecipes((prev) => prev.filter((r) => r.id !== recipeId));
     } catch (e: any) {
       console.log("handleUnsave error:", e?.message || e);
-      Alert.alert("Oops", e?.message ?? "Could not remove from saved.");
+      setNotice({ visible: true, title: "Oops", message: e?.message ?? "Could not remove from saved." });
     }
   }
 
@@ -628,7 +631,7 @@ export default function Profile() {
         .eq("id", userId);
       if (error) throw error;
     } catch (e: any) {
-      Alert.alert("Oops", e?.message ?? "Could not save units. Ask us to enable this field.");
+      setNotice({ visible: true, title: "Oops", message: e?.message ?? "Could not save units. Ask us to enable this field." });
     }
   }
 
@@ -643,9 +646,9 @@ export default function Profile() {
         })
         .eq("id", userId);
       if (error) throw error;
-      Alert.alert("Saved", "Location updated.");
+      setNotice({ visible: true, title: "Saved", message: "Location updated." });
     } catch (e: any) {
-      Alert.alert("Oops", e?.message ?? "Could not save location. Ask us to enable these fields.");
+      setNotice({ visible: true, title: "Oops", message: e?.message ?? "Could not save location. Ask us to enable these fields." });
     }
   }
 
@@ -661,9 +664,9 @@ export default function Profile() {
         })
         .eq("id", userId);
       if (error) throw error;
-      Alert.alert("Saved", "Preferences updated.");
+      setNotice({ visible: true, title: "Saved", message: "Preferences updated." });
     } catch (e: any) {
-      Alert.alert("Oops", e?.message ?? "Could not save preferences. Ask us to enable these fields.");
+      setNotice({ visible: true, title: "Oops", message: e?.message ?? "Could not save preferences. Ask us to enable these fields." });
     }
   }
 
@@ -684,7 +687,7 @@ export default function Profile() {
         message: payload,
       });
     } catch (e: any) {
-      Alert.alert("Export failed", e?.message ?? "Could not export.");
+      setNotice({ visible: true, title: "Export Failed", message: e?.message ?? "Could not export." });
     } finally {
       setExporting(false);
     }
@@ -703,9 +706,9 @@ export default function Profile() {
         const text = await res.text().catch(() => "");
         throw new Error(text || "Export request failed");
       }
-      Alert.alert("Requested", "We’ll email you a download link when it’s ready.");
+      setNotice({ visible: true, title: "Requested", message: "We’ll email you a download link when it’s ready." });
     } catch (e: any) {
-      Alert.alert("Export failed", e?.message ?? "Could not request export (is the function deployed?).");
+      setNotice({ visible: true, title: "Export Failed", message: e?.message ?? "Could not request export (is the function deployed?)." });
     } finally {
       setExporting(false);
     }
@@ -720,7 +723,7 @@ export default function Profile() {
       status = req.status;
     }
     if (status !== "granted") {
-      Alert.alert("Permission needed", "We need photos permission to attach screenshots.");
+      setNotice({ visible: true, title: "Permission Denied", message: "We need photos permission to attach screenshots." });
       return;
     }
 
@@ -757,7 +760,7 @@ export default function Profile() {
   // D3) Submit support ticket (subject, message, screenshot URLs)
   async function handleSubmitTicket() {
     if (!ticketSubject.trim() || !ticketMessage.trim()) {
-      Alert.alert("Missing", "Please add a subject and message.");
+      setNotice({ visible: true, title: "Missing", message: "Please add a subject and message." });
       return;
     }
     try {
@@ -785,9 +788,9 @@ export default function Profile() {
       setTicketSubject("");
       setTicketMessage("");
       setTicketImages([]);
-      Alert.alert("Sent", `Ticket #${data?.id ?? "created"}. We'll follow up by email.`);
+      setNotice({ visible: true, title: "Sent", message: `Ticket #${data?.id ?? "created"}. We'll follow up by email.` });
     } catch (e: any) {
-      Alert.alert("Could not send", e?.message ?? "Please try again.");
+      setNotice({ visible: true, title: "Could not send", message: e?.message ?? "Please try again." });
     } finally {
       setTicketSending(false);
     }
@@ -808,12 +811,9 @@ export default function Profile() {
         .eq("id", userId);
       if (error) throw error;
       setShowDelete(false);
-      Alert.alert(
-        "Scheduled",
-        `Your account is scheduled to be deleted on\n${new Date(effectiveAt).toDateString()}.\nSaved copies of your recipes remain for people who saved them.`
-      );
+      setNotice({ visible: true, title: "Scheduled", message: `Your account is scheduled to be deleted on\n${new Date(effectiveAt).toDateString()}.\nSaved copies of your recipes remain for people who saved them.` });
     } catch (e: any) {
-      Alert.alert("Could not schedule deletion", e?.message ?? "Please try again.");
+      setNotice({ visible: true, title: "Could not schedule deletion", message: e?.message ?? "Please try again." });
     } finally {
       setDeleting(false);
     }
@@ -822,6 +822,13 @@ export default function Profile() {
   // ===================== RENDER =====================
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top"]}>
+      <ThemedNotice
+        visible={notice.visible}
+        title={notice.title}
+        message={notice.message}
+        onClose={() => setNotice({ visible: false, title: "", message: "" })}
+        confirmText="OK"
+      />
       <ScrollView
         style={{ flex: 1, backgroundColor: COLORS.bg }}
         contentInsetAdjustmentBehavior="automatic"

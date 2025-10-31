@@ -34,6 +34,7 @@ import {
   InteractionManager, // NEW: for safe scroll restore after layout
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import ThemedNotice from "../../components/ui/ThemedNotice";
 import { router, useFocusEffect } from "expo-router";
 
 import { COLORS, SPACING } from "../../lib/theme";
@@ -330,6 +331,7 @@ export default function HomeScreen() {
   const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
   const [newText, setNewText] = useState("");
   const [sheetRefreshing, setSheetRefreshing] = useState(false);
+  const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>({ visible: false, title: "", message: "" });
 
   // simple swipe-down-to-close (header only)
   const pan = useRef(
@@ -348,7 +350,7 @@ export default function HomeScreen() {
       const rows: Comment[] = await (dataAPI as any).getRecipeComments?.(recipeId);
       setComments(Array.isArray(rows) ? rows : []);
     } catch (err: any) {
-      Alert.alert("Comments Problem", err?.message ?? "Could not load comments.");
+      setNotice({ visible: true, title: "Comms Failure", message: err?.message ?? "Could not load comments." });
     } finally {
       setCommentsLoading(false);
     }
@@ -377,7 +379,7 @@ export default function HomeScreen() {
       setNewText("");
       await fetchComments(activeRecipeId);
     } catch (err: any) {
-      Alert.alert("Could not send", err?.message ?? "Please try again.");
+      setNotice({ visible: true, title: "Transmission Failed", message: err?.message ?? "Please try again." });
     }
   }, [newText, activeRecipeId, fetchComments]);
 
@@ -781,7 +783,7 @@ export default function HomeScreen() {
     async (recipeId: string) => {
       if (!viewerId) {
         await warn();
-        Alert.alert("Sign in required", "Please sign in to save recipes.");
+        setNotice({ visible: true, title: "Sign-In Required", message: "Please sign in to save recipes." });
         return;
       }
       const hasIt = savedSet.has(recipeId);
@@ -818,7 +820,7 @@ export default function HomeScreen() {
           return next;
         });
         await warn();
-        Alert.alert("Save failed", e?.message ?? "Please try again.");
+        setNotice({ visible: true, title: "Save Failed", message: e?.message ?? "Please try again." });
       }
     },
     [viewerId, savedSet]
@@ -956,7 +958,7 @@ export default function HomeScreen() {
         setData((prev) => mergeUniqueFeed(prev, visible, replace));
         setPage(nextPage);
       } catch (err: any) {
-        Alert.alert("Feed Problem", err?.message ?? "Could not load feed.");
+        setNotice({ visible: true, title: "Intel Down", message: err?.message ?? "Could not load feed." });
       } finally {
         setLoading(false);
       }
@@ -1169,6 +1171,13 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      <ThemedNotice
+        visible={notice.visible}
+        title={notice.title}
+        message={notice.message}
+        onClose={() => setNotice({ visible: false, title: "", message: "" })}
+        confirmText="OK"
+      />
       <FlatList
         ref={listRef}
         style={{ flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg }}

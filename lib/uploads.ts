@@ -7,7 +7,8 @@
 // NEW: helpers to delete old images, clean folders, and replace a recipe image safely.
 
 import { supabase } from "./supabase";
-import * as FileSystem from "expo-file-system";
+// Use legacy to avoid SDK 54 migration issues; still works with uploadAsync
+import * as FileSystem from "expo-file-system/legacy";
 
 // 1) we need your Supabase URL to hit the Storage REST endpoint
 //    In Expo, this is typically set in app config as EXPO_PUBLIC_SUPABASE_URL
@@ -101,15 +102,20 @@ export async function uploadFromUri(opts: {
   // 2) POST the bytes straight to the Storage REST endpoint
   //    Route: POST /storage/v1/object/<bucket>/<path>
   const url = storageObjectUrl(storageBucket, path);
-  const res = await FileSystem.uploadAsync(url, localFileUri, {
+  const uploadOpts: any = {
     httpMethod: "POST",
-    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": contentType,
       "x-upsert": "false",
     },
-  });
+  };
+  // Some environments don't expose FileSystemUploadType; default is binary
+  const U = (FileSystem as any).FileSystemUploadType;
+  if (U && (U as any).BINARY_CONTENT !== undefined) {
+    uploadOpts.uploadType = (U as any).BINARY_CONTENT;
+  }
+  const res = await FileSystem.uploadAsync(url, localFileUri, uploadOpts);
 
   if (res.status !== 200) {
     // Supabase returns JSON error; surface it to help debugging

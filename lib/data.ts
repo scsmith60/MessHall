@@ -928,6 +928,214 @@ export const dataAPI: DataAPI = {
       return phaseB.slice(0, 24);
     }
 
+    // HALLOWEEN / SPOOKY & COZY (Oct)
+    if (topic.includes("halloween")) {
+      let q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at");
+
+      q = q.or(
+        [
+          "title.ilike.%halloween%",
+          "title.ilike.%pumpkin%",
+          "title.ilike.%butternut%",
+          "title.ilike.%squash%",
+          "title.ilike.%apple%",
+          "title.ilike.%cider%",
+          "title.ilike.%caramel%",
+          "title.ilike.%cinnamon%",
+          "title.ilike.%maple%",
+          "title.ilike.%fall%",
+          "title.ilike.%autumn%",
+          "title.ilike.%soup%",
+          "title.ilike.%chili%",
+          "title.ilike.%stew%",
+          "title.ilike.%pot pie%",
+          "title.ilike.%bake%",
+          "title.ilike.%casserole%",
+        ].join(",")
+      );
+
+      const EXCLUDE = ["smoothie","margarita","cocktail","mocktail","lemonade","soda","iced ","milkshake","protein","keto taco","quesadilla","wrap","sandwich (ice)"]; // keep it seasonal food-y
+      EXCLUDE.forEach((w) => { q = q.not("title", "ilike", `%${w}%`); });
+
+      const picks = await run(q);
+      return picks.slice(0, 24);
+    }
+
+    // COZY (winter comfort)
+    if (topic.includes("cozy")) {
+      let q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at");
+
+      q = q.or(
+        [
+          "title.ilike.%soup%",
+          "title.ilike.%stew%",
+          "title.ilike.%chili%",
+          "title.ilike.%braise%",
+          "title.ilike.%roast%",
+          "title.ilike.%casserole%",
+          "title.ilike.%pot pie%",
+          "title.ilike.%shepherd%",
+          "title.ilike.%bake%",
+          "title.ilike.%slow cooker%",
+          "title.ilike.%crockpot%",
+          "title.ilike.%dumpling%",
+          "title.ilike.%noodle soup%",
+        ].join(",")
+      );
+
+      const EXCLUDE = ["cookie","brownie","cake","cupcake","ice cream","smoothie","salad","lemonade","popsicle"]; // avoid desserts/summer
+      EXCLUDE.forEach((w) => { q = q.not("title", "ilike", `%${w}%`); });
+
+      return (await run(q)).slice(0, 24);
+    }
+
+    // BACK TO SCHOOL (Sep) — quick lunches and meal-prep friendly
+    if (topic.includes("back to school")) {
+      let q = supabase
+        .from("recipes")
+        .select("id, title, image_url, minutes, created_at")
+        .or("minutes.lte.35,minutes.is.null");
+
+      const EXCLUDE = ["cocktail","mocktail","wine","beer","martini","old fashioned","cookie","brownie","cake","cupcake","donut","ice cream","fudge","bar ","bars"]; // avoid drinks/desserts
+      EXCLUDE.forEach((w) => { q = q.not("title", "ilike", `%${w}%`); });
+
+      q = q.or(
+        [
+          "title.ilike.%lunch%",
+          "title.ilike.%meal prep%",
+          "title.ilike.%prep%",
+          "title.ilike.%sandwich%",
+          "title.ilike.%wrap%",
+          "title.ilike.%quesadilla%",
+          "title.ilike.%pasta%",
+          "title.ilike.%skillet%",
+          "title.ilike.%sheet pan%",
+          "title.ilike.%sheet-pan%",
+          "title.ilike.%one pan%",
+          "title.ilike.%one-pan%",
+          "title.ilike.%30-minute%",
+          "title.ilike.%quick%",
+        ].join(",")
+      );
+
+      return (await run(q)).slice(0, 24);
+    }
+
+    // DATE NIGHT (Feb 14 etc.) — elevated mains
+    if (topic.includes("date night")) {
+      let q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at");
+
+      q = q.or(
+        [
+          "title.ilike.%steak%",
+          "title.ilike.%filet%",
+          "title.ilike.%ribeye%",
+          "title.ilike.%pasta%",
+          "title.ilike.%risotto%",
+          "title.ilike.%salmon%",
+          "title.ilike.%scallop%",
+          "title.ilike.%shrimp%",
+          "title.ilike.%lamb%",
+          "title.ilike.%beurre%",
+          "title.ilike.%cream%",
+          "title.ilike.%truffle%",
+          "title.ilike.%romantic%",
+        ].join(",")
+      );
+
+      const EXCLUDE = ["kid","gameday","wing","dip","slider","crockpot","slow cooker"]; // avoid casual party foods
+      EXCLUDE.forEach((w) => { q = q.not("title", "ilike", `%${w}%`); });
+
+      return (await run(q)).slice(0, 24);
+    }
+
+    // NEW YEAR (Jan) — light/healthy reset
+    if (topic.includes("new year")) {
+      let q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at");
+
+      q = q.or(
+        [
+          "title.ilike.%light%",
+          "title.ilike.%healthy%",
+          "title.ilike.%low carb%",
+          "title.ilike.%high protein%",
+          "title.ilike.%salad%",
+          "title.ilike.%bowl%",
+          "title.ilike.%grilled%",
+          "title.ilike.%roasted%",
+          "title.ilike.%chicken%",
+          "title.ilike.%fish%",
+          "title.ilike.%salmon%",
+          "title.ilike.%shrimp%",
+          "title.ilike.%veggie%",
+        ].join(",")
+      );
+
+      const EXCLUDE = ["cookie","brownie","cake","cupcake","donut","fudge","ice cream","milkshake","margarita","martini","beer","wine"]; // avoid sweets/drinks
+      EXCLUDE.forEach((w) => { q = q.not("title", "ilike", `%${w}%`); });
+
+      return (await run(q)).slice(0, 24);
+    }
+
+    // SPRING — fresh, light produce-forward
+    if (topic.includes("spring")) {
+      let q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at");
+
+      q = q.or(
+        [
+          "title.ilike.%spring%",
+          "title.ilike.%asparagus%",
+          "title.ilike.%pea%",
+          "title.ilike.%lemon%",
+          "title.ilike.%herb%",
+          "title.ilike.%strawberry%",
+          "title.ilike.%salad%",
+          "title.ilike.%light%",
+          "title.ilike.%fresh%",
+        ].join(",")
+      );
+
+      const EXCLUDE = ["stew","chili","braise","casserole","pot pie","roast"]; // avoid heavy winter
+      EXCLUDE.forEach((w) => { q = q.not("title", "ilike", `%${w}%`); });
+
+      return (await run(q)).slice(0, 24);
+    }
+
+    // CINCO DE MAYO — Mexican-focused
+    if (topic.includes("cinco")) {
+      let q = supabase
+        .from("recipes")
+        .select("id, title, image_url, created_at");
+
+      q = q.or(
+        [
+          "title.ilike.%taco%",
+          "title.ilike.%fajita%",
+          "title.ilike.%carnitas%",
+          "title.ilike.%barbacoa%",
+          "title.ilike.%elote%",
+          "title.ilike.%salsa%",
+          "title.ilike.%guacamole%",
+          "title.ilike.%enchilada%",
+          "title.ilike.%quesadilla%",
+          "title.ilike.%pozole%",
+          "title.ilike.%birria%",
+        ].join(",")
+      );
+
+      return (await run(q)).slice(0, 24);
+    }
+
     // GAMEDAY → appetizers/snacks
     if (topic.includes("gameday")) {
       let q = supabase

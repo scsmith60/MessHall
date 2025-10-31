@@ -32,6 +32,8 @@ const BAD_TITLES = new Set([
   "YouTube",
   "Instagram",
   "Login • Instagram",
+  "Today's top videos",
+  "Today’s top videos",
 ]);
 
 const isTikTok = (url: string) => /tiktok\.com\/@/i.test(url);

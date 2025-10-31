@@ -22,6 +22,7 @@ import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import ThemedNotice from '@/components/ui/ThemedNotice';
 import { Ionicons } from '@expo/vector-icons';
 
 // Hidden WebView + snapshot tool
@@ -237,6 +238,9 @@ export default function EditRecipe() {
     setTimeout(() => setToast(null), 4200);
   };
 
+  // themed notice (modal) for errors/validation
+  const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>({ visible: false, title: '', message: '' });
+
   // 🔎 hidden WebView snapshot state/refs
   const [webSnapUrl, setWebSnapUrl] = useState<string | null>(null);
   const [webSnapInProgress, setWebSnapInProgress] = useState(false);
@@ -264,7 +268,7 @@ export default function EditRecipe() {
       try {
         const r: any = await dataAPI.getRecipeById(id);
         if (!r) {
-          Alert.alert('Missing', 'Recipe not found.');
+          setNotice({ visible: true, title: 'Mission Aborted', message: 'Recipe not found.' });
           router.back();
           return;
         }
@@ -290,7 +294,7 @@ export default function EditRecipe() {
         const owner = await dataAPI.getRecipeOwnerId(id);
         if (!off) setOwnerId(owner);
       } catch (e: any) {
-        Alert.alert('Error', e?.message ?? 'Failed to load recipe.');
+        setNotice({ visible: true, title: 'Mission Aborted', message: e?.message ?? 'Failed to load recipe.' });
       } finally {
         if (!off) {
           setLoading(false);
@@ -500,7 +504,7 @@ export default function EditRecipe() {
         text: 'Camera',
         onPress: async () => {
           const { status } = await ImagePicker.requestCameraPermissionsAsync();
-          if (status !== 'granted') return Alert.alert('Permission needed to use camera.');
+          if (status !== 'granted') return setNotice({ visible: true, title: 'Permission Denied', message: 'Camera access required.' });
           const r = await ImagePicker.launchCameraAsync({ quality: 0.92, allowsEditing: true, aspect: [4, 3] });
           if (r.canceled || !r.assets?.[0]?.uri) return;
           setPastedUrl('');
@@ -511,7 +515,7 @@ export default function EditRecipe() {
         text: 'Gallery',
         onPress: async () => {
           const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-          if (status !== 'granted') return Alert.alert('Permission needed to pick a photo.');
+          if (status !== 'granted') return setNotice({ visible: true, title: 'Permission Denied', message: 'Photo library access required.' });
           const r = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
             quality: 0.92,
@@ -531,11 +535,11 @@ export default function EditRecipe() {
   const uploadPreviewAndSetImage = useCallback(async () => {
     if (!canEditNow) {
       await warn();
-      Alert.alert('Only the owner can change the image.');
+      setNotice({ visible: true, title: 'Access Restricted', message: 'Only the owner can change the image.' });
       return;
     }
     if (!userId) {
-      Alert.alert('Please sign in first.');
+      setNotice({ visible: true, title: 'Sign-In Required', message: 'Please sign in first.' });
       return;
     }
 
@@ -549,7 +553,7 @@ export default function EditRecipe() {
         : '';
 
     if (!uri) {
-      Alert.alert('No new image yet.\nTip: Tap "Add/Choose Photo…" or Import.');
+      setNotice({ visible: true, title: 'Standby', message: 'No new image yet. Tip: Tap "Add/Choose Photo…" or Import.' });
       return;
     }
 
@@ -576,6 +580,13 @@ export default function EditRecipe() {
   if (loading) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={['top', 'left', 'right']}>
+        <ThemedNotice
+          visible={notice.visible}
+          title={notice.title}
+          message={notice.message}
+          onClose={() => setNotice({ visible: false, title: '', message: '' })}
+          confirmText="OK"
+        />
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <Text style={{ color: COLORS.text }}>Loading…</Text>
         </View>
@@ -585,6 +596,13 @@ export default function EditRecipe() {
   if (!canEditNow) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={['top', 'left', 'right']}>
+        <ThemedNotice
+          visible={notice.visible}
+          title={notice.title}
+          message={notice.message}
+          onClose={() => setNotice({ visible: false, title: '', message: '' })}
+          confirmText="OK"
+        />
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <Text style={{ color: COLORS.text, fontWeight: '800', textAlign: 'center' }}>
             Only the owner can edit this recipe.
@@ -604,6 +622,13 @@ export default function EditRecipe() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ThemedNotice
+          visible={notice.visible}
+          title={notice.title}
+          message={notice.message}
+          onClose={() => setNotice({ visible: false, title: '', message: '' })}
+          confirmText="OK"
+        />
         {/* 🟣 FLOATING TOAST (no layout space) */}
         <View
           pointerEvents="box-none"

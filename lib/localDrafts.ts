@@ -1,5 +1,5 @@
 // PURPOSE: pretend database for now using a JSON file on device. Later -> Supabase.
-import * as FS from 'expo-file-system';
+import * as FS from 'expo-file-system/legacy';
 
 const FILE = FS.documentDirectory + 'drafts.json';
 

@@ -13,7 +13,6 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  Alert,
   Switch,
   KeyboardAvoidingView,
   Platform,
@@ -27,6 +26,7 @@ import { GoogleButton, AppleButton } from "../../components/ui/SocialButtons";
 import { supabase } from "../../lib/supabase";
 import { waitForSignedIn } from "../../lib/auth-wait";
 import { COLORS } from "@/lib/theme";
+import ThemedNotice from "@/components/ui/ThemedNotice";
 
 // Theme-provided color aliases used locally in this screen
 const LOCAL = {
@@ -51,6 +51,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>({ visible: false, title: "", message: "" });
 
   // 🚪 when you tap "enter", we try to log you in
   async function handleLogin() {
@@ -85,9 +86,9 @@ export default function Login() {
       // 🟢 TINY FIX: send to the HOME TAB explicitly
       //    (this is the only line I changed from your file)
       if (ok) router.replace("/(tabs)/index");
-      else Alert.alert("Almost there", "Please try again.");
+      else setNotice({ visible: true, title: "Almost there", message: "Please try again." });
     } catch (e: any) {
-      Alert.alert("Login failed", e?.message ?? String(e));
+      setNotice({ visible: true, title: "Login failed", message: e?.message ?? String(e) });
     } finally {
       setBusy(false);
     }
@@ -97,7 +98,7 @@ export default function Login() {
   async function loginWithProvider(provider: "google" | "apple") {
     try {
       if (provider === "apple") {
-        Alert.alert("Coming soon", "Apple Sign in will be enabled after keys are added.");
+        setNotice({ visible: true, title: "Coming soon", message: "Apple Sign in will be enabled after keys are added." });
         return;
       }
 
@@ -120,7 +121,7 @@ export default function Login() {
         }
       }
     } catch (e: any) {
-      Alert.alert("Login failed", e?.message ?? String(e));
+      setNotice({ visible: true, title: "Login failed", message: e?.message ?? String(e) });
     } finally {
       setBusy(false);
     }
@@ -134,6 +135,13 @@ export default function Login() {
       style={{ flex: 1, backgroundColor: LOCAL.bg }}
       behavior={Platform.select({ ios: "padding", android: undefined })}
     >
+      <ThemedNotice
+        visible={notice.visible}
+        title={notice.title}
+        message={notice.message}
+        onClose={() => setNotice({ visible: false, title: "", message: "" })}
+        confirmText="OK"
+      />
       {/* Outer safe padding */}
       <View style={{ flex: 1, paddingHorizontal: 20, paddingTop: 48 }}>
         {/* ---------- TOP: Logo + Welcome ---------- */}
@@ -229,7 +237,7 @@ export default function Login() {
             onPress={async () => {
               try {
                 if (!identifier.trim()) {
-                  Alert.alert("Need your email", "Please type your email first.");
+                  setNotice({ visible: true, title: "Mission Brief", message: "Please type your email first." });
                   return;
                 }
                 const email =
@@ -238,10 +246,7 @@ export default function Login() {
                     : undefined;
 
                 if (!email) {
-                  Alert.alert(
-                    "Use email",
-                    "Password reset needs an email, not a username."
-                  );
+                  setNotice({ visible: true, title: "Use email", message: "Password reset needs an email, not a username." });
                   return;
                 }
 
@@ -253,12 +258,9 @@ export default function Login() {
                   }
                 );
                 if (error) throw error;
-                Alert.alert(
-                  "Check your email",
-                  "We sent you a reset link if that address exists."
-                );
+                setNotice({ visible: true, title: "Check your email", message: "We sent you a reset link if that address exists." });
               } catch (e: any) {
-                Alert.alert("Oops", e?.message ?? String(e));
+                setNotice({ visible: true, title: "Oops", message: e?.message ?? String(e) });
               } finally {
                 setBusy(false);
               }
