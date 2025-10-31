@@ -35,6 +35,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import { useRouter, useFocusEffect } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
 import { getConnectedProviders } from "@/lib/cart/providers";
@@ -155,6 +156,11 @@ export default function Profile() {
   const [country, setCountry] = useState<string>(""); // Country
   const [exporting, setExporting] = useState(false); // export working flag
 
+  // 🎯 Ad targeting fields (optional, for better ad personalization)
+  const [ageRange, setAgeRange] = useState<string>(""); // e.g., "25-34"
+  const [cookingFrequency, setCookingFrequency] = useState<string>(""); // "daily", "weekly", "occasionally"
+  const [dietaryPreferences, setDietaryPreferences] = useState<string[]>([]); // ["vegan", "gluten_free", etc.]
+
   const [showSupport, setShowSupport] = useState(false); // support modal
   const [ticketSubject, setTicketSubject] = useState("");
   const [ticketMessage, setTicketMessage] = useState("");
@@ -170,6 +176,7 @@ export default function Profile() {
     async function load() {
       if (!userId) return;
       setLoading(true);
+      // First, load core fields that definitely exist
       const { data, error } = await supabase
         .from("profiles")
         .select("id, email, username, bio, avatar_url, followers, following, state, country, units_preference, preferred_units")
@@ -193,10 +200,30 @@ export default function Profile() {
       setStateRegion(row.state ?? "");
       setCountry(row.country ?? "");
       setUnits((row.units_preference as "us" | "metric") ?? (row.preferred_units as "us" | "metric") ?? "us");
-      setLoading(false);
-
-      // 🆕 OPTIONAL fetch for new fields (won’t break if columns don’t exist)
       
+      // 🆕 OPTIONAL: Try to load ad targeting fields (won't break if columns don't exist)
+      try {
+        const { data: prefData, error: prefError } = await supabase
+          .from("profiles")
+          .select("age_range, cooking_frequency, dietary_preferences")
+          .eq("id", userId)
+          .single();
+        // If columns don't exist, Supabase will return an error - that's fine, just skip loading them
+        if (!prefError && prefData && alive) {
+          setAgeRange((prefData as any).age_range ?? "");
+          setCookingFrequency((prefData as any).cooking_frequency ?? "");
+          setDietaryPreferences(Array.isArray((prefData as any).dietary_preferences) ? (prefData as any).dietary_preferences : []);
+        }
+      } catch (e: any) {
+        // Silently ignore - columns don't exist yet or other non-critical errors
+        if (e?.message?.includes("does not exist") || e?.code === "PGRST116") {
+          // Column doesn't exist - this is expected, just continue
+        } else {
+          console.log("Optional preference fields not available:", e?.message || e);
+        }
+      }
+      
+      setLoading(false);
     }
     load();
     return () => { alive = false; };
@@ -495,7 +522,7 @@ export default function Profile() {
 
   function Stat({ label, value }: { label: string; value: number | string }) {
     return (
-      <View style={{ flex: 1, backgroundColor: COLORS.card2, borderRadius: 12, paddingVertical: 12, alignItems: "center", justifyContent: "center" }}>
+      <View style={{ flex: 1, backgroundColor: COLORS.card, borderRadius: 12, paddingVertical: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: COLORS.border }}>
         <Text style={{ color: COLORS.text, fontWeight: "900" }}>{value}</Text>
         <Text style={{ color: COLORS.subtext, fontWeight: "700", marginTop: 4 }}>{label}</Text>
       </View>
@@ -528,7 +555,7 @@ export default function Profile() {
           {r.image_url ? (
             <Image source={{ uri: r.image_url }} style={{ width: "100%", height: CARD_W * 0.75 }} />
           ) : (
-            <View style={{ width: "100%", height: CARD_W * 0.75, backgroundColor: COLORS.card2 }} />
+            <View style={{ width: "100%", height: CARD_W * 0.75, backgroundColor: COLORS.card }} />
           )}
           <View style={{ padding: 10 }}>
             <Text numberOfLines={1} style={{ color: COLORS.text, fontWeight: "800", marginBottom: 6 }}>
@@ -543,7 +570,7 @@ export default function Profile() {
                 <TouchableOpacity
                   onPress={(e) => { e.stopPropagation(); onRemove(r.id); }}
                   hitSlop={{ top: 10, left: 10, right: 10, bottom: 10 }}
-                  style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: COLORS.glass, borderWidth: 1, borderColor: "rgba(255,255,255,0.15)" }}
+                  style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: COLORS.elevated, borderWidth: 1, borderColor: COLORS.border }}
                 >
                   <Text style={{ color: "#fff" }}>🗑️</Text>
                 </TouchableOpacity>
@@ -619,6 +646,24 @@ export default function Profile() {
       Alert.alert("Saved", "Location updated.");
     } catch (e: any) {
       Alert.alert("Oops", e?.message ?? "Could not save location. Ask us to enable these fields.");
+    }
+  }
+
+  // B2) Save ad targeting preferences
+  async function handleSavePreferences() {
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({
+          age_range: ageRange?.trim() || null,
+          cooking_frequency: cookingFrequency?.trim() || null,
+          dietary_preferences: dietaryPreferences.length > 0 ? dietaryPreferences : null,
+        })
+        .eq("id", userId);
+      if (error) throw error;
+      Alert.alert("Saved", "Preferences updated.");
+    } catch (e: any) {
+      Alert.alert("Oops", e?.message ?? "Could not save preferences. Ask us to enable these fields.");
     }
   }
 
@@ -800,7 +845,7 @@ export default function Profile() {
             {/* Gear (opens settings bottom-sheet) */}
             <TouchableOpacity
               onPress={() => setShowSettings(true)}
-              style={{ backgroundColor: COLORS.card2, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, marginRight: 8 }}
+              style={{ backgroundColor: COLORS.card, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, marginRight: 8, borderWidth: 1, borderColor: COLORS.border }}
               activeOpacity={0.85}
             >
               <Text style={{ color: COLORS.text, fontWeight: "900" }}>⚙️</Text>
@@ -960,7 +1005,17 @@ export default function Profile() {
                 onChangeText={setEditBio}
                 placeholder="Say hi…"
                 placeholderTextColor="#6b7280"
-                style={{ color: COLORS.text, backgroundColor: COLORS.card2, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12 }}
+                style={{
+                  color: COLORS.text,
+                  backgroundColor: COLORS.card,
+                  borderRadius: 8,
+                  paddingHorizontal: 12,
+                  paddingVertical: 12,
+                  marginBottom: 12,
+                  borderWidth: 1,
+                  borderColor: COLORS.border,
+                  fontSize: 15,
+                }}
                 multiline
               />
 
@@ -971,20 +1026,55 @@ export default function Profile() {
                 ) : avatarUrl ? (
                   <Image source={{ uri: avatarUrl }} style={{ width: 56, height: 56, borderRadius: 28 }} />
                 ) : (
-                  <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: COLORS.card2 }} />
+                  <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border }} />
                 )}
 
-                <TouchableOpacity onPress={pickImage} style={{ backgroundColor: COLORS.accent, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10 }}>
-                  <Text style={{ color: "#041016", fontWeight: "900" }}>{uploading ? "Uploading…" : "Pick image"}</Text>
+                <TouchableOpacity
+                  onPress={pickImage}
+                  style={{
+                    backgroundColor: COLORS.accent,
+                    paddingVertical: 10,
+                    paddingHorizontal: 12,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: COLORS.accent,
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ color: COLORS.onAccent, fontWeight: "900", fontSize: 14 }}>{uploading ? "Uploading…" : "Pick image"}</Text>
                 </TouchableOpacity>
               </View>
 
               <View style={{ flexDirection: "row", gap: 10 }}>
-                <TouchableOpacity onPress={() => setShowEdit(false)} style={{ flex: 1, backgroundColor: COLORS.card2, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}>
-                  <Text style={{ color: COLORS.text, fontWeight: "800" }}>Cancel</Text>
+                <TouchableOpacity
+                  onPress={() => setShowEdit(false)}
+                  style={{
+                    flex: 1,
+                    backgroundColor: COLORS.card,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                    alignItems: "center",
+                    borderWidth: 1,
+                    borderColor: COLORS.border,
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 15 }}>Cancel</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={saveProfileFields} style={{ flex: 1, backgroundColor: COLORS.button, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}>
-                  <Text style={{ color: "#062113", fontWeight: "900" }}>Save</Text>
+                <TouchableOpacity
+                  onPress={saveProfileFields}
+                  style={{
+                    flex: 1,
+                    backgroundColor: COLORS.accent,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                    alignItems: "center",
+                    borderWidth: 1,
+                    borderColor: COLORS.accent,
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ color: COLORS.onAccent, fontWeight: "900", fontSize: 15 }}>Save</Text>
                 </TouchableOpacity>
               </View>
             </Pressable>
@@ -1015,96 +1105,159 @@ export default function Profile() {
               </View>
 
               <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 12 }}>
-                {/* Manage Stores (unchanged) */}
+                {/* Manage Stores - Clear button styling */}
                 <TouchableOpacity
                   onPress={() => { setShowSettings(false); router.push("/profile/stores"); }}
-                  activeOpacity={0.9}
-                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                  activeOpacity={0.7}
+                  style={{
+                    backgroundColor: COLORS.card,
+                    padding: 16,
+                    borderRadius: 12,
+                    borderWidth: 2,
+                    borderColor: COLORS.accent,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
                 >
-                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Manage Stores</Text>
-                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
-                    {connectedStores > 0 ? `${connectedStores} connected` : "Not connected yet"}
-                  </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16, marginBottom: 4 }}>
+                      Manage Stores
+                    </Text>
+                    <Text style={{ color: COLORS.subtext, fontSize: 13 }}>
+                      {connectedStores > 0 ? `${connectedStores} connected` : "Not connected yet"}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={COLORS.accent} style={{ marginLeft: 12 }} />
                 </TouchableOpacity>
 
-                {/* Monetization (unchanged) */}
+                {/* Monetization - Clear button styling */}
                 <TouchableOpacity
                   onPress={() => { setShowSettings(false); router.push("/(account)/monetization"); }}
-                  activeOpacity={0.9}
-                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                  activeOpacity={0.7}
+                  style={{
+                    backgroundColor: COLORS.card,
+                    padding: 16,
+                    borderRadius: 12,
+                    borderWidth: 2,
+                    borderColor: COLORS.accent,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
                 >
-                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Monetization</Text>
-                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
-                    {monetizeLoading ? "Checking…" : monetizeLabel}
-                  </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16, marginBottom: 4 }}>
+                      Monetization
+                    </Text>
+                    <Text style={{ color: COLORS.subtext, fontSize: 13 }}>
+                      {monetizeLoading ? "Checking…" : monetizeLabel}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={COLORS.accent} style={{ marginLeft: 12 }} />
                 </TouchableOpacity>
 
-                {/* ===== Account Info: Email + Callsign + Location (NEW grouping, same functionality) ===== */}
-                <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
-                  {/* Email (read-only) */}
-                  <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Email</Text>
-                  <Text style={{ color: COLORS.text }}>{email || "—"}</Text>
+                {/* ===== Account Info: Email + Callsign + Location ===== */}
+                <View style={{ backgroundColor: COLORS.elevated, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16, marginBottom: 16 }}>Account Information</Text>
 
-                  {/* Callsign editor (moved under email) */}
-                  <Text style={{ color: COLORS.subtext, marginTop: 12, marginBottom: 6 }}>Callsign (username)</Text>
-                  <TextInput
-                    value={username}
-                    onChangeText={setUsername}
-                    placeholder="your_name"
-                    placeholderTextColor="#6b7280"
-                    style={{
-                      backgroundColor: COLORS.card2,
-                      color: COLORS.text,
-                      paddingHorizontal: 12,
-                      paddingVertical: 10,
-                      borderRadius: 10,
-                      borderWidth: 1,
-                      borderColor: "#263041",
-                      marginBottom: 8,
-                    }}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
-                  {!!checking && <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Checking availability…</Text>}
-                  <Text style={{ color: COLORS.subtext, marginBottom: 10 }}>Tip: 3+ characters. Spaces turn into underscores.</Text>
+                  {/* Email (read-only) */}
+                  <View style={{ marginBottom: 16 }}>
+                    <Text style={{ color: COLORS.subtext, fontSize: 13, marginBottom: 6, fontWeight: "600" }}>Email</Text>
+                    <View style={{ backgroundColor: COLORS.card, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border }}>
+                      <Text style={{ color: COLORS.text }}>{email || "—"}</Text>
+                    </View>
+                  </View>
+
+                  {/* Callsign editor */}
+                  <View style={{ marginBottom: 16 }}>
+                    <Text style={{ color: COLORS.subtext, fontSize: 13, marginBottom: 6, fontWeight: "600" }}>Callsign (username)</Text>
+                    <TextInput
+                      value={username}
+                      onChangeText={setUsername}
+                      placeholder="your_name"
+                      placeholderTextColor={COLORS.muted}
+                      style={{
+                        backgroundColor: COLORS.card,
+                        color: COLORS.text,
+                        paddingHorizontal: 12,
+                        paddingVertical: 12,
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: COLORS.border,
+                        fontSize: 15,
+                      }}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    {!!checking && <Text style={{ color: COLORS.subtext, marginTop: 6, fontSize: 12 }}>Checking availability…</Text>}
+                    <Text style={{ color: COLORS.subtext, marginTop: 6, fontSize: 12 }}>Tip: 3+ characters. Spaces turn into underscores.</Text>
+                  </View>
 
                   <TouchableOpacity
-                    disabled={!canSave}
+                    disabled={!canSave || saving}
                     onPress={handleSave}
                     style={{
-                      backgroundColor: canSave ? COLORS.button : COLORS.disabled,
+                      backgroundColor: canSave ? COLORS.accent : COLORS.elevated,
                       paddingVertical: 12,
-                      borderRadius: 12,
+                      borderRadius: 8,
                       alignItems: "center",
-                      marginBottom: 10,
+                      marginBottom: 16,
+                      borderWidth: 1,
+                      borderColor: canSave ? COLORS.accent : COLORS.border,
                     }}
+                    activeOpacity={0.8}
                   >
-                    <Text style={{ color: canSave ? "#062113" : "#93a3b8", fontWeight: "900" }}>Save Callsign</Text>
+                    <Text style={{ color: canSave ? COLORS.onAccent : COLORS.muted, fontWeight: "900", fontSize: 15 }}>
+                      {saving ? "Saving…" : "Save Callsign"}
+                    </Text>
                   </TouchableOpacity>
 
-                  {/* Location fields (NEW) */}
-                  <View style={{ flexDirection: "row", gap: 8 }}>
+                  {/* Divider */}
+                  <View style={{ height: 1, backgroundColor: COLORS.border, marginVertical: 16 }} />
+
+                  {/* Location fields */}
+                  <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16, marginBottom: 12 }}>Location</Text>
+                  <View style={{ flexDirection: "row", gap: 10, marginBottom: 12 }}>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>State</Text>
+                      <Text style={{ color: COLORS.subtext, fontSize: 13, marginBottom: 6, fontWeight: "600" }}>State</Text>
                       <TextInput
                         value={stateRegion}
                         onChangeText={setStateRegion}
-                        placeholder="e.g., AZ"
-                        placeholderTextColor="#6b7280"
-                        style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 }}
+                        placeholder="e.g., TX"
+                        placeholderTextColor={COLORS.muted}
+                        style={{
+                          backgroundColor: COLORS.card,
+                          color: COLORS.text,
+                          paddingHorizontal: 12,
+                          paddingVertical: 12,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: COLORS.border,
+                          fontSize: 15,
+                        }}
                         autoCapitalize="characters"
                         autoCorrect={false}
                         maxLength={32}
                       />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Country</Text>
+                      <Text style={{ color: COLORS.subtext, fontSize: 13, marginBottom: 6, fontWeight: "600" }}>Country</Text>
                       <TextInput
                         value={country}
                         onChangeText={setCountry}
                         placeholder="e.g., United States"
-                        placeholderTextColor="#6b7280"
-                        style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 }}
+                        placeholderTextColor={COLORS.muted}
+                        style={{
+                          backgroundColor: COLORS.card,
+                          color: COLORS.text,
+                          paddingHorizontal: 12,
+                          paddingVertical: 12,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: COLORS.border,
+                          fontSize: 15,
+                        }}
                         autoCapitalize="words"
                         autoCorrect={false}
                         maxLength={56}
@@ -1114,19 +1267,136 @@ export default function Profile() {
 
                   <TouchableOpacity
                     onPress={handleSaveLocation}
-                    style={{ marginTop: 10, backgroundColor: COLORS.accent, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                    style={{
+                      backgroundColor: COLORS.accent,
+                      paddingVertical: 12,
+                      borderRadius: 8,
+                      alignItems: "center",
+                      borderWidth: 1,
+                      borderColor: COLORS.accent,
+                    }}
+                    activeOpacity={0.8}
                   >
-                    <Text style={{ color: "#041016", fontWeight: "900" }}>Save Location</Text>
+                    <Text style={{ color: COLORS.onAccent, fontWeight: "900", fontSize: 15 }}>Save Location</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* ===== Preferences for Ad Targeting (Optional) ===== */}
+                <View style={{ backgroundColor: COLORS.elevated, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16, marginBottom: 6 }}>Preferences (Optional)</Text>
+                  <Text style={{ color: COLORS.subtext, fontSize: 12, marginBottom: 16 }}>
+                    Help us show you more relevant ads by sharing optional preferences.
+                  </Text>
+
+                  {/* Age Range */}
+                  <View style={{ marginBottom: 12 }}>
+                    <Text style={{ color: COLORS.subtext, fontSize: 13, marginBottom: 6, fontWeight: "600" }}>Age Range</Text>
+                    <TextInput
+                      value={ageRange}
+                      onChangeText={setAgeRange}
+                      placeholder="e.g., 25-34"
+                      placeholderTextColor={COLORS.muted}
+                      style={{
+                        backgroundColor: COLORS.card,
+                        color: COLORS.text,
+                        paddingHorizontal: 12,
+                        paddingVertical: 12,
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: COLORS.border,
+                        fontSize: 15,
+                      }}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </View>
+
+                  {/* Cooking Frequency */}
+                  <View style={{ marginBottom: 12 }}>
+                    <Text style={{ color: COLORS.subtext, fontSize: 13, marginBottom: 6, fontWeight: "600" }}>How often do you cook?</Text>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                      {(["Daily", "Weekly", "Occasionally", "Special occasions only"] as const).map((freq) => {
+                        const selected = cookingFrequency.toLowerCase() === freq.toLowerCase();
+                        return (
+                          <TouchableOpacity
+                            key={freq}
+                            onPress={() => setCookingFrequency(selected ? "" : freq.toLowerCase())}
+                            style={{
+                              paddingHorizontal: 12,
+                              paddingVertical: 8,
+                              borderRadius: 20,
+                              backgroundColor: selected ? COLORS.accent : COLORS.card,
+                              borderWidth: 1,
+                              borderColor: selected ? COLORS.accent : COLORS.border,
+                            }}
+                            activeOpacity={0.7}
+                          >
+                            <Text style={{ color: selected ? COLORS.onAccent : COLORS.text, fontSize: 13, fontWeight: "700" }}>
+                              {freq}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  {/* Dietary Preferences */}
+                  <View style={{ marginBottom: 12 }}>
+                    <Text style={{ color: COLORS.subtext, fontSize: 13, marginBottom: 6, fontWeight: "600" }}>Dietary Preferences</Text>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                      {(["Vegan", "Vegetarian", "Gluten-Free", "Dairy-Free", "Keto", "Paleo"] as const).map((diet) => {
+                        const selected = dietaryPreferences.includes(diet.toLowerCase().replace("-", "_"));
+                        return (
+                          <TouchableOpacity
+                            key={diet}
+                            onPress={() => {
+                              const key = diet.toLowerCase().replace("-", "_");
+                              setDietaryPreferences((prev) =>
+                                selected ? prev.filter((p) => p !== key) : [...prev, key]
+                              );
+                            }}
+                            style={{
+                              paddingHorizontal: 12,
+                              paddingVertical: 8,
+                              borderRadius: 20,
+                              backgroundColor: selected ? COLORS.accent : COLORS.card,
+                              borderWidth: 1,
+                              borderColor: selected ? COLORS.accent : COLORS.border,
+                            }}
+                            activeOpacity={0.7}
+                          >
+                            <Text style={{ color: selected ? COLORS.onAccent : COLORS.text, fontSize: 13, fontWeight: "700" }}>
+                              {diet}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    onPress={handleSavePreferences}
+                    style={{
+                      backgroundColor: COLORS.accent,
+                      paddingVertical: 12,
+                      borderRadius: 8,
+                      alignItems: "center",
+                      borderWidth: 1,
+                      borderColor: COLORS.accent,
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ color: COLORS.onAccent, fontWeight: "900", fontSize: 15 }}>Save Preferences</Text>
                   </TouchableOpacity>
                 </View>
 
                 {/* ===== Units preference (UPDATED to segmented slider) ===== */}
-                <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
-                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Ingredient Units</Text>
-                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>Pick how measurements show up.</Text>
+                <View style={{ backgroundColor: COLORS.elevated, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16 }}>Ingredient Units</Text>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4, fontSize: 13 }}>Pick how measurements show up.</Text>
 
                   {/* segmented pill */}
-                  <View style={{ marginTop: 10, flexDirection: "row", backgroundColor: COLORS.card2, borderRadius: 999, padding: 4 }}>
+                  <View style={{ marginTop: 10, flexDirection: "row", backgroundColor: COLORS.card, borderRadius: 999, padding: 4 }}>
                     {(["us", "metric"] as const).map((opt) => {
                       const active = units === opt;
                       return (
@@ -1152,25 +1422,27 @@ export default function Profile() {
                 </View>
 
                 {/* ===== Export recipes (NEW) ===== */}
-                <View style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
-                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Export my recipes</Text>
-                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>Get your data. Your recipes belong to you.</Text>
+                <View style={{ backgroundColor: COLORS.elevated, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16 }}>Export my recipes</Text>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4, fontSize: 13 }}>Get your data. Your recipes belong to you.</Text>
 
                   <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
                     <TouchableOpacity
                       onPress={handleQuickExport}
                       disabled={exporting}
-                      style={{ flex: 1, paddingVertical: 10, borderRadius: 10, backgroundColor: COLORS.card2, alignItems: "center" }}
+                      style={{ flex: 1, paddingVertical: 12, borderRadius: 8, backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, alignItems: "center" }}
+                      activeOpacity={0.8}
                     >
-                      <Text style={{ color: COLORS.text, fontWeight: "900" }}>{exporting ? "Working…" : "Quick (JSON)"}</Text>
+                      <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 14 }}>{exporting ? "Working…" : "Quick (JSON)"}</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
                       onPress={handleRequestExport}
                       disabled={exporting}
-                      style={{ flex: 1, paddingVertical: 10, borderRadius: 10, backgroundColor: COLORS.card2, alignItems: "center" }}
+                      style={{ flex: 1, paddingVertical: 12, borderRadius: 8, backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, alignItems: "center" }}
+                      activeOpacity={0.8}
                     >
-                      <Text style={{ color: COLORS.text, fontWeight: "900" }}>{exporting ? "Working…" : "Email me CSV/JSON"}</Text>
+                      <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 14 }}>{exporting ? "Working…" : "Email me CSV/JSON"}</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -1179,10 +1451,10 @@ export default function Profile() {
                 <TouchableOpacity
                   onPress={() => setShowSupport(true)}
                   activeOpacity={0.9}
-                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                  style={{ backgroundColor: COLORS.elevated, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
                 >
-                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Help & Support</Text>
-                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
+                  <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16 }}>Help & Support</Text>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4, fontSize: 13 }}>
                     Send us a ticket. You can attach screenshots.
                   </Text>
                 </TouchableOpacity>
@@ -1191,10 +1463,10 @@ export default function Profile() {
                 <TouchableOpacity
                   onPress={() => setShowDelete(true)}
                   activeOpacity={0.9}
-                  style={{ backgroundColor: COLORS.glass, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
+                  style={{ backgroundColor: COLORS.elevated, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}
                 >
-                  <Text style={{ color: COLORS.red, fontWeight: "900" }}>Quit MessHall (delete my account)</Text>
-                  <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
+                  <Text style={{ color: COLORS.danger, fontWeight: "900", fontSize: 16 }}>Quit MessHall (delete my account)</Text>
+                  <Text style={{ color: COLORS.subtext, marginTop: 4, fontSize: 13 }}>
                     Your profile stays for 30 days, then is deleted. Recipes nobody saved are removed after 30 days.
                     Saved copies stay visible to the saver.
                   </Text>
@@ -1213,18 +1485,19 @@ export default function Profile() {
                     }, 0);
                   });
                 }}
-
-                  style={{ backgroundColor: COLORS.red, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}
+                  style={{ backgroundColor: COLORS.danger, paddingVertical: 12, borderRadius: 8, alignItems: "center", borderWidth: 1, borderColor: COLORS.danger }}
+                  activeOpacity={0.8}
                 >
-                  <Text style={{ color: "#fff", fontWeight: "900" }}>Sign Out</Text>
+                  <Text style={{ color: COLORS.onAccent, fontWeight: "900", fontSize: 15 }}>Sign Out</Text>
                 </TouchableOpacity>
 
                 {/* Close (unchanged) */}
                 <TouchableOpacity
                   onPress={() => setShowSettings(false)}
-                  style={{ backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                  style={{ backgroundColor: COLORS.card, paddingVertical: 12, borderRadius: 8, alignItems: "center", borderWidth: 1, borderColor: COLORS.border }}
+                  activeOpacity={0.8}
                 >
-                  <Text style={{ color: COLORS.text, fontWeight: "800" }}>Close</Text>
+                  <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 15 }}>Close</Text>
                 </TouchableOpacity>
               </ScrollView>
             </Pressable>
@@ -1236,17 +1509,18 @@ export default function Profile() {
           <Pressable onPress={() => setShowAffiliate(false)} style={{ flex: 1, backgroundColor: COLORS.overlay, alignItems: "center", justifyContent: "center", padding: 20 }}>
             <Pressable onPress={() => {}} style={{ width: "100%", backgroundColor: COLORS.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}>
               <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18 }}>Affiliate Disclosure</Text>
-              <Text style={{ color: COLORS.subtext, marginTop: 10, lineHeight: 20 }}>
-                MessHall uses affiliate links for some stores. If you tap “Send to Cart” or visit a store from the app,
+              <Text style={{ color: COLORS.subtext, marginTop: 10, lineHeight: 20, fontSize: 14 }}>
+                MessHall uses affiliate links for some stores. If you tap "Send to Cart" or visit a store from the app,
                 we may earn a commission from qualifying purchases.{"\n\n"}
                 <Text style={{ color: COLORS.text, fontWeight: "900" }}>Amazon Notice:</Text> As an Amazon Associate, MessHall earns from qualifying purchases.{"\n\n"}
                 This helps us keep the app free and cover hosting costs. Thanks for your support!
               </Text>
               <TouchableOpacity
                 onPress={() => setShowAffiliate(false)}
-                style={{ marginTop: 14, backgroundColor: COLORS.accent, paddingVertical: 10, borderRadius: 12, alignItems: "center" }}
+                style={{ marginTop: 14, backgroundColor: COLORS.accent, paddingVertical: 12, borderRadius: 8, alignItems: "center", borderWidth: 1, borderColor: COLORS.accent }}
+                activeOpacity={0.8}
               >
-                <Text style={{ color: "#041016", fontWeight: "900" }}>Got it</Text>
+                <Text style={{ color: COLORS.onAccent, fontWeight: "900", fontSize: 15 }}>Got it</Text>
               </TouchableOpacity>
             </Pressable>
           </Pressable>
@@ -1257,24 +1531,45 @@ export default function Profile() {
           <Pressable style={{ flex: 1, backgroundColor: "#00000088", padding: 20 }} onPress={() => setShowSupport(false)}>
             <Pressable style={{ backgroundColor: COLORS.card, borderRadius: 16, padding: 16, gap: 10, borderWidth: 1, borderColor: COLORS.border }} onPress={() => {}}>
               <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18 }}>Help & Support</Text>
-              <Text style={{ color: COLORS.subtext }}>Tell us what’s wrong and add screenshots.</Text>
+              <Text style={{ color: COLORS.subtext, fontSize: 13 }}>Tell us what's wrong and add screenshots.</Text>
 
-              <Text style={{ color: COLORS.subtext, marginTop: 8 }}>Subject</Text>
+              <Text style={{ color: COLORS.subtext, marginTop: 12, fontSize: 13, fontWeight: "600" }}>Subject</Text>
               <TextInput
                 value={ticketSubject}
                 onChangeText={setTicketSubject}
                 placeholder="Short title"
-                placeholderTextColor="#6b7280"
-                style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 }}
+                placeholderTextColor={COLORS.muted}
+                style={{
+                  color: COLORS.text,
+                  backgroundColor: COLORS.card,
+                  paddingHorizontal: 12,
+                  paddingVertical: 12,
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderColor: COLORS.border,
+                  fontSize: 15,
+                  marginTop: 6,
+                }}
               />
 
-              <Text style={{ color: COLORS.subtext, marginTop: 8 }}>Message</Text>
+              <Text style={{ color: COLORS.subtext, marginTop: 12, fontSize: 13, fontWeight: "600" }}>Message</Text>
               <TextInput
                 value={ticketMessage}
                 onChangeText={setTicketMessage}
                 placeholder="Tell us in simple words…"
-                placeholderTextColor="#6b7280"
-                style={{ color: COLORS.text, backgroundColor: COLORS.card2, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, minHeight: 96 }}
+                placeholderTextColor={COLORS.muted}
+                style={{
+                  color: COLORS.text,
+                  backgroundColor: COLORS.card,
+                  paddingHorizontal: 12,
+                  paddingVertical: 12,
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderColor: COLORS.border,
+                  minHeight: 96,
+                  fontSize: 15,
+                  marginTop: 6,
+                }}
                 multiline
               />
 
@@ -1286,27 +1581,54 @@ export default function Profile() {
                 </ScrollView>
               )}
 
-              <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+              <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
                 <TouchableOpacity
                   onPress={handlePickSupportScreens}
-                  style={{ flex: 1, backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                  style={{
+                    flex: 1,
+                    backgroundColor: COLORS.card,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                    alignItems: "center",
+                    borderWidth: 1,
+                    borderColor: COLORS.border,
+                  }}
+                  activeOpacity={0.8}
                 >
-                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Add screenshots</Text>
+                  <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 14 }}>Add screenshots</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={handleSubmitTicket}
                   disabled={ticketSending}
-                  style={{ flex: 1, backgroundColor: COLORS.accent, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                  style={{
+                    flex: 1,
+                    backgroundColor: COLORS.accent,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                    alignItems: "center",
+                    borderWidth: 1,
+                    borderColor: COLORS.accent,
+                  }}
+                  activeOpacity={0.8}
                 >
-                  <Text style={{ color: "#041016", fontWeight: "900" }}>{ticketSending ? "Sending…" : "Send ticket"}</Text>
+                  <Text style={{ color: COLORS.onAccent, fontWeight: "900", fontSize: 14 }}>{ticketSending ? "Sending…" : "Send ticket"}</Text>
                 </TouchableOpacity>
               </View>
 
               <TouchableOpacity
                 onPress={() => setShowSupport(false)}
-                style={{ marginTop: 8, backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                style={{
+                  marginTop: 8,
+                  backgroundColor: COLORS.card,
+                  paddingVertical: 12,
+                  borderRadius: 8,
+                  alignItems: "center",
+                  borderWidth: 1,
+                  borderColor: COLORS.border,
+                }}
+                activeOpacity={0.8}
               >
-                <Text style={{ color: COLORS.text, fontWeight: "900" }}>Close</Text>
+                <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 14 }}>Close</Text>
               </TouchableOpacity>
             </Pressable>
           </Pressable>
@@ -1316,8 +1638,8 @@ export default function Profile() {
         <Modal visible={showDelete} transparent animationType="fade" onRequestClose={() => setShowDelete(false)}>
           <Pressable style={{ flex: 1, backgroundColor: "#00000088", padding: 20 }} onPress={() => setShowDelete(false)}>
             <Pressable style={{ backgroundColor: COLORS.card, borderRadius: 16, padding: 16, gap: 10, borderWidth: 1, borderColor: COLORS.border }} onPress={() => {}}>
-              <Text style={{ color: COLORS.red, fontWeight: "900", fontSize: 18 }}>Quit MessHall</Text>
-              <Text style={{ color: COLORS.sub }}>
+              <Text style={{ color: COLORS.danger, fontWeight: "900", fontSize: 18 }}>Quit MessHall</Text>
+              <Text style={{ color: COLORS.subtext, fontSize: 14, lineHeight: 20 }}>
                 If you continue, your account is scheduled for deletion in 30 days.
                 Your profile remains visible until then.
                 Recipes nobody saved will be removed after 30 days.
@@ -1327,16 +1649,34 @@ export default function Profile() {
               <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
                 <TouchableOpacity
                   onPress={() => setShowDelete(false)}
-                  style={{ flex: 1, backgroundColor: COLORS.card2, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                  style={{
+                    flex: 1,
+                    backgroundColor: COLORS.card,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                    alignItems: "center",
+                    borderWidth: 1,
+                    borderColor: COLORS.border,
+                  }}
+                  activeOpacity={0.8}
                 >
-                  <Text style={{ color: COLORS.text, fontWeight: "900" }}>Cancel</Text>
+                  <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 14 }}>Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={handleRequestDeletion}
                   disabled={deleting}
-                  style={{ flex: 1, backgroundColor: COLORS.red, paddingVertical: 10, borderRadius: 10, alignItems: "center" }}
+                  style={{
+                    flex: 1,
+                    backgroundColor: COLORS.danger,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                    alignItems: "center",
+                    borderWidth: 1,
+                    borderColor: COLORS.danger,
+                  }}
+                  activeOpacity={0.8}
                 >
-                  <Text style={{ color: "#fff", fontWeight: "900" }}>{deleting ? "Working…" : "Yes, delete in 30 days"}</Text>
+                  <Text style={{ color: COLORS.onAccent, fontWeight: "900", fontSize: 14 }}>{deleting ? "Working…" : "Yes, delete in 30 days"}</Text>
                 </TouchableOpacity>
               </View>
             </Pressable>
