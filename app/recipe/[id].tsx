@@ -21,6 +21,7 @@ import { dataAPI } from '../../lib/data';
 import { supabase } from '@/lib/supabase';
 import RecipeComments from '../../components/RecipeComments';
 import { IngredientPicker } from '@/components/IngredientPicker';
+import { playDonutEasterEgg } from '@/lib/sounds';
 
 // Calories pill
 import { useRecipeCalories } from '@/lib/nutrition';
@@ -58,6 +59,27 @@ function formatQty(n?: number | null): string {
   if (bestSym && bestDiff < 0.02) return whole === 0 ? bestSym : `${whole} ${bestSym}`;
   if (Math.abs(x - Math.round(x)) < 1e-6) return String(Math.round(x));
   return String(Math.round(x * 10) / 10);
+}
+
+function formatQtyForPref(n: number | null | undefined, pref: UnitsPref): string {
+  const base = formatQty(n as any);
+  if (pref !== 'us') return base;
+  // Prefer ASCII fractions for US display
+  return base
+    .replace(/⅛/g, '1/8')
+    .replace(/⅙/g, '1/6')
+    .replace(/⅕/g, '1/5')
+    .replace(/¼/g, '1/4')
+    .replace(/⅓/g, '1/3')
+    .replace(/⅜/g, '3/8')
+    .replace(/⅖/g, '2/5')
+    .replace(/½/g, '1/2')
+    .replace(/⅗/g, '3/5')
+    .replace(/⅔/g, '2/3')
+    .replace(/¾/g, '3/4')
+    .replace(/⅘/g, '4/5')
+    .replace(/⅚/g, '5/6')
+    .replace(/⅞/g, '7/8');
 }
 
 // 👮 helper: are we blocked either way?
@@ -338,11 +360,14 @@ export default function RecipeDetail() {
       if (!userId) return;
       const { data } = await supabase
         .from('profiles')
-        .select('preferred_units')
+        .select('units_preference, preferred_units')
         .eq('id', userId)
         .maybeSingle();
       if (!alive) return;
-      const pref = (data?.preferred_units === 'metric' ? 'metric' : 'us') as UnitsPref;
+      const pick = (v: any) => (typeof v === 'string' ? v.trim().toLowerCase() : null);
+      const up = pick((data as any)?.units_preference);
+      const pu = pick((data as any)?.preferred_units);
+      const pref = ((up === 'metric' ? 'metric' : null) || (pu === 'metric' ? 'metric' : null) || 'us') as UnitsPref;
       setUnitPref(pref);
     })();
     return () => { alive = false; };
@@ -447,7 +472,7 @@ export default function RecipeDetail() {
         const unit  = pref === 'metric' ? row.metric_unit    : row.us_unit;
         if (qty != null && unit) {
           const amount = (qmax != null && qmax !== qty)
-            ? `${formatQty(qty)}–${formatQty(qmax)}`
+            ? `${formatQtyForPref(qty, pref)}–${formatQtyForPref(qmax, pref)}`
             : `${formatQty(qty)}`;
           return [amount, unit, row.item].filter(Boolean).join(' ').trim();
         }
@@ -455,10 +480,21 @@ export default function RecipeDetail() {
       if (row.qty != null && row.unit) {
         const a = convertForDisplay(Number(row.qty), row.unit, pref);
         const b = row.qty_max != null ? convertForDisplay(Number(row.qty_max), row.unit, pref) : null;
-        const amount = b ? `${formatQty(a.qty)}–${formatQty(b.qty)}` : `${formatQty(a.qty)}`;
+        const amount = b ? `${formatQtyForPref(a.qty, pref)}–${formatQtyForPref(b.qty, pref)}` : `${formatQtyForPref(a.qty, pref)}`;
         return [amount, a.unit, row.item ?? ''].filter(Boolean).join(' ').trim();
       }
-      return row.text_original || row.text || '';
+      // Fallback: try to parse a simple "50g flour" / "200ml milk" pattern from text
+      const raw = (row.text_original || row.text || '').trim();
+      const simple = raw.match(/^\s*([0-9]+(?:[.,][0-9]+)?)\s*(tsp|tbsp|cup|floz|ml|l|g|kg|oz|lb)\b\s*(.*)$/i);
+      if (simple) {
+        const qty = Number(String(simple[1]).replace(',', '.'));
+        const unit = String(simple[2]);
+        const rest = String(simple[3] || '').trim();
+        const disp = convertForDisplay(qty, unit, pref);
+        const amount = formatQtyForPref(disp.qty, pref);
+        return [amount, disp.unit, rest].filter(Boolean).join(' ').trim();
+      }
+      return raw;
     }
 
     (async () => {
@@ -479,6 +515,16 @@ export default function RecipeDetail() {
 
     return () => { cancelled = true; };
   }, [id, unitPref]);
+
+  // fun easter egg on open: if title or ingredients mention donuts
+  useEffect(() => {
+    try {
+      const hay = `${model?.title || ''}\n${ingredients.join('\n')}`.toLowerCase();
+      if (/\b(donut|doughnut)\b/.test(hay)) {
+        playDonutEasterEgg().catch(() => {});
+      }
+    } catch {}
+  }, [model?.title, ingredients.join('|')]);
 
   useEffect(() => {
     let cancelled = false;

@@ -260,6 +260,35 @@ export default function SearchScreen() {
     Object.fromEntries(ALL_CHIPS.map((c) => [c, initialPrefill.toLowerCase().includes(c.toLowerCase())]))
   );
 
+  // Preselect diet chips from user profile preferences
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        const uid = auth?.user?.id;
+        if (!uid) return;
+        const { data } = await supabase
+          .from("profiles")
+          .select("dietary_preferences")
+          .eq("id", uid)
+          .maybeSingle();
+        if (!alive) return;
+        const prefs: string[] = Array.isArray((data as any)?.dietary_preferences) ? (data as any).dietary_preferences : [];
+        if (!prefs.length) return;
+        setSel((prev) => {
+          const next = { ...prev } as Record<string, boolean>;
+          const lower = new Set(prefs.map((p) => String(p).toLowerCase()));
+          if (lower.has("vegan")) next["Vegan"] = true;
+          if (lower.has("gluten_free")) next["Gluten-Free"] = true;
+          if (lower.has("dairy_free")) next["Dairy-Free"] = true;
+          return next;
+        });
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, []);
+
   // Results + loading
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [loading, setLoading] = useState(false);

@@ -154,6 +154,9 @@ type FeedItem =
       createdAt: string;
       ownerId: string;
       is_private?: boolean;
+      dietTags?: string[]; // optional for diet filtering
+      categoryTags?: string[];
+      mainIngredients?: string[];
     }
   | {
       type: "sponsored";
@@ -303,6 +306,27 @@ export default function HomeScreen() {
   const [railIsHouse, setRailIsHouse] = useState(false);
   const [railSponsorLogo, setRailSponsorLogo] = useState<string | null>(null);
   const [railShelfId, setRailShelfId] = useState<string | null>(null);
+
+  // dietary filtering
+  const [dietaryPrefs, setDietaryPrefs] = useState<string[]>([]);
+  const [filterByDiet, setFilterByDiet] = useState<boolean>(false);
+
+  async function loadDietPrefsOnce(setDefaultToggle = false) {
+    const { data: auth } = await supabase.auth.getUser();
+    const uid = auth?.user?.id;
+    if (!uid) { setDietaryPrefs([]); if (setDefaultToggle) setFilterByDiet(false); return; }
+    const { data } = await supabase
+      .from("profiles")
+      .select("dietary_preferences")
+      .eq("id", uid)
+      .maybeSingle();
+    const prefs = Array.isArray((data as any)?.dietary_preferences) ? (data as any).dietary_preferences as string[] : [];
+    setDietaryPrefs(prefs);
+    if (setDefaultToggle) setFilterByDiet(prefs.length > 0);
+  }
+
+  useEffect(() => { loadDietPrefsOnce(true).catch(() => {}); }, []);
+  useFocusEffect(React.useCallback(() => { loadDietPrefsOnce(false).catch(() => {}); return () => {}; }, []));
 
   // impressions & scroll memory
   const seenAdsRef = useRef<Set<string>>(new Set());
@@ -667,7 +691,15 @@ export default function HomeScreen() {
           return (
             <Pressable
               key={m.key}
-              onPress={async () => { if (mode !== m.key) { setMode(m.key); await success(); } }}
+              onPress={async () => {
+                if (mode !== m.key) {
+                  setMode(m.key);
+                  // immediate resort of current items for visible feedback
+                  setData((prev) => applyClientSortFilter([...prev] as any));
+                  listRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+                  await success();
+                }
+              }}
               android_ripple={{ color: "rgba(255,255,255,0.08)", borderless: true }}
               style={{ flex: 1, paddingVertical: 10, alignItems: "center", borderRadius: 12, backgroundColor: active ? "rgba(255,255,255,0.06)" : "transparent", borderWidth: active ? 1 : 0, borderColor: active ? COLORS.border : "transparent" }}
               accessibilityRole="button"
@@ -809,6 +841,15 @@ export default function HomeScreen() {
             .from("recipe_saves")
             .upsert({ user_id: viewerId, recipe_id: recipeId }, { onConflict: "user_id,recipe_id" });
           if (error) throw error;
+          // Donut easter egg when saving a donut recipe
+          try {
+            const meta = recipeStore.get(String(recipeId));
+            const t = String(meta?.title || '').toLowerCase();
+            if (/\b(donut|doughnut)\b/.test(t)) {
+              const { playDonutEasterEgg } = await import("@/lib/sounds");
+              playDonutEasterEgg().catch(() => {});
+            }
+          } catch {}
         }
         await tap();
       } catch (e: any) {
@@ -887,8 +928,50 @@ export default function HomeScreen() {
     if (!Array.isArray(recipes) || !recipes.length) return recipes;
 
     // only touch recipe rows; leave sponsored alone in order
-    const recipeRows = recipes.filter((r) => r.type === "recipe") as any[];
+    let recipeRows = recipes.filter((r) => r.type === "recipe") as any[];
     const others = recipes.filter((r) => r.type !== "recipe");
+
+    // optional dietary filter (only if user has prefs and toggle is on)
+    if (filterByDiet && dietaryPrefs.length) {
+      const selected = dietaryPrefs.map((d) => String(d).toLowerCase());
+      const prefSet = new Set(selected);
+      const wantsVegan = prefSet.has("vegan");
+      const meatWords = [
+        "chicken","beef","pork","lamb","goat","veal","duck","turkey",
+        "bacon","ham","pepperoni","prosciutto","pancetta","chorizo","sausage",
+        "steak","ribeye","brisket","carne asada","asada","bulgogi","meatball",
+        "wing","wings","tender","tenders","thigh","drumstick",
+        "shrimp","salmon","tuna","fish","anchovy","anchovies","seafood","calamari","octopus","clam","oyster","mussel",
+        "egg","eggs"
+      ];
+      recipeRows = recipeRows.filter((r: any) => {
+        const tags: string[] = Array.isArray(r.dietTags) ? r.dietTags : [];
+        const tagsLower = tags.map((t) => String(t).toLowerCase());
+        const catLower = (Array.isArray(r.categoryTags) ? r.categoryTags : []).map((t: string) => String(t).toLowerCase());
+        const ingLower = (Array.isArray(r.mainIngredients) ? r.mainIngredients : []).map((t: string) => String(t).toLowerCase());
+        const titleLower = String(r.title || '').toLowerCase();
+
+        // If we have explicit diet tags, require AND across all selected prefs
+        if (tagsLower.length && !selected.every((p) => tagsLower.includes(p))) return false;
+
+        // Extra guard for vegan: exclude obvious meat matches by category/title/ingredients
+        if (wantsVegan) {
+          if (catLower.some((c) => ["chicken","beef","pork","seafood"].includes(c))) return false;
+          if (meatWords.some((w) => titleLower.includes(w))) return false;
+          if (ingLower.some((w) => meatWords.some((m) => w.includes(m)))) return false;
+        }
+
+        // Dairy-free guard if selected and recipe doesn't explicitly tag dairy_free
+        if (prefSet.has("dairy_free") && !tagsLower.includes("dairy_free")) {
+          const dairyWords = [
+            "milk","butter","yogurt","yoghurt","cream","creme","sour cream","cream cheese","mozzarella","cheddar","parmesan","parm","gouda","feta","ricotta","whey","ghee","halloumi","ice cream","custard"
+          ];
+          if (dairyWords.some((w) => titleLower.includes(w))) return false;
+          if (ingLower.some((w) => dairyWords.some((m) => w.includes(m)))) return false;
+        }
+        return true;
+      });
+    }
 
     const now = Date.now();
     const ageHours = (d: number) => Math.max(1, (now - d) / (1000 * 60 * 60));
@@ -916,7 +999,7 @@ export default function HomeScreen() {
 
     // merge back with non-recipe items (keep others where they were)
     return [...sorted, ...others];
-  }, [mode]);
+  }, [mode, filterByDiet, JSON.stringify(dietaryPrefs)]);
 
   /* ───────── main page load (unchanged, we just sort afterward) ───────── */
   const loadPage = useCallback(
@@ -969,7 +1052,7 @@ export default function HomeScreen() {
   // initial + refresh on mode change (because we re-sort)
   useEffect(() => {
     loadPage(0, true);
-  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mode, filterByDiet, JSON.stringify(dietaryPrefs)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ... the rest of your original code stays the same ... */
 
@@ -1188,7 +1271,40 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
         onEndReachedThreshold={0.4}
         onEndReached={onEndReached}
         refreshControl={<RefreshControl tintColor="#fff" refreshing={refreshing} onRefresh={onRefresh} />}
-        ListHeaderComponent={<View><FeedModeToggle /><Rail /></View>}
+        ListHeaderComponent={
+          <View>
+            <FeedModeToggle />
+            {dietaryPrefs.length > 0 && (
+              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.lg }}>
+                <Text style={{ color: "#cbd5e1", fontWeight: "700", marginRight: 10 }}>Only show my diet</Text>
+                <Pressable
+                  onPress={() => setFilterByDiet((v) => !v)}
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: filterByDiet }}
+                  style={{
+                    width: 44,
+                    height: 28,
+                    borderRadius: 16,
+                    backgroundColor: filterByDiet ? "#10b981" : "#334155",
+                    borderWidth: 1,
+                    borderColor: COLORS.border,
+                    padding: 2,
+                    justifyContent: "center",
+                  }}
+                >
+                  <View style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 11,
+                    backgroundColor: "#0b1220",
+                    transform: [{ translateX: filterByDiet ? 16 : 0 }],
+                  }} />
+                </Pressable>
+              </View>
+            )}
+            <Rail />
+          </View>
+        }
         ListFooterComponent={loading ? <ActivityIndicator style={{ marginVertical: 24 }} /> : null}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}

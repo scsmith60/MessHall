@@ -223,6 +223,9 @@ export const dataAPI: DataAPI = {
         id,
         title,
         image_url,
+        diet_tags,
+        category_tags,
+        main_ingredients,
         cooks_count,
         likes_count,
         comment_count,
@@ -334,6 +337,10 @@ export const dataAPI: DataAPI = {
         createdAt: r.created_at,
         ownerId: r.user_id,
         is_private: !!r.is_private,
+        // include diet tags so client can filter by viewer preferences
+        dietTags: Array.isArray(r.diet_tags) ? r.diet_tags : [],
+        categoryTags: Array.isArray(r.category_tags) ? r.category_tags : [],
+        mainIngredients: Array.isArray(r.main_ingredients) ? r.main_ingredients : [],
       });
     });
 

@@ -652,21 +652,42 @@ export default function Profile() {
     }
   }
 
-  // B2) Save ad targeting preferences
+  // B2) Save ad targeting preferences — optional per-column updates
   async function handleSavePreferences() {
+    const patchers: Array<() => Promise<void>> = [];
+    const guard = (err: any) => {
+      const msg = String(err?.message || err || "").toLowerCase();
+      const code = (err as any)?.code;
+      if (code === "PGRST116" || msg.includes("does not exist") || msg.includes("column") && msg.includes("does not exist")) {
+        return; // column missing → silently skip
+      }
+      throw err;
+    };
+
+    if (ageRange != null) {
+      patchers.push(async () => {
+        const { error } = await supabase.from("profiles").update({ age_range: ageRange?.trim() || null }).eq("id", userId);
+        if (error) guard(error);
+      });
+    }
+    if (cookingFrequency != null) {
+      patchers.push(async () => {
+        const { error } = await supabase.from("profiles").update({ cooking_frequency: cookingFrequency?.trim() || null }).eq("id", userId);
+        if (error) guard(error);
+      });
+    }
+    if (Array.isArray(dietaryPreferences)) {
+      patchers.push(async () => {
+        const { error } = await supabase.from("profiles").update({ dietary_preferences: dietaryPreferences.length ? dietaryPreferences : null }).eq("id", userId);
+        if (error) guard(error);
+      });
+    }
+
     try {
-      const { error } = await supabase
-        .from("profiles")
-        .update({
-          age_range: ageRange?.trim() || null,
-          cooking_frequency: cookingFrequency?.trim() || null,
-          dietary_preferences: dietaryPreferences.length > 0 ? dietaryPreferences : null,
-        })
-        .eq("id", userId);
-      if (error) throw error;
+      for (const p of patchers) { await p(); }
       setNotice({ visible: true, title: "Saved", message: "Preferences updated." });
     } catch (e: any) {
-      setNotice({ visible: true, title: "Oops", message: e?.message ?? "Could not save preferences. Ask us to enable these fields." });
+      setNotice({ visible: true, title: "Oops", message: e?.message ?? "Could not save some preferences. Ask us to enable these fields." });
     }
   }
 

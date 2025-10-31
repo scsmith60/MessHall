@@ -816,7 +816,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-  cookedButtonActive: { backgroundColor: COLORS.accentActive, borderColor: COLORS.accent },
+  cookedButtonActive: { backgroundColor: 'rgba(29,185,84,0.14)', borderColor: COLORS.accent },
   cookedText: { color: COLORS.text, fontWeight: "900", fontSize: 14 },
 
   ownerChip: {
