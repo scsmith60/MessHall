@@ -43,6 +43,8 @@ export function detectSiteType(url: string): "tiktok" | "instagram" | "facebook"
       "jamieoliver.com",
       "gordonramsay.com",
       "bbcgoodfood.com",
+      "aroundmyfamilytable.com",
+      "copykat.com",
     ];
     
     if (recipeSites.some(site => h.includes(site))) return "recipe-site";

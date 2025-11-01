@@ -155,6 +155,248 @@ function parseGordonRamsayRecipe(html: string, url: string): RecipeExtraction | 
   return { ingredients, steps, image };
 }
 
+function parseAroundMyFamilyTableRecipe(html: string, url: string): RecipeExtraction | null {
+  dbg('[RECIPE] Around My Family Table parsing', url);
+  const clean = (raw: string) =>
+    decodeHtmlEntitiesLite(raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+      .replace(/\u00A0/g, " ")
+      .replace(/\uFFFD/g, "")
+      .trim();
+
+  const ingredients: string[] = [];
+  const steps: string[] = [];
+
+  // Get visible text first - most reliable
+  const visible = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                       .replace(/<[^>]+>/g, ' ')
+                       .replace(/\s+/g, ' ')
+                       .trim();
+
+  // Find "Ingredients" and "Instructions" in the visible text
+  const ingIdx = visible.toLowerCase().lastIndexOf('ingredients');
+  const instIdx = visible.toLowerCase().lastIndexOf('instructions');
+
+  dbg('[RECIPE] Around My Family Table - found indices', { ingIdx, instIdx, visibleLength: visible.length });
+
+  // Extract ingredients section
+  if (ingIdx >= 0) {
+    const start = ingIdx;
+    const end = instIdx > ingIdx ? instIdx : Math.min(ingIdx + 5000, visible.length);
+    const ingSection = visible.slice(start + 10, end); // +10 to skip "Ingredients"
+
+    // Split into lines and filter for ingredient-like content
+    const lines = ingSection.split(/[.,;]\s+|\n+/).map(l => l.trim()).filter(l => {
+      return l.length > 5 && 
+             l.length < 200 && 
+             /\d/.test(l) && 
+             !/^(servings?|yield|prep time|cook time|total time|instructions?|directions?)/i.test(l);
+    });
+
+    if (lines.length >= 2) {
+      ingredients.push(...lines.slice(0, 20));
+      dbg('[RECIPE] Around My Family Table - extracted ingredients:', ingredients.length);
+    }
+  }
+
+  // Extract instructions section
+  if (instIdx >= 0) {
+    const start = instIdx;
+    const afterInst = visible.slice(start + 12); // +12 to skip "Instructions"
+
+    // Split on numbered steps or action verbs
+    const stepLines = afterInst.split(/\d+[.)]\s+|(?:combine|mix|heat|preheat|add|cook|bake|simmer|boil|whisk|stir|remove|transfer|let|rest|serve)/i)
+                               .map(l => l.trim())
+                               .filter(l => {
+                                 return l.length > 10 && 
+                                        l.length < 300 && 
+                                        !/^(servings?|yield|prep time|cook time|total time|notes?)/i.test(l);
+                               });
+
+    if (stepLines.length >= 1) {
+      steps.push(...stepLines.slice(0, 20));
+      dbg('[RECIPE] Around My Family Table - extracted steps:', steps.length);
+    }
+  }
+
+  // Also try HTML structure parsing
+  if (ingredients.length < 2 || steps.length < 1) {
+    // Look for list items in HTML
+    const allListItems = [...html.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+    
+    if (allListItems.length > 0) {
+      const allTexts = allListItems.map(item => {
+        let text = clean(item[1]);
+        text = text.replace(/^[•\-*]\s+/, "").replace(/^\d+[.)]\s+/, "").trim();
+        return text;
+      }).filter(t => t.length > 3);
+
+      // If we have list items, try to categorize them
+      const hasIngPattern = (txt: string) => /(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|lb|pound|\d+\s*\/\s*\d+)/i.test(txt);
+      const hasStepPattern = (txt: string) => /\b(combine|mix|heat|preheat|add|cook|bake|simmer|boil|whisk|stir|remove|transfer|let|rest|serve)/i.test(txt);
+
+      if (ingredients.length < 2) {
+        const ingredientItems = allTexts.filter(t => hasIngPattern(t) || (t.length < 150 && /\d/.test(t)));
+        if (ingredientItems.length >= 2) {
+          ingredients.length = 0;
+          ingredients.push(...ingredientItems.slice(0, 20));
+        }
+      }
+
+      if (steps.length < 1) {
+        const stepItems = allTexts.filter(t => hasStepPattern(t) || /^\d+[.)]\s/.test(t) || (t.length > 15 && t.length < 300));
+        if (stepItems.length >= 1) {
+          steps.length = 0;
+          steps.push(...stepItems.slice(0, 20));
+        }
+      }
+    }
+  }
+
+  dbg('[RECIPE] Around My Family Table - final counts', { ingredients: ingredients.length, steps: steps.length });
+
+  if (!ingredients.length && !steps.length) return null;
+
+  return { ingredients, steps };
+}
+
+function parseCopyKatRecipe(html: string, url: string): RecipeExtraction | null {
+  dbg('[RECIPE] CopyKat parsing', url);
+  const clean = (raw: string) =>
+    decodeHtmlEntitiesLite(raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+      .replace(/\u00A0/g, " ")
+      .replace(/\uFFFD/g, "")
+      .trim();
+
+  const ingredients: string[] = [];
+  const steps: string[] = [];
+
+  // CopyKat uses a structured recipe format - look for "Ingredients" heading and list items
+  // Try to find the ingredients section - look for "Ingredients" heading followed by list items
+  const ingredientsHeading = html.match(/<h[23][^>]*>\s*ingredients?\s*<\/h[23]>/i);
+  if (ingredientsHeading) {
+    dbg('[RECIPE] CopyKat - found ingredients heading');
+    // Find content after heading until we hit Instructions
+    const afterHeading = html.slice(html.indexOf(ingredientsHeading[0]) + ingredientsHeading[0].length);
+    const untilInstructions = afterHeading.match(/([\s\S]{0,10000}?)(?=<h[23][^>]*>\s*(?:instructions?|directions?|steps?|method)\s*<\/h[23]|$)/i);
+    const ingredientsSection = untilInstructions ? untilInstructions[1] : afterHeading.slice(0, 10000);
+
+    // Extract list items
+    const listItems = [...ingredientsSection.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+    dbg('[RECIPE] CopyKat - found list items:', listItems.length);
+    
+    for (const item of listItems) {
+      let text = clean(item[1]);
+      text = text.replace(/^[•\-*]\s+/, "").replace(/^\d+[.)]\s+/, "").trim();
+      if (text && text.length > 2 && !/^(servings?|yield|prep time|cook time|total time)/i.test(text)) {
+        ingredients.push(text);
+      }
+    }
+
+    // If no list items, try extracting from text that looks like ingredients
+    if (ingredients.length === 0) {
+      const textOnly = ingredientsSection.replace(/<[^>]+>/g, '\n');
+      const lines = textOnly.split('\n').map(l => l.trim()).filter(l => {
+        return l.length > 5 && l.length < 200 && /\d/.test(l) && 
+               !/^(servings?|yield|prep time|cook time|total time|instructions?|directions?)/i.test(l);
+      });
+      if (lines.length >= 2) {
+        ingredients.push(...lines.slice(0, 25));
+        dbg('[RECIPE] CopyKat - extracted from text lines:', ingredients.length);
+      }
+    }
+  }
+
+  // Try to find instructions section
+  const instructionsHeading = html.match(/<h[23][^>]*>\s*(?:instructions?|directions?|steps?|method)\s*<\/h[23]>/i);
+  if (instructionsHeading) {
+    dbg('[RECIPE] CopyKat - found instructions heading');
+    const afterHeading = html.slice(html.indexOf(instructionsHeading[0]) + instructionsHeading[0].length);
+    const untilNext = afterHeading.match(/([\s\S]{0,20000}?)(?=<h[23][^>]*>|<\/(?:article|section|div|main)>|$)/i);
+    const instructionsSection = untilNext ? untilNext[1] : afterHeading.slice(0, 20000);
+
+    // Extract numbered list items (ol) - these are typically the steps
+    const stepListItems = [...instructionsSection.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+    dbg('[RECIPE] CopyKat - found step list items:', stepListItems.length);
+    
+    for (const item of stepListItems) {
+      let text = clean(item[1]);
+      text = text.replace(/^\d+[.)]\s+/, "").replace(/^[•\-*]\s+/, "").trim();
+      if (text && text.length > 5 && !/^(servings?|yield|prep time|cook time|total time|notes?)/i.test(text)) {
+        steps.push(text);
+      }
+    }
+
+    // If no list items, try paragraphs with numbered content
+    if (steps.length === 0) {
+      const paragraphs = [...instructionsSection.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)];
+      for (const p of paragraphs) {
+        let text = clean(p[1]);
+        if (text && text.length > 10 && !/^(servings?|yield|prep time|cook time|total time|notes?)/i.test(text)) {
+          // Split on numbers if it's a multi-step paragraph like "1. First step. 2. Second step."
+          const parts = text.split(/\s+(\d+[.)]\s+)/).filter(Boolean);
+          if (parts.length > 1) {
+            for (let i = 1; i < parts.length; i += 2) {
+              const stepText = (parts[i] + (parts[i + 1] || "")).replace(/^\d+[.)]\s+/, "").trim();
+              if (stepText.length > 5) steps.push(stepText);
+            }
+          } else if (/\b(preheat|heat|mix|combine|add|place|cook|bake|simmer|stir|remove|turn|add|serve)/i.test(text)) {
+            steps.push(text);
+          }
+        }
+      }
+      dbg('[RECIPE] CopyKat - extracted steps from paragraphs:', steps.length);
+    }
+  }
+
+  // Fallback: extract from visible text if structured parsing didn't work
+  if (ingredients.length < 2 || steps.length < 1) {
+    dbg('[RECIPE] CopyKat - trying visible text extraction as fallback');
+    const visible = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                        .replace(/<[^>]+>/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+
+    // Find "Ingredients" and "Instructions" in visible text
+    const ingIdx = visible.toLowerCase().lastIndexOf('ingredients');
+    const instIdx = visible.toLowerCase().lastIndexOf('instructions');
+
+    if (ingIdx >= 0 && ingredients.length < 2) {
+      const afterIng = visible.slice(ingIdx + 10);
+      const untilInst = instIdx > ingIdx ? afterIng.slice(0, instIdx - ingIdx - 10) : afterIng.slice(0, 5000);
+      const ingLines = untilInst.split(/[.,;]\s+|\n+/).map(l => l.trim()).filter(l => {
+        return l.length > 5 && l.length < 200 && /\d/.test(l) && 
+               !/^(servings?|yield|prep time|cook time|total time|instructions?|directions?)/i.test(l);
+      });
+      if (ingLines.length >= 2) {
+        ingredients.length = 0;
+        ingredients.push(...ingLines.slice(0, 25));
+      }
+    }
+
+    if (instIdx >= 0 && steps.length < 1) {
+      const afterInst = visible.slice(instIdx + 12);
+      const stepLines = afterInst.split(/\d+[.)]\s+|(?:preheat|heat|mix|combine|add|place|cook|bake|simmer|stir|remove|turn|serve)/i)
+                                 .map(l => l.trim())
+                                 .filter(l => {
+                                   return l.length > 10 && l.length < 300 && 
+                                          !/^(servings?|yield|prep time|cook time|total time|notes?)/i.test(l);
+                                 });
+      if (stepLines.length >= 1) {
+        steps.length = 0;
+        steps.push(...stepLines.slice(0, 25));
+      }
+    }
+  }
+
+  dbg('[RECIPE] CopyKat - final counts', { ingredients: ingredients.length, steps: steps.length });
+
+  if (!ingredients.length && !steps.length) return null;
+
+  return { ingredients, steps };
+}
+
 // -------------- screen state --------------
 type ImageSourceState =
   | { kind: "none" }
@@ -1232,6 +1474,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
           }
         })();
         const isGordon = host.includes("gordonramsay.com");
+        const isAroundMyFamilyTable = host.includes("aroundmyfamilytable.com");
+        const isCopyKat = host.includes("copykat.com");
 
         const applyExtraction = async (
           data: RecipeExtraction | null | undefined,
@@ -1292,6 +1536,22 @@ function stitchBrokenSteps(lines: string[]): string[] {
           dbg('[RECIPE] Gordon Ramsay HTML path');
           const parsed = parseGordonRamsayRecipe(html, url);
           if (await applyExtraction(parsed, 'gordonramsay:html')) {
+            return true;
+          }
+        }
+
+        if (isAroundMyFamilyTable) {
+          dbg('[RECIPE] Around My Family Table HTML path');
+          const parsed = parseAroundMyFamilyTableRecipe(html, url);
+          if (parsed && await applyExtraction(parsed, 'aroundmyfamilytable:html')) {
+            return true;
+          }
+        }
+
+        if (isCopyKat) {
+          dbg('[RECIPE] CopyKat HTML path');
+          const parsed = parseCopyKatRecipe(html, url);
+          if (parsed && await applyExtraction(parsed, 'copykat:html')) {
             return true;
           }
         }

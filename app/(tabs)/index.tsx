@@ -694,8 +694,70 @@ export default function HomeScreen() {
               onPress={async () => {
                 if (mode !== m.key) {
                   setMode(m.key);
-                  // immediate resort of current items for visible feedback
-                  setData((prev) => applyClientSortFilter([...prev] as any));
+                  // Immediate resort using temporary mode for instant feedback
+                  setData((prev) => {
+                    // Temporarily use the new mode by creating a modified sort function
+                    const tempMode = m.key;
+                    const now = Date.now();
+                    const ageHours = (d: number) => Math.max(1, (now - d) / (1000 * 60 * 60));
+                    
+                    let recipes: FeedItem[] = [...prev];
+                    if (!Array.isArray(recipes) || !recipes.length) return recipes;
+                    
+                    let recipeRows = recipes.filter((r) => r.type === "recipe") as any[];
+                    const others = recipes.filter((r) => r.type !== "recipe");
+                    
+                    let sorted = recipeRows;
+                    
+                    if (tempMode === "newest") {
+                      sorted = [...recipeRows].sort((a, b) => {
+                        const timeA = new Date(a.createdAt).getTime();
+                        const timeB = new Date(b.createdAt).getTime();
+                        return timeB - timeA;
+                      });
+                    } else if (tempMode === "top_week") {
+                      const oneWeek = 7 * 24 * 3600 * 1000;
+                      const recent = recipeRows.filter((r) => {
+                        const age = now - new Date(r.createdAt).getTime();
+                        return age <= oneWeek;
+                      });
+                      sorted = [...recent].sort((a, b) => {
+                        const sa = (a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0);
+                        const sb = (b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0);
+                        if (sb !== sa) return sb - sa;
+                        // Tiebreaker: newest first when scores are equal
+                        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+                      });
+                      if (sorted.length < recipeRows.length * 0.3 && recipeRows.length > 0) {
+                        const older = recipeRows.filter((r) => {
+                          const age = now - new Date(r.createdAt).getTime();
+                          return age > oneWeek;
+                        });
+                        const olderSorted = [...older].sort((a, b) => {
+                          const sa = (a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0);
+                          const sb = (b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0);
+                          if (sb !== sa) return sb - sa;
+                          // Tiebreaker: newest first
+                          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+                        });
+                        sorted = [...sorted, ...olderSorted.slice(0, Math.max(0, recipeRows.length - sorted.length))];
+                      }
+                    } else {
+                      sorted = [...recipeRows].sort((a, b) => {
+                        const scoreA = (a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0);
+                        const scoreB = (b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0);
+                        const ageA = ageHours(new Date(a.createdAt).getTime());
+                        const ageB = ageHours(new Date(b.createdAt).getTime());
+                        const va = scoreA / Math.pow(ageA / 6, 1.2);
+                        const vb = scoreB / Math.pow(ageB / 6, 1.2);
+                        if (Math.abs(vb - va) > 0.001) return vb - va;
+                        // Tiebreaker: newest first when trending scores are very close
+                        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+                      });
+                    }
+                    
+                    return [...sorted, ...others];
+                  });
                   listRef.current?.scrollToOffset?.({ offset: 0, animated: true });
                   await success();
                 }
@@ -979,21 +1041,54 @@ export default function HomeScreen() {
     let sorted = recipeRows;
 
     if (mode === "newest") {
-      sorted = [...recipeRows].sort((a, b) => (new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+      // Sort by creation date descending (newest first)
+      sorted = [...recipeRows].sort((a, b) => {
+        const timeA = new Date(a.createdAt).getTime();
+        const timeB = new Date(b.createdAt).getTime();
+        return timeB - timeA; // newest first
+      });
     } else if (mode === "top_week") {
+      // Filter to last 7 days, then sort by engagement score (likes*3 + cooks*4 + comments)
       const oneWeek = 7 * 24 * 3600 * 1000;
-      const recent = recipeRows.filter((r) => (now - new Date(r.createdAt).getTime()) <= oneWeek);
+      const recent = recipeRows.filter((r) => {
+        const age = now - new Date(r.createdAt).getTime();
+        return age <= oneWeek;
+      });
       sorted = [...recent].sort((a, b) => {
         const sa = (a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0);
         const sb = (b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0);
-        return sb - sa;
+        if (sb !== sa) return sb - sa; // highest score first
+        // Tiebreaker: newest first when scores are equal
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
+      // If we filtered out too many, keep some older ones to fill the feed
+      if (sorted.length < recipeRows.length * 0.3 && recipeRows.length > 0) {
+        const older = recipeRows.filter((r) => {
+          const age = now - new Date(r.createdAt).getTime();
+          return age > oneWeek;
+        });
+        const olderSorted = [...older].sort((a, b) => {
+          const sa = (a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0);
+          const sb = (b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0);
+          if (sb !== sa) return sb - sa;
+          // Tiebreaker: newest first
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        });
+        sorted = [...sorted, ...olderSorted.slice(0, Math.max(0, recipeRows.length - sorted.length))];
+      }
     } else {
-      // trending with light time decay
+      // trending: engagement score divided by age^1.2 (time decay)
+      // Formula: (likes*3 + cooks*4 + comments) / (hours/6)^1.2
       sorted = [...recipeRows].sort((a, b) => {
-        const va = ((a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0)) / Math.pow(ageHours(new Date(a.createdAt).getTime())/6, 1.2);
-        const vb = ((b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0)) / Math.pow(ageHours(new Date(b.createdAt).getTime())/6, 1.2);
-        return vb - va;
+        const scoreA = (a.likes ?? 0) * 3 + (a.cooks ?? 0) * 4 + (a.commentCount ?? 0);
+        const scoreB = (b.likes ?? 0) * 3 + (b.cooks ?? 0) * 4 + (b.commentCount ?? 0);
+        const ageA = ageHours(new Date(a.createdAt).getTime());
+        const ageB = ageHours(new Date(b.createdAt).getTime());
+        const va = scoreA / Math.pow(ageA / 6, 1.2);
+        const vb = scoreB / Math.pow(ageB / 6, 1.2);
+        if (Math.abs(vb - va) > 0.001) return vb - va; // highest trending score first
+        // Tiebreaker: newest first when trending scores are very close
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
     }
 
@@ -1049,10 +1144,72 @@ export default function HomeScreen() {
     [loading, safetyFilter, pickSponsoredFeedCard, applyClientSortFilter]
   );
 
-  // initial + refresh on mode change (because we re-sort)
+  // Track last sorted mode to prevent re-sorting on every render
+  const lastSortedModeRef = useRef<FeedMode | null>(null);
+  const loadingPagesRef = useRef(false);
+  
+  // initial load only (don't reload when mode changes - we sort existing data instead)
   useEffect(() => {
     loadPage(0, true);
-  }, [mode, filterByDiet, JSON.stringify(dietaryPrefs)]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filterByDiet, JSON.stringify(dietaryPrefs)]); // eslint-disable-line react-hooks/exhaustive-deps
+  
+  // When mode changes, load more pages if needed, then re-sort
+  useEffect(() => {
+    // Only sort if mode actually changed and we have data
+    if (data.length > 0 && lastSortedModeRef.current !== mode) {
+      lastSortedModeRef.current = mode;
+      
+      console.log(`[FEED] Mode changed to: ${mode}, currently have ${data.length} items`);
+      
+      // For trending/top_week, we need more data for meaningful sorting
+      if ((mode === "trending" || mode === "top_week") && data.length < 50 && !loadingPagesRef.current) {
+        console.log(`[FEED] Loading more pages for ${mode} mode...`);
+        loadingPagesRef.current = true;
+        const loadMore = async () => {
+          const pagesToLoad = 4; // Load 4 more pages (48 more items)
+          for (let p = 1; p <= pagesToLoad; p++) {
+            await loadPage(p, false); // Append mode
+          }
+          loadingPagesRef.current = false;
+          
+          // After loading, sort all data
+          setTimeout(() => {
+            setData((prev) => {
+              const sorted = applyClientSortFilter([...prev]);
+              console.log(`[FEED] After loading more pages - ${sorted.length} items sorted, first 5:`, sorted.slice(0, 5).map((r: any) => ({
+                title: r.title?.slice(0, 30),
+                likes: r.likes,
+                cooks: r.cooks,
+                comments: r.commentCount,
+                score: mode === "trending" ? 
+                  ((r.likes ?? 0) * 3 + (r.cooks ?? 0) * 4 + (r.commentCount ?? 0)) / Math.pow(Math.max(1, (Date.now() - new Date(r.createdAt).getTime()) / (1000 * 60 * 60)) / 6, 1.2) :
+                  (r.likes ?? 0) * 3 + (r.cooks ?? 0) * 4 + (r.commentCount ?? 0),
+                createdAt: r.createdAt
+              })));
+              return sorted;
+            });
+            listRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+          }, 100);
+        };
+        loadMore();
+      } else {
+        // Just sort existing data
+        const sorted = applyClientSortFilter([...data]);
+        console.log(`[FEED] After sort - ${sorted.length} items, first 5:`, sorted.slice(0, 5).map((r: any) => ({
+          title: r.title?.slice(0, 30),
+          likes: r.likes,
+          cooks: r.cooks,
+          comments: r.commentCount,
+          score: mode === "trending" ? 
+            ((r.likes ?? 0) * 3 + (r.cooks ?? 0) * 4 + (r.commentCount ?? 0)) / Math.pow(Math.max(1, (Date.now() - new Date(r.createdAt).getTime()) / (1000 * 60 * 60)) / 6, 1.2) :
+            (r.likes ?? 0) * 3 + (r.cooks ?? 0) * 4 + (r.commentCount ?? 0),
+          createdAt: r.createdAt
+        })));
+        setData(sorted);
+        listRef.current?.scrollToOffset?.({ offset: 0, animated: true });
+      }
+    }
+  }, [mode]); // Only depend on mode, not data.length to prevent loops
 
   /* ... the rest of your original code stays the same ... */
 

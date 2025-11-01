@@ -74,6 +74,29 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
     }
   }
 
+  if (/aroundmyfamilytable\.com/i.test(url)) {
+    d('aroundmyfamilytable: calling parser');
+    const amft = parseAroundMyFamilyTable(html, url);
+    d('aroundmyfamilytable: parser returned', { 
+      hasResult: !!amft, 
+      ingredients: amft?.ingredients?.length || 0, 
+      steps: amft?.steps?.length || 0 
+    });
+    if (amft) {
+      fallbackPartial = { ...fallbackPartial, ...amft };
+      const isMeaningful = hasMeaningfulRecipeData(amft);
+      d('aroundmyfamilytable: isMeaningful?', isMeaningful);
+      if (isMeaningful) {
+        d('aroundmyfamilytable: returning early with meaningful data');
+        return finalize(url, fallbackPartial, html, 'aroundmyfamilytable');
+      } else {
+        d('aroundmyfamilytable: data not meaningful yet, continuing...');
+      }
+    } else {
+      d('aroundmyfamilytable: parser returned null');
+    }
+  }
+
   // 2) TikTok focused paths (videos AND photos)
   if (isTikTok(url)) {
     // 2a) Server-rendered caption spans
@@ -173,7 +196,8 @@ function finalize(url: string, p: PartialPick, html: string, source: string): Re
 function hasMeaningfulRecipeData(p: PartialPick): boolean {
   const ingCount = p.ingredients?.length ?? 0;
   const stepCount = p.steps?.length ?? 0;
-  return ingCount >= 2 || stepCount >= 1;
+  // Lower the bar - even 1 ingredient might be useful if we have steps, or vice versa
+  return ingCount >= 1 || stepCount >= 1;
 }
 
 // Like I'm 5: lines look "real" if they have numbers/units ("1 cup").
@@ -466,6 +490,311 @@ function parseGordonRamsay(html: string, url: string): { title?: string; ingredi
     steps,
     image,
   };
+}
+
+function parseAroundMyFamilyTable(html: string, url: string): { title?: string; ingredients: string[]; steps: string[]; image?: string } | null {
+  d('aroundmyfamilytable parse START', url, 'html length:', html.length);
+  const clean = (s: string) =>
+    decodeHtmlEntities(s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+      .replace(/\u00A0/g, " ")
+      .replace(/\uFFFD/g, "")
+      .trim();
+
+  const ingredients: string[] = [];
+  const steps: string[] = [];
+
+  // First, let's try the visible text extraction - it's the most reliable
+  d('aroundmyfamilytable step 1: trying visible text extraction');
+  const visible = htmlToTextWithBreaks(html);
+  d('aroundmyfamilytable visible text length:', visible.length);
+  
+  // Search for "Ingredients" anywhere in the visible text (case insensitive, flexible)
+  const ingTextMatch = visible.match(/ingredients?\s*:?[\s\S]{0,5000}/i);
+  const instTextMatch = visible.match(/(?:instructions?|directions?|steps?)\s*:?[\s\S]{0,10000}/i);
+  
+  d('aroundmyfamilytable found in visible text:', { 
+    hasIngredients: !!ingTextMatch, 
+    hasInstructions: !!instTextMatch,
+    ingMatchLength: ingTextMatch?.[0]?.length || 0,
+    instMatchLength: instTextMatch?.[0]?.length || 0
+  });
+  
+  const loose = extractIngredientsAndStepsNearKeyword(visible);
+  d('aroundmyfamilytable visible extraction results:', { 
+    ingredients: loose.ingredients.length, 
+    steps: loose.steps.length 
+  });
+  
+  if (loose.ingredients.length >= 2) {
+    ingredients.push(...loose.ingredients);
+  }
+  if (loose.steps.length >= 1) {
+    steps.push(...loose.steps);
+  }
+
+  // Step 2: Search HTML structure more aggressively
+  d('aroundmyfamilytable step 2: searching HTML structure');
+  
+  // Look for "Ingredients" and "Instructions" headings anywhere in the HTML
+  // Try many patterns - the content might be far down
+  const ingPatterns = [
+    /<h[1-6][^>]*>\s*ingredients?\s*:?\s*<\/h[1-6]>/i,
+    /<h[1-6][^>]*>\s*ingredients?\s*<\/h[1-6]>/i,
+    /<(?:h[1-6]|p|div|span|strong|b)[^>]*>\s*ingredients?\s*:?\s*<\/(?:h[1-6]|p|div|span|strong|b)>/i,
+    /<[^>]*class=["'][^"']*ingredient[^"']*["'][^>]*>/i,
+    /ingredients?\s*:/i
+  ];
+  
+  const instructionsPatterns = [
+    /<h[1-6][^>]*>\s*(?:instructions?|directions?|steps?)\s*:?\s*<\/h[1-6]>/i,
+    /<h[1-6][^>]*>\s*(?:instructions?|directions?|steps?)\s*<\/h[1-6]>/i,
+    /<(?:h[1-6]|p|div|span|strong|b)[^>]*>\s*(?:instructions?|directions?|steps?)\s*:?\s*<\/(?:h[1-6]|p|div|span|strong|b)>/i,
+    /<[^>]*class=["'][^"']*(?:instruction|direction|step)[^"']*["'][^>]*>/i,
+    /(?:instructions?|directions?|steps?)\s*:/i
+  ];
+
+  let ingredientsIndex = -1;
+  let instructionsIndex = -1;
+
+  // Find the position of Ingredients heading - search from END to handle content far down
+  for (const pattern of ingPatterns) {
+    const matches = [...html.matchAll(pattern)];
+    for (const match of matches) {
+      const idx = match.index ?? -1;
+      if (idx >= 0 && (ingredientsIndex < 0 || idx < ingredientsIndex)) {
+        ingredientsIndex = idx;
+      }
+    }
+  }
+
+  // Find the position of Instructions heading
+  for (const pattern of instructionsPatterns) {
+    const matches = [...html.matchAll(pattern)];
+    for (const match of matches) {
+      const idx = match.index ?? -1;
+      if (idx >= 0 && (instructionsIndex < 0 || idx < instructionsIndex)) {
+        instructionsIndex = idx;
+      }
+    }
+  }
+
+  d('aroundmyfamilytable found HTML indices', { ingredientsIndex, instructionsIndex, htmlLength: html.length });
+
+  // Extract ingredients section (between Ingredients and Instructions headings)
+  if (ingredientsIndex >= 0) {
+    d('aroundmyfamilytable extracting ingredients section starting at index', ingredientsIndex);
+    const start = ingredientsIndex;
+    const end = instructionsIndex > ingredientsIndex ? instructionsIndex : Math.min(ingredientsIndex + 15000, html.length);
+    const ingredientsSection = html.slice(start, end);
+    d('aroundmyfamilytable ingredients section length:', ingredientsSection.length);
+
+    // Extract list items - try both <ul> and <ol>
+    const listItems = [...ingredientsSection.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+    d('aroundmyfamilytable found list items:', listItems.length);
+    
+    for (const item of listItems) {
+      let text = clean(item[1]);
+      text = text.replace(/^[•\-*]\s+/, "").replace(/^\d+[.)]\s+/, "").trim();
+      if (text && text.length > 2 && !/^(servings?|yield|prep time|cook time|total time)/i.test(text)) {
+        ingredients.push(text);
+      }
+    }
+
+    // If no list items, try extracting from text lines
+    if (ingredients.length === 0) {
+      d('aroundmyfamilytable no list items, trying text extraction');
+      const textOnly = ingredientsSection.replace(/<[^>]+>/g, '\n');
+      const lines = textOnly.split('\n').map(l => l.trim()).filter(l => l.length > 5 && l.length < 200);
+      for (const line of lines) {
+        if (/\d/.test(line) && !/^(servings?|yield|prep time|cook time|total time)/i.test(line)) {
+          ingredients.push(line);
+        }
+      }
+      d('aroundmyfamilytable extracted from text lines:', ingredients.length);
+    }
+  }
+
+  // Extract instructions section (after Instructions heading)
+  if (instructionsIndex >= 0) {
+    d('aroundmyfamilytable extracting instructions section starting at index', instructionsIndex);
+    const start = instructionsIndex;
+    const end = Math.min(start + 20000, html.length);
+    const instructionsSection = html.slice(start, end);
+    d('aroundmyfamilytable instructions section length:', instructionsSection.length);
+
+    // Extract numbered list items (steps)
+    const stepListItems = [...instructionsSection.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+    d('aroundmyfamilytable found step list items:', stepListItems.length);
+    
+    for (const item of stepListItems) {
+      let text = clean(item[1]);
+      text = text.replace(/^\d+[.)]\s+/, "").replace(/^[•\-*]\s+/, "").trim();
+      if (text && text.length > 5 && !/^(servings?|yield|prep time|cook time|total time|notes?)/i.test(text)) {
+        steps.push(text);
+      }
+    }
+
+    // If no list items, try paragraphs
+    if (steps.length === 0) {
+      d('aroundmyfamilytable no step list items, trying paragraphs');
+      const paragraphs = [...instructionsSection.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)];
+      d('aroundmyfamilytable found paragraphs:', paragraphs.length);
+      
+      for (const p of paragraphs) {
+        let text = clean(p[1]);
+        if (text && text.length > 10 && !/^(servings?|yield|prep time|cook time|total time|notes?)/i.test(text)) {
+          // Split on numbered steps if present
+          const parts = text.split(/\s+(\d+[.)]\s+)/).filter(Boolean);
+          if (parts.length > 1) {
+            for (let i = 1; i < parts.length; i += 2) {
+              const stepText = (parts[i] + (parts[i + 1] || "")).replace(/^\d+[.)]\s+/, "").trim();
+              if (stepText.length > 5) steps.push(stepText);
+            }
+          } else if (/\b(combine|mix|heat|preheat|add|cook|bake|simmer|boil|whisk|stir)/i.test(text)) {
+            steps.push(text);
+          }
+        }
+      }
+      d('aroundmyfamilytable extracted steps from paragraphs:', steps.length);
+    }
+  }
+
+  // Step 3: If we still don't have enough, do one more aggressive search through the entire visible text
+  if (ingredients.length < 2 || steps.length < 1) {
+    d('aroundmyfamilytable step 3: final aggressive search, current counts:', { ingredients: ingredients.length, steps: steps.length });
+    
+    // Re-get visible text in case we need it fresh
+    const visibleText = htmlToTextWithBreaks(html);
+    
+    // Find all occurrences of "Ingredients" in the visible text and extract everything after it
+    const allIngMatches = [...visibleText.matchAll(/ingredients?\s*:?/gi)];
+    d('aroundmyfamilytable found "Ingredients" text occurrences:', allIngMatches.length);
+    
+    if (allIngMatches.length > 0 && ingredients.length < 2) {
+      // Take the last match (most likely the actual recipe, not navigation)
+      const lastMatch = allIngMatches[allIngMatches.length - 1];
+      const afterIng = visibleText.slice(lastMatch.index || 0);
+      const untilInst = afterIng.match(/([\s\S]{0,3000}?)(?=(?:instructions?|directions?|steps?)\s*:?|$)/i);
+      const ingText = untilInst ? untilInst[1] : afterIng.slice(0, 3000);
+      
+      const ingLines = ingText.split(/\n+/).map(l => l.trim()).filter(l => {
+        return l.length > 5 && 
+               l.length < 200 && 
+               /\d/.test(l) && 
+               !/^(servings?|yield|prep time|cook time|total time|instructions?|directions?)/i.test(l);
+      });
+      
+      if (ingLines.length >= 2) {
+        ingredients.length = 0;
+        ingredients.push(...ingLines);
+        d('aroundmyfamilytable extracted from aggressive text search:', ingredients.length);
+      }
+    }
+    
+    // Same for instructions
+    const allInstMatches = [...visibleText.matchAll(/(?:instructions?|directions?|steps?)\s*:?/gi)];
+    d('aroundmyfamilytable found "Instructions" text occurrences:', allInstMatches.length);
+    
+    if (allInstMatches.length > 0 && steps.length < 1) {
+      const lastMatch = allInstMatches[allInstMatches.length - 1];
+      const afterInst = visibleText.slice(lastMatch.index || 0);
+      const instLines = afterInst.split(/\n+/).slice(1, 50).map(l => l.trim()).filter(l => {
+        return l.length > 10 && 
+               !/^(servings?|yield|prep time|cook time|total time|notes?)/i.test(l) &&
+               (/\b(combine|mix|heat|preheat|add|cook|bake|simmer|boil|whisk|stir|remove|transfer|let|rest|serve)/i.test(l) ||
+                /^\d+[.)]\s/.test(l));
+      });
+      
+      if (instLines.length >= 1) {
+        steps.length = 0;
+        steps.push(...instLines);
+        d('aroundmyfamilytable extracted steps from aggressive text search:', steps.length);
+      }
+    }
+  }
+
+  // Step 4: Nuclear option - extract ANY text that looks like ingredients/steps from the entire HTML
+  // This is for when the normal extraction completely fails
+  if (ingredients.length < 2 || steps.length < 1) {
+    d('aroundmyfamilytable step 4: NUCLEAR OPTION - extracting from entire HTML');
+    
+    // Get ALL text from HTML, strip tags but keep structure
+    const allText = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                        .replace(/<[^>]+>/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+    
+    d('aroundmyfamilytable all text length:', allText.length);
+    
+    // Find ingredients section - look for patterns like "1 cup", "2 tsp", etc.
+    const ingredientPattern = /(?:^|\s)(\d+(?:\s+\d+\/\d+)?\s+(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|kg|ml|l)\s+[\w\s]+)/gi;
+    const allIngMatches = [...allText.matchAll(ingredientPattern)];
+    
+    if (allIngMatches.length >= 2 && ingredients.length < 2) {
+      const found = allIngMatches.slice(0, 20).map(m => m[1].trim()).filter(Boolean);
+      ingredients.length = 0;
+      ingredients.push(...found);
+      d('aroundmyfamilytable NUCLEAR: found ingredients via pattern:', ingredients.length);
+    }
+    
+    // Find instructions - look for numbered steps or action verbs
+    const stepPattern = /(\d+[.)]\s+[^0-9]{10,200}|(?:combine|mix|heat|preheat|add|cook|bake|simmer|boil|whisk|stir|remove|transfer|let|rest|serve|chill|refrigerate|cool|cut|slice|garnish)[^.!?]{10,200})/gi;
+    const allStepMatches = [...allText.matchAll(stepPattern)];
+    
+    if (allStepMatches.length >= 1 && steps.length < 1) {
+      const found = allStepMatches.slice(0, 20).map(m => m[1]?.trim() || m[0]?.trim()).filter(Boolean);
+      steps.length = 0;
+      steps.push(...found);
+      d('aroundmyfamilytable NUCLEAR: found steps via pattern:', steps.length);
+    }
+    
+    // Last resort: if we found "Ingredients:" and "Instructions:" in the text, extract everything between them
+    if ((ingredients.length < 2 || steps.length < 1) && allText.includes('Ingredients') && allText.includes('Instructions')) {
+      d('aroundmyfamilytable NUCLEAR: trying between-section extraction');
+      const ingIdx = allText.toLowerCase().lastIndexOf('ingredients');
+      const instIdx = allText.toLowerCase().lastIndexOf('instructions');
+      
+      if (ingIdx >= 0 && instIdx > ingIdx) {
+        const between = allText.slice(ingIdx + 10, instIdx);
+        const lines = between.split(/[.,;]\s+|\n+/).map(l => l.trim()).filter(l => {
+          return l.length > 10 && l.length < 200 && /\d/.test(l);
+        });
+        
+        if (lines.length >= 2 && ingredients.length < 2) {
+          ingredients.length = 0;
+          ingredients.push(...lines.slice(0, 15));
+          d('aroundmyfamilytable NUCLEAR: extracted ingredients from between sections:', ingredients.length);
+        }
+      }
+      
+      if (instIdx >= 0) {
+        const afterInst = allText.slice(instIdx + 12);
+        const stepLines = afterInst.split(/\d+[.)]\s+|(?:combine|mix|heat|preheat|add|cook|bake|simmer|boil)/i)
+                                  .map(l => l.trim())
+                                  .filter(l => l.length > 10 && l.length < 300);
+        
+        if (stepLines.length >= 1 && steps.length < 1) {
+          steps.length = 0;
+          steps.push(...stepLines.slice(0, 15));
+          d('aroundmyfamilytable NUCLEAR: extracted steps from after instructions:', steps.length);
+        }
+      }
+    }
+  }
+
+
+  d('aroundmyfamilytable final counts', { ingredients: ingredients.length, steps: steps.length });
+  
+  // ALWAYS return something - even if it's minimal data
+  // The caller will check if it's "meaningful" but we should try to extract whatever we can
+  const result = {
+    ingredients: ingredients.length > 0 ? ingredients : undefined,
+    steps: steps.length > 0 ? steps : undefined,
+  };
+  
+  d('aroundmyfamilytable RETURNING', result);
+  return result;
 }
 
 function decodeHtmlEntities(s: string): string {

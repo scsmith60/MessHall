@@ -54,15 +54,16 @@ import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: false,
-    shouldSetBadge: true,
-    // newer SDKs expect these desktop-style flags as well
-    // provide safe defaults so types line up
-    shouldShowBanner: true,
-    shouldShowList: true,
-  } as any),
+  handleNotification: async (notification) => {
+    // Allow sounds for meal reminder notifications (they have data.slotId)
+    const isMealReminder = notification.request.content.data?.slotId;
+    return {
+      shouldPlaySound: isMealReminder ?? false, // Play sound for meal reminders
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    } as any;
+  },
 });
 
 async function registerForPushToken(): Promise<string | null> {

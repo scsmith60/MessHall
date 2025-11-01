@@ -5,11 +5,12 @@
 // - Tap the little bell on the chip to turn the reminder on/off.
 // - We show one small line underneath telling you when to START cooking.
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { View, Text, Pressable, Switch, StyleSheet, Platform } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
+import { COLORS } from "@/lib/theme";
 
 // ---------- Types ----------
 type RecipeLite = {
@@ -37,9 +38,25 @@ type Props = {
 };
 
 // ---------- Helpers ----------
-async function ensureNotificationPermissions() {
-  const { status } = await Notifications.getPermissionsAsync();
-  if (status !== "granted") await Notifications.requestPermissionsAsync();
+async function ensureNotificationPermissions(): Promise<boolean> {
+  const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  if (existingStatus === "granted") return true;
+  
+  const { status } = await Notifications.requestPermissionsAsync();
+  
+  // Set up Android notification channel if needed
+  if (Platform.OS === "android" && status === "granted") {
+    await Notifications.setNotificationChannelAsync("default", {
+      name: "Meal Reminders",
+      description: "Reminders for when to start cooking meals",
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: true,
+      vibrationPattern: [0, 250, 250, 250],
+      enableVibrate: true,
+    });
+  }
+  
+  return status === "granted";
 }
 
 function defaultTimeForLabel(label: string): string {
@@ -51,8 +68,12 @@ function defaultTimeForLabel(label: string): string {
 
 function combineDateAndTime(day: Date, hhmm: string): Date {
   const [h, m] = hhmm.split(":").map((n) => parseInt(n, 10));
-  const d = new Date(day);
-  d.setHours(h || 0, m || 0, 0, 0);
+  // Create a new date using the year, month, and day from the provided date
+  // This avoids timezone issues when the day Date might have time components
+  const year = day.getFullYear();
+  const month = day.getMonth();
+  const date = day.getDate();
+  const d = new Date(year, month, date, h || 0, m || 0, 0, 0);
   return d;
 }
 
@@ -89,15 +110,20 @@ const PlannerSlots: React.FC<Props> = ({
     }))
   );
 
+  // Store notification IDs so we can cancel them later
+  const notificationIdsRef = useRef<Record<string, string>>({});
+
   // Which chip is "active" (we show its start time in the one-line summary)
   const [activeId, setActiveId] = useState<string>(() => rows[0]?.id ?? "");
 
   // Time picker state
   const [pickerState, setPickerState] = useState<{ openForId?: string; current?: Date }>({});
 
-  // Ask for notification permission once
+      // Ask for notification permission once and set up Android channel
   useEffect(() => {
-    ensureNotificationPermissions();
+    ensureNotificationPermissions().catch((err) => {
+      console.warn("⚠️ NOTIFICATION PERMISSION DENIED:", err);
+    });
   }, []);
 
   // Quick lookup helpers
@@ -113,8 +139,8 @@ const PlannerSlots: React.FC<Props> = ({
     });
   };
 
-  // When a time is picked, save it
-  const onTimePicked = (_e: any, selected?: Date) => {
+  // When a time is picked, save it and reschedule notification if needed
+  const onTimePicked = async (_e: any, selected?: Date) => {
     if (!pickerState.openForId) return;
     if (Platform.OS === "android") setPickerState({});
     if (!selected) return;
@@ -123,36 +149,159 @@ const PlannerSlots: React.FC<Props> = ({
     const mm = selected.getMinutes().toString().padStart(2, "0");
     const newTime = `${hh}:${mm}`;
 
-    setRows((prev) => prev.map((r) => (r.id === pickerState.openForId ? { ...r, targetTime: newTime } : r)));
+    setRows((prev) => {
+      const updated = prev.map((r) => (r.id === pickerState.openForId ? { ...r, targetTime: newTime } : r));
+      // If this slot has notifications enabled, reschedule with the new time
+      const updatedSlot = updated.find((r) => r.id === pickerState.openForId);
+      if (updatedSlot?.notify) {
+        scheduleReminder(updatedSlot).catch((err) => {
+          console.error("⚠️ RESCHEDULE FAILED — TIME CHANGE:", err);
+        });
+      }
+      return updated;
+    });
   };
 
   // 🔔 Schedule a reminder at the START time
-  const scheduleReminder = async (slot: MealSlot) => {
-    const readyAt = combineDateAndTime(date, slot.targetTime || defaultTimeForLabel(slot.label));
-    const mins = totalRecipeMinutes(slot.recipe);
-    const startAt = new Date(readyAt.getTime() - (mins + bufferMinutes) * 60000);
+  const scheduleReminder = async (slot: MealSlot): Promise<void> => {
+    try {
+      // First, ensure we have permissions
+      const hasPermission = await ensureNotificationPermissions();
+      if (!hasPermission) {
+        console.warn("⚠️ PERMISSION DENIED — REMINDER NOT SCHEDULED");
+        return;
+      }
 
-    if (isNaN(startAt.getTime()) || startAt.getTime() < Date.now()) return;
+      let readyAt = combineDateAndTime(date, slot.targetTime || defaultTimeForLabel(slot.label));
+      const mins = totalRecipeMinutes(slot.recipe);
+      let startAt = new Date(readyAt.getTime() - (mins + bufferMinutes) * 60000);
 
-    const slotName = slot.label || "Meal";
-    const recipePart = slot.recipe?.title ? ` • Start cooking ${slot.recipe.title}` : "";
-    const title = `${slotName}${recipePart}`;
+      const now = Date.now();
+      const startAtTime = startAt.getTime();
 
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title,
-        body: `Start now to eat by ${hhmm(readyAt)}.`,
-        data: { slotId: slot.id, slotName, readyAt: readyAt.toISOString(), dateISO: date.toISOString() },
-      },
-      trigger: { date: startAt } as any,
-    });
+      if (isNaN(startAtTime)) {
+        console.warn("⚠️ INVALID DATE — REMINDER ABORTED");
+        return;
+      }
+
+      // Check if the start time is in the past
+      if (startAtTime < now) {
+        const timeDiff = Math.round((now - startAtTime) / 1000 / 60); // minutes
+        console.warn(
+          `⚠️ TIME INVALID — SCHEDULE IN PAST (${timeDiff} min ago). Start: ${startAt.toLocaleString()}, Now: ${new Date(now).toLocaleString()}`
+        );
+        // If it's less than 1 hour in the past, schedule for the next day instead
+        if (timeDiff < 60) {
+          const nextDay = new Date(readyAt);
+          nextDay.setDate(nextDay.getDate() + 1);
+          const nextDayReadyAt = combineDateAndTime(nextDay, slot.targetTime || defaultTimeForLabel(slot.label));
+          const nextDayStartAt = new Date(nextDayReadyAt.getTime() - (mins + bufferMinutes) * 60000);
+          
+          if (nextDayStartAt.getTime() > now) {
+            console.log(`⚠️ AUTO-RESCHEDULE — NEXT DAY: ${nextDayStartAt.toLocaleString()}`);
+            // Update readyAt and startAt to next day
+            readyAt = nextDayReadyAt;
+            startAt = nextDayStartAt;
+          } else {
+            return; // Can't schedule even for next day
+          }
+        } else {
+          return; // Too far in the past, skip
+        }
+      }
+
+      // Cancel any existing notification for this slot
+      const existingId = notificationIdsRef.current[slot.id];
+      if (existingId) {
+        await Notifications.cancelScheduledNotificationAsync(existingId);
+      }
+
+      const slotName = slot.label || "Meal";
+      const recipePart = slot.recipe?.title ? ` • Start cooking ${slot.recipe.title}` : "";
+      const title = `${slotName}${recipePart}`;
+
+      // Verify the trigger date is valid
+      if (startAt.getTime() <= now) {
+        console.warn(`⚠️ ALARM TIME TOO CLOSE — Scheduling ${Math.round((startAt.getTime() - now) / 1000)}s in the future`);
+      }
+
+      const notificationId = await Notifications.scheduleNotificationAsync({
+        content: {
+          title,
+          body: `Start now to eat by ${hhmm(readyAt)}.`,
+          data: { slotId: slot.id, slotName, readyAt: readyAt.toISOString(), dateISO: date.toISOString() },
+          sound: true,
+        },
+        trigger: { date: startAt },
+      });
+
+      // Store the notification ID so we can cancel it later
+      notificationIdsRef.current[slot.id] = notificationId;
+      
+      const timeUntil = Math.round((startAt.getTime() - Date.now()) / 1000 / 60); // minutes
+      console.log(`✅ REMINDER SCHEDULED — ${slotName}`);
+      console.log(`   Ready: ${hhmm(readyAt)} | Alarm: ${hhmm(startAt)} (${timeUntil} min from now)`);
+      console.log(`   Buffer: ${bufferMinutes} min${mins > 0 ? ` + ${mins} min recipe` : ''}`);
+      console.log(`   Notification ID: ${notificationId}`);
+      
+      // Verify notification was actually scheduled (with delay for system to process)
+      setTimeout(async () => {
+        try {
+          const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+          console.log(`   Total scheduled: ${scheduled.length}`);
+          // Log first few to see structure
+          if (scheduled.length > 0) {
+            console.log(`   Sample notification identifiers:`, scheduled.slice(0, 3).map(n => n.identifier));
+          }
+          
+          // Check both string and potential number formats
+          const found = scheduled.find((n) => {
+            const id = String(n.identifier || '');
+            const notificationIdStr = String(notificationId);
+            return id === notificationIdStr || id === notificationId;
+          });
+          
+          console.log(`   Verified in schedule: ${found ? 'YES ✅' : 'NO ⚠️'}`);
+          
+          if (found) {
+            console.log(`   Trigger date: ${found.trigger && typeof found.trigger === 'object' && 'date' in found.trigger ? new Date(found.trigger.date as number).toLocaleString() : 'unknown'}`);
+          } else if (scheduled.length > 0) {
+            // Debug: check if any match by content
+            const byTitle = scheduled.find((n) => n.content?.title === title);
+            if (byTitle) {
+              console.log(`   ⚠️ Found by title but ID mismatch: ${byTitle.identifier} vs ${notificationId}`);
+            }
+          }
+        } catch (verifyError) {
+          console.warn(`⚠️ Could not verify notification:`, verifyError);
+        }
+      }, 1000);
+    } catch (error) {
+      console.error("⚠️ SCHEDULE FAILED — REMINDER NOT SET:", error);
+    }
   };
 
   // Toggle notify on/off
   const onToggleNotify = async (id: string, value: boolean) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, notify: value } : r)));
     const slot = rows.find((r) => r.id === id);
-    if (value && slot) await scheduleReminder(slot);
+    
+    if (value && slot) {
+      // Schedule new notification
+      await scheduleReminder(slot);
+    } else {
+      // Cancel existing notification
+      const notificationId = notificationIdsRef.current[id];
+      if (notificationId) {
+        try {
+          await Notifications.cancelScheduledNotificationAsync(notificationId);
+          delete notificationIdsRef.current[id];
+          console.log(`✅ REMINDER CANCELLED — Slot ${id}`);
+        } catch (error) {
+          console.error("⚠️ CANCELLATION FAILED:", error);
+        }
+      }
+    }
   };
 
   // ------- RENDER VARIANTS -------
@@ -289,12 +438,12 @@ const PlannerSlots: React.FC<Props> = ({
 /* -------------------- STYLES: CHIPS -------------------- */
 const chipStyles = StyleSheet.create({
   card: {
-    backgroundColor: "#0f1521",
+    backgroundColor: COLORS.card,
     borderRadius: 14,
     padding: 10,
     gap: 8,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: COLORS.border,
   },
   title: { color: "white", fontSize: 14, fontWeight: "800", marginBottom: 2 },
 
@@ -310,13 +459,13 @@ const chipStyles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: COLORS.surface,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    borderColor: COLORS.border,
   },
   chipActive: {
-    backgroundColor: "rgba(34,197,94,0.14)",
-    borderColor: "rgba(34,197,94,0.5)",
+    backgroundColor: `${COLORS.accent}26`, // 15% opacity
+    borderColor: COLORS.accent,
   },
   chipLabel: { color: "rgba(255,255,255,0.9)", fontWeight: "800" },
   chipLabelActive: { color: "white" },
@@ -333,12 +482,12 @@ const chipStyles = StyleSheet.create({
 /* -------------------- STYLES: COMPACT / DEFAULT -------------------- */
 const fullStyles = StyleSheet.create({
   card: {
-    backgroundColor: "#0f1521",
+    backgroundColor: COLORS.card,
     borderRadius: 14,
     padding: 14,
     gap: 10,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: COLORS.border,
   },
   title: { color: "white", fontSize: 16, fontWeight: "700", marginBottom: 4 },
   row: {
@@ -362,12 +511,12 @@ const fullStyles = StyleSheet.create({
 
 const compactStyles = StyleSheet.create({
   card: {
-    backgroundColor: "#0f1521",
+    backgroundColor: COLORS.card,
     borderRadius: 14,
     padding: 10,
     gap: 8,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: COLORS.border,
   },
   title: { color: "white", fontSize: 14, fontWeight: "800", marginBottom: 2 },
   row: {

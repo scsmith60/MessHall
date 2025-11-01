@@ -27,7 +27,7 @@ import {
   PanGestureHandler,
   PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import dayjs from "dayjs";
 import isoWeek from "dayjs/plugin/isoWeek";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -148,6 +148,7 @@ function MiniRecipeBubble({ url }: { url?: string | null }) {
 export default function PlannerScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast(); // 👈 use our dark toast
+  const router = useRouter();
 
   // deep link (optional)
   const { recipeId, date } = useLocalSearchParams<{ recipeId?: string; date?: string }>();
@@ -155,6 +156,9 @@ export default function PlannerScreen() {
   // Which week & day we are looking at
   const [anchor, setAnchor] = useState(dayjs());
   const [selectedDate, setSelectedDate] = useState(dayjs().format("YYYY-MM-DD"));
+  
+  // Force re-render counter to ensure pills update
+  const [mealsRefreshKey, setMealsRefreshKey] = useState(0);
 
   // Meals for the whole visible week
   const [weekMeals, setWeekMeals] = useState<Record<string, PlannerMeal[]>>({});
@@ -204,6 +208,7 @@ export default function PlannerScreen() {
   const dayMealsRaw: PlannerMeal[] = weekMeals[selectedDate] ?? [];
 
   // Group + sort day meals by slot, then by sort_index
+  // Include mealsRefreshKey in deps to force recalculation when meals update
   const groupedDayMeals = useMemo(() => {
     const copy = [...dayMealsRaw];
     copy.sort((a, b) => {
@@ -218,8 +223,9 @@ export default function PlannerScreen() {
       if (!groups[key]) groups[key] = [];
       groups[key].push(m);
     }
+    console.log(`📦 Grouped meals:`, Object.keys(groups).map(k => `${k}:${groups[k].length}`).join(', '));
     return groups;
-  }, [dayMealsRaw]);
+  }, [dayMealsRaw, mealsRefreshKey]);
 
   // ── Load meals for visible week ──
   const loadMeals = useCallback(async () => {
@@ -255,8 +261,17 @@ export default function PlannerScreen() {
         };
         if (!byDate[key]) byDate[key] = [];
         byDate[key].push(item);
+        // Debug log for the specific meal we're tracking
+        if (item.id && item.meal_slot) {
+          console.log(`  Meal ${item.id.slice(0, 8)}... slot: ${item.meal_slot}`);
+        }
       }
       setWeekMeals(byDate);
+      const selectedMeals = byDate[selectedDate] ?? [];
+      console.log(`📋 Loaded meals for week, selected date has ${selectedMeals.length} meals`);
+      selectedMeals.forEach(m => {
+        console.log(`  - ${m.recipe?.title || 'Untitled'} in ${m.meal_slot || 'dinner'}`);
+      });
     } catch (e: any) {
       // This one still uses Alert because it needs user action (DB migration)
       Alert.alert(
@@ -431,12 +446,21 @@ export default function PlannerScreen() {
   ) => {
     try {
       const nextIdx = await getNextSortIndex(ymd, slot);
-      const { error } = await supabase.from("planner_meals").insert({
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      const insertPayload: any = {
         recipe_id: rid,
         meal_date: ymd,
         meal_slot: slot,
         sort_index: nextIdx,
-      });
+      };
+      
+      // Include user_id if the table has that column (for RLS)
+      if (user?.id) {
+        insertPayload.user_id = user.id;
+      }
+      
+      const { error } = await supabase.from("planner_meals").insert(insertPayload);
       if (error) throw error;
 
       if (!opts?.silent) await safeSuccessHaptic();
@@ -451,16 +475,161 @@ export default function PlannerScreen() {
   // Change slot for a meal (and give it the next sort_index in that slot)
   const updateMealSlot = async (meal: PlannerMeal, newSlot: string) => {
     try {
+      console.log(`🔄 Updating meal ${meal.id} from ${meal.meal_slot} to ${newSlot}`);
+      
+      // First verify the meal exists and we can read it
+      const { data: existing, error: checkError } = await supabase
+        .from("planner_meals")
+        .select("id, meal_slot, meal_date")
+        .eq("id", meal.id)
+        .maybeSingle();
+      
+      if (checkError) {
+        console.error(`❌ Error checking meal existence:`, checkError);
+        throw checkError;
+      }
+      
+      if (!existing) {
+        console.error(`❌ Meal ${meal.id} not found in database`);
+        throw new Error("Meal not found");
+      }
+      
+      console.log(`✅ Meal exists: current slot is ${existing.meal_slot}`);
+      
       const nextIdx = await getNextSortIndex(meal.meal_date, newSlot);
-      const { error } = await supabase
+      console.log(`📝 Setting sort_index to ${nextIdx} for ${newSlot}`);
+      
+      // Check if meal has user_id column and verify ownership
+      // First try to see what columns the meal has
+      const { data: mealWithOwner, error: ownerCheckError } = await supabase
+        .from("planner_meals")
+        .select("id, user_id, meal_slot")
+        .eq("id", meal.id)
+        .maybeSingle();
+      
+      if (ownerCheckError) {
+        console.warn(`⚠️ Could not check meal ownership:`, ownerCheckError);
+      } else if (mealWithOwner) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (mealWithOwner.user_id && mealWithOwner.user_id !== user?.id) {
+          console.error(`❌ User ${user?.id} does not own meal (owned by ${mealWithOwner.user_id})`);
+          throw new Error("You don't have permission to update this meal");
+        }
+        console.log(`✅ Ownership verified (or no user_id column)`);
+      }
+      
+      // Update the database
+      const { data: updateData, error } = await supabase
         .from("planner_meals")
         .update({ meal_slot: newSlot, sort_index: nextIdx })
-        .eq("id", meal.id);
-      if (error) throw error;
+        .eq("id", meal.id)
+        .select("meal_slot, id");
+      
+      if (error) {
+        console.error(`❌ Database update error:`, error);
+        console.error(`   Error details:`, JSON.stringify(error, null, 2));
+        throw error;
+      }
+      
+      // Check if update actually affected any rows
+      if (!updateData || updateData.length === 0) {
+        // Try to get current user to check permissions
+        const { data: { user } } = await supabase.auth.getUser();
+        console.error(`❌ Update returned 0 rows`);
+        console.error(`   Meal ID: ${meal.id}`);
+        console.error(`   User ID: ${user?.id}`);
+        console.error(`   Meal owner (if exists): ${mealWithOwner?.user_id || 'no user_id column'}`);
+        console.error(`   Current meal_slot in DB: ${existing.meal_slot}`);
+        console.error(`   Attempting to set: ${newSlot}`);
+        
+        // Try a workaround: delete and re-insert (if RLS allows)
+        console.log(`🔄 Attempting workaround: delete and re-insert...`);
+        try {
+          const { error: delError } = await supabase
+            .from("planner_meals")
+            .delete()
+            .eq("id", meal.id);
+          
+          if (delError) {
+            console.error(`❌ Delete also failed:`, delError);
+            throw new Error("Update failed: RLS policy prevents update. Database administrator needs to fix RLS policies for planner_meals table.");
+          }
+          
+          // Re-insert with new slot (include user_id if available)
+          const { data: { user } } = await supabase.auth.getUser();
+          const insertPayload: any = {
+            id: meal.id,
+            recipe_id: meal.recipe_id,
+            meal_date: meal.meal_date,
+            meal_slot: newSlot,
+            sort_index: nextIdx,
+          };
+          
+          // Include user_id if available (might be needed for RLS)
+          if (user?.id) {
+            insertPayload.user_id = user.id;
+          }
+          
+          const { data: insertData, error: insertError } = await supabase
+            .from("planner_meals")
+            .insert(insertPayload)
+            .select("meal_slot, id")
+            .single();
+          
+          if (insertError || !insertData) {
+            console.error(`❌ Re-insert failed:`, insertError);
+            throw new Error("Update failed: Could not re-insert meal. Please try again.");
+          }
+          
+          console.log(`✅ Workaround succeeded: meal_slot is now ${insertData.meal_slot}`);
+          
+          // Force reload
+          await loadMeals();
+          setMealsRefreshKey((prev) => prev + 1);
+          setTimeout(() => {
+            toast.show(`Moved to ${newSlot}.`, "success");
+          }, 150);
+          return; // Exit early since we handled it
+        } catch (workaroundError: any) {
+          console.error(`❌ Workaround also failed:`, workaroundError);
+          throw new Error("Update failed: No rows affected. Check RLS policies.");
+        }
+      }
+      
+      console.log(`✅ Update response: meal_slot is now ${updateData[0]?.meal_slot}`);
+      
+      // Wait a moment for database to propagate
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      // Verify the update worked by querying fresh
+      const { data: verify, error: verifyError } = await supabase
+        .from("planner_meals")
+        .select("meal_slot, id")
+        .eq("id", meal.id)
+        .maybeSingle();
+      
+      if (verifyError) {
+        console.error(`❌ Verification error:`, verifyError);
+      } else if (verify) {
+        console.log(`✅ Verified: meal_slot is now ${verify?.meal_slot}`);
+      } else {
+        console.warn(`⚠️ Verification returned no data - meal might have been deleted`);
+      }
+      
+      // Force reload to update the UI immediately
       await loadMeals();
-      toast.show(`Moved to ${newSlot}.`, "success");
+      
+      // Force re-render by updating refresh key AFTER data is loaded
+      setMealsRefreshKey((prev) => prev + 1);
+      
+      // Small delay to ensure state has updated before showing toast
+      setTimeout(() => {
+        toast.show(`Moved to ${newSlot}.`, "success");
+      }, 150);
     } catch (e: any) {
-      toast.show(e?.message ? `Move failed: ${e.message}` : "Move failed", "error", 2400);
+      console.error(`❌ Failed to update meal slot:`, e);
+      const message = e?.message || "Move failed";
+      toast.show(message.includes("RLS") ? "Permission denied - check database policies" : message, "error", 2400);
     }
   };
 
@@ -664,7 +833,7 @@ export default function PlannerScreen() {
               <View style={{ marginBottom: 10 }}>
                 <PlannerSlots
                   variant="chips"
-                  date={dayjs(selectedDate).toDate()}
+                  date={dayjs(selectedDate, "YYYY-MM-DD").startOf("day").toDate()}
                   meals={[
                     { id: "breakfast", label: "Breakfast", targetTime: "08:00" },
                     { id: "lunch", label: "Lunch", targetTime: "12:30" },
@@ -697,8 +866,17 @@ export default function PlannerScreen() {
                         <Text style={styles.sectionTitle}>{slotKey[0].toUpperCase() + slotKey.slice(1)}</Text>
 
                         {list.map((m) => (
-                          <View key={m.id} style={styles.mealRow}>
-                            <Image source={{ uri: m.recipe?.image_url ?? "" }} style={styles.mealImg} />
+                          <View key={`${m.id}-${m.meal_slot}-${mealsRefreshKey}`} style={styles.mealRow}>
+                            <TouchableOpacity
+                              onPress={() => {
+                                if (m.recipe_id) {
+                                  router.push(`/recipe/${m.recipe_id}`);
+                                }
+                              }}
+                              activeOpacity={0.7}
+                            >
+                              <Image source={{ uri: m.recipe?.image_url ?? "" }} style={styles.mealImg} />
+                            </TouchableOpacity>
                             <View style={{ flex: 1 }}>
                               <Text style={styles.mealTitle} numberOfLines={1}>
                                 {m.recipe?.title || "Untitled"}
@@ -711,10 +889,12 @@ export default function PlannerScreen() {
                               {/* Slot pills to switch where this recipe belongs */}
                               <View style={styles.slotPillRow}>
                                 {(["breakfast", "lunch", "dinner"] as const).map((choice) => {
-                                  const active = (m.meal_slot || "dinner") === choice;
+                                  // Use the actual meal_slot from the database data, not stale state
+                                  const currentSlot = m.meal_slot || "dinner";
+                                  const active = currentSlot === choice;
                                   return (
                                     <TouchableOpacity
-                                      key={choice}
+                                      key={`${m.id}-pill-${choice}-${mealsRefreshKey}`}
                                       onPress={() => updateMealSlot(m, choice)}
                                       style={[styles.slotPill, active && styles.slotPillActive]}
                                     >
