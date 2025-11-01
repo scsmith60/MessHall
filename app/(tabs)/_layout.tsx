@@ -50,6 +50,7 @@ export default function TabsLayout() {
         <Tabs.Screen name="capture" options={{ title: "Capture",     tabBarIcon: makeIcon("camera") }} />
         <Tabs.Screen name="planner" options={{ title: "Planner",     tabBarIcon: makeIcon("calendar") }} />
         <Tabs.Screen name="shop"    options={{ title: "Commissary",  tabBarIcon: makeIcon("cart") }} />
+        <Tabs.Screen name="enlisted-club" options={{ title: "Enlisted", tabBarIcon: makeIcon("videocam") }} />
         <Tabs.Screen name="profile" options={{ title: "Profile",     tabBarIcon: makeIcon("person") }} />
         <Tabs.Screen name="owner"   options={{ title: "Owner",       tabBarIcon: makeIcon("stats-chart") }} />
         <Tabs.Screen name="public-profile" options={{ href: null }} />

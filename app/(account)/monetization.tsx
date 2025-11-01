@@ -21,6 +21,7 @@ import {
   Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
 import { COLORS as THEME } from "@/lib/theme";
@@ -112,6 +113,8 @@ export default function MonetizationScreen() {
 
   // switch state now persists to DB via profiles.monetize_enabled_at
   const [monetizeOn, setMonetizeOn] = useState(false);
+  const [stripeAccountId, setStripeAccountId] = useState<string | null>(null);
+  const [stripeSetupComplete, setStripeSetupComplete] = useState(false);
   const monetizationToggleEnabled = useMemo(
     () => appStatus === "approved",
     [appStatus]
@@ -140,14 +143,16 @@ export default function MonetizationScreen() {
     }
     setAppStatus(status);
 
-    // 2) If APPROVED, read current on/off from profiles.monetize_enabled_at
+    // 2) If APPROVED, read current on/off from profiles.monetize_enabled_at and Stripe status
     if (status === "approved") {
       const { data: prof } = await supabase
         .from("profiles")
-        .select("monetize_enabled_at")
+        .select("monetize_enabled_at, stripe_account_id")
         .eq("id", userId)
         .maybeSingle();
       setMonetizeOn(!!prof?.monetize_enabled_at);
+      setStripeAccountId(prof?.stripe_account_id || null);
+      setStripeSetupComplete(!!prof?.stripe_account_id);
       // We skip the eligibility checklist once you've applied/been approved.
       setEligible(null);
       setChecklist([]);
@@ -370,10 +375,10 @@ export default function MonetizationScreen() {
         >
           <View style={{ flex: 1, paddingRight: 12 }}>
             <Text style={{ color: COLORS.text, fontWeight: "800" }}>
-              Earn on your recipes
+              Enable Monetization
             </Text>
-            <Text style={{ color: COLORS.subtext, marginTop: 4 }}>
-              Turn this on after you’re approved.
+            <Text style={{ color: COLORS.subtext, marginTop: 4, fontSize: 12 }}>
+              Turn this on to enable both Enlisted Club tips and future recipe profit sharing.
             </Text>
           </View>
           <Switch
@@ -386,8 +391,163 @@ export default function MonetizationScreen() {
         </View>
 
         <Text style={{ color: COLORS.subtext, fontSize: 12 }}>
-          Tip: Once approved, we’ll email you and unlock the switch.
+          Tip: Once approved, we'll email you and unlock the switch. This enables all monetization features.
         </Text>
+
+        {/* Two Monetization Paths Section */}
+        {appStatus === "approved" && (
+          <View style={{ marginTop: 20, gap: 12 }}>
+            <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "900", marginBottom: 4 }}>
+              Monetization Options
+            </Text>
+            
+            {/* Path 1: Enlisted Club Tips */}
+            <View
+              style={{
+                backgroundColor: COLORS.card2,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: stripeSetupComplete ? COLORS.good : COLORS.border,
+                padding: 14,
+              }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+                <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 15 }}>
+                  💰 Enlisted Club Tips
+                </Text>
+                <View
+                  style={{
+                    marginLeft: 8,
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                    backgroundColor: COLORS.good,
+                    borderRadius: 999,
+                  }}
+                >
+                  <Text style={{ color: "#041016", fontWeight: "800", fontSize: 10 }}>Available Now</Text>
+                </View>
+              </View>
+              
+              <Text style={{ color: COLORS.subtext, fontSize: 12, lineHeight: 18, marginBottom: 8 }}>
+                Receive direct tips from participants during live cooking sessions. You get 90% of each tip, with 10% going to the platform.
+              </Text>
+
+              {stripeSetupComplete ? (
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Text style={{ color: COLORS.good, fontSize: 12, fontWeight: "700" }}>✓ Ready to receive tips</Text>
+                  <Text style={{ color: COLORS.subtext, fontSize: 11 }}>
+                    • $0.50 - $500.00 per tip
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text style={{ color: COLORS.subtext, fontSize: 12, lineHeight: 18, marginBottom: 8 }}>
+                    To receive tips, you need to complete Stripe Connect onboarding.
+                  </Text>
+                  <Pressable
+                    onPress={() => {
+                      setToastMsg(
+                        "Contact support or check your email for the Stripe onboarding link. Once completed, you can start receiving tips during live sessions."
+                      );
+                      setToastOpen(true);
+                    }}
+                    style={{
+                      marginTop: 4,
+                      paddingVertical: 8,
+                      paddingHorizontal: 12,
+                      backgroundColor: COLORS.accent,
+                      borderRadius: 8,
+                      alignSelf: "flex-start",
+                    }}
+                  >
+                    <Text style={{ color: "#041016", fontWeight: "800", fontSize: 12 }}>
+                      Get Stripe Onboarding Link
+                    </Text>
+                  </Pressable>
+                </>
+              )}
+            </View>
+
+            {/* Path 2: Recipe Profit Sharing */}
+            <View
+              style={{
+                backgroundColor: COLORS.card2,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: COLORS.border,
+                padding: 14,
+                opacity: 0.8,
+              }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+                <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 15 }}>
+                  📊 Recipe Profit Sharing
+                </Text>
+                <View
+                  style={{
+                    marginLeft: 8,
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                    backgroundColor: COLORS.accent,
+                    borderRadius: 999,
+                  }}
+                >
+                  <Text style={{ color: "#041016", fontWeight: "800", fontSize: 10 }}>Coming Later</Text>
+                </View>
+              </View>
+              
+              <Text style={{ color: COLORS.subtext, fontSize: 12, lineHeight: 18, marginBottom: 8 }}>
+                Split revenue from recipe monetization (affiliate sales, subscriptions, etc.) with contributors. This requires the platform to have established revenue streams first.
+              </Text>
+
+              <View style={{ 
+                backgroundColor: COLORS.card, 
+                padding: 10, 
+                borderRadius: 8, 
+                marginTop: 8,
+                borderLeftWidth: 3,
+                borderLeftColor: COLORS.accent,
+              }}>
+                <Text style={{ color: COLORS.text, fontSize: 11, fontWeight: "700", marginBottom: 4 }}>
+                  Why it's not available yet:
+                </Text>
+                <Text style={{ color: COLORS.subtext, fontSize: 11, lineHeight: 16 }}>
+                  • Platform needs revenue streams (affiliates, subscriptions, etc.){"\n"}
+                  • Revenue tracking system needs to be built{"\n"}
+                  • Contributor attribution system required{"\n"}
+                  • Profit calculation engine needed
+                </Text>
+              </View>
+
+              <View style={{ marginTop: 10, flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Ionicons name="information-circle" size={14} color={COLORS.subtext} />
+                <Text style={{ color: COLORS.subtext, fontSize: 11, fontStyle: "italic" }}>
+                  Focus on Enlisted Club tips for now. Profit sharing will be added as the platform grows.
+                </Text>
+              </View>
+            </View>
+
+            {/* How They Work Together */}
+            <View
+              style={{
+                backgroundColor: COLORS.card,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: COLORS.border,
+                padding: 12,
+                marginTop: 4,
+              }}
+            >
+              <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 13, marginBottom: 6 }}>
+                💡 How They Work Together
+              </Text>
+              <Text style={{ color: COLORS.subtext, fontSize: 11, lineHeight: 16 }}>
+                • <Text style={{ fontWeight: "700" }}>Enlisted Club Tips:</Text> Immediate earnings from live sessions (available now){"\n"}
+                • <Text style={{ fontWeight: "700" }}>Profit Sharing:</Text> Future earnings from recipe monetization (coming when platform has revenue)
+              </Text>
+            </View>
+          </View>
+        )}
       </ScrollView>
 
       {/* Dark popup for messages */}

@@ -16,6 +16,8 @@ import { Slot, usePathname, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { supabase } from "../lib/supabase";
+import { StripeProvider } from "@stripe/stripe-react-native";
+import { STRIPE_PUBLISHABLE_KEY } from "../lib/env";
 
 // your auth provider/hooks
 import { AuthProvider, useAuth } from "../lib/auth";
@@ -443,11 +445,13 @@ export default function RootLayout() {
   return (
     // IMPORTANT: This root background fills behind the transparent status bar
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
-      <AuthProvider>
-        <RootErrorBoundary>
-          <InnerApp />
-        </RootErrorBoundary>
-      </AuthProvider>
+      <StripeProvider publishableKey={STRIPE_PUBLISHABLE_KEY}>
+        <AuthProvider>
+          <RootErrorBoundary>
+            <InnerApp />
+          </RootErrorBoundary>
+        </AuthProvider>
+      </StripeProvider>
     </GestureHandlerRootView>
   );
 }

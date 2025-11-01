@@ -143,7 +143,7 @@ export default function CreatorApprovals() {
               </Text>
               <Text>Recipes: {item.recipes_published ?? 0} • Followers: {item.followers ?? 0} • Views30d: {item.views_30d ?? 0}</Text>
               <Text>Avg Rating: {item.avg_rating ?? '—'} • Conversions60d: {item.affiliate_conversions_60d ?? 0}</Text>
-              <Text>2FA: {item.two_factor_enabled ? '✅' : '❌'} • Stripe: {item.details_submitted ? '✅ Onboarded' : '⭕ Not done'}</Text>
+              <Text>2FA: {item.two_factor_enabled ? '✅' : '❌'} • Stripe: {item.stripe_account_id ? '✅ Ready for Tips' : item.details_submitted ? '⏳ Processing' : '⭕ Not Set Up'}</Text>
 
               {/* Note box */}
               <TextInput
@@ -151,23 +151,55 @@ export default function CreatorApprovals() {
                 placeholderTextColor="#999"
                 value={noteById[item.application_id] || ''}
                 onChangeText={(t) => setNoteById((s) => ({ ...s, [item.application_id]: t }))}
-                style={{ borderWidth: 1, borderColor: '#333', borderRadius: 8, padding: 8, color: 'white' }}
+                style={{ borderWidth: 1, borderColor: '#333', borderRadius: 8, padding: 8, color: 'white', marginTop: 6 }}
               />
 
               {/* Buttons */}
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
-                <Pressable
-                  onPress={() => approve(item.application_id)}
-                  style={{ backgroundColor: '#22c55e', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8 }}
-                >
-                  <Text style={{ color: 'white', fontWeight: '700' }}>Approve</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => reject(item.application_id)}
-                  style={{ backgroundColor: '#ef4444', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8 }}
-                >
-                  <Text style={{ color: 'white', fontWeight: '700' }}>Reject</Text>
-                </Pressable>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                {/* Approve (only show if pending) */}
+                {item.application_status === 'pending' && (
+                  <Pressable
+                    onPress={() => approve(item.application_id)}
+                    style={{ backgroundColor: '#22c55e', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8 }}
+                  >
+                    <Text style={{ color: 'white', fontWeight: '700' }}>Approve</Text>
+                  </Pressable>
+                )}
+                {/* Reject (only show if pending) */}
+                {item.application_status === 'pending' && (
+                  <Pressable
+                    onPress={() => reject(item.application_id)}
+                    style={{ backgroundColor: '#ef4444', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8 }}
+                  >
+                    <Text style={{ color: 'white', fontWeight: '700' }}>Reject</Text>
+                  </Pressable>
+                )}
+                {/* Send Stripe Link (show for approved users without Stripe setup) */}
+                {item.application_status === 'approved' && !item.stripe_account_id && (
+                  <Pressable
+                    onPress={async () => {
+                      try {
+                        const token = (await supabase.auth.getSession()).data.session?.access_token;
+                        const res = await fetch(process.env.EXPO_PUBLIC_SUPABASE_URL + '/functions/v1/admin-resend-stripe-onboarding', {
+                          method: 'POST',
+                          headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+                          body: JSON.stringify({ user_id: item.user_id }),
+                        });
+                        const json = await res.json();
+                        if (json?.url) {
+                          Alert.alert('Stripe Link', `Share this link with the creator:\n\n${json.url}`);
+                        } else {
+                          Alert.alert('Error', json?.error || 'Could not create onboarding link.');
+                        }
+                      } catch (e: any) {
+                        Alert.alert('Error', e?.message || 'Could not create onboarding link.');
+                      }
+                    }}
+                    style={{ backgroundColor: '#3b82f6', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8 }}
+                  >
+                    <Text style={{ color: 'white', fontWeight: '700' }}>Send Stripe Link</Text>
+                  </Pressable>
+                )}
               </View>
             </View>
           )}

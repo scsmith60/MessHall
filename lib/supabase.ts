@@ -16,11 +16,23 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { d, summarizeSession } from "./debug";
 
 // 1) read secrets from env (Expo style)
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_ANON = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || "";
+
+// Validate that we have the required environment variables
+if (!SUPABASE_URL || !SUPABASE_ANON) {
+  console.error(
+    "[supabase] Missing required environment variables. Please set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in your .env file"
+  );
+  // In development, provide a fallback client that will fail gracefully
+  // This prevents the app from crashing during route discovery
+}
 
 // 2) make the client (this is "the door")
-export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON, {
+export const supabase: SupabaseClient = createClient(
+  SUPABASE_URL || "https://placeholder.supabase.co",
+  SUPABASE_ANON || "placeholder-key",
+  {
   auth: {
     storage: AsyncStorage,     // ✅ use RN storage
     persistSession: true,      // ✅ remember session on device

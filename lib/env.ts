@@ -13,3 +13,13 @@ if (!USDA_API_KEY) {
     "[nutrition] USDA API key is missing. Add EXPO_PUBLIC_USDA_FDC_API_KEY to your .env"
   );
 }
+
+// Stripe publishable key for React Native Stripe SDK
+export const STRIPE_PUBLISHABLE_KEY =
+  process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || "";
+
+if (!STRIPE_PUBLISHABLE_KEY) {
+  console.warn(
+    "[stripe] Stripe publishable key is missing. Add EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY to your .env"
+  );
+}
