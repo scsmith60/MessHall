@@ -57,7 +57,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
         });
 
       try {
-        const { data } = (await withTimeout(supabase.auth.getSession(), 3500)) as any;
+        // Increase timeout to 15s for mobile devices (AsyncStorage can be slow)
+        const { data } = (await withTimeout(supabase.auth.getSession(), 15000)) as any;
         if (!alive) return;
         setSession(data.session ?? null);
 
@@ -68,9 +69,24 @@ export function AuthProvider({ children }: PropsWithChildren) {
         });
       } catch (e) {
         if (!alive) return;
-        // Treat as signed-out if we can't confirm quickly
-        setSession(null);
-        d.log("[auth-hook]", "initial getSession failed", String(e));
+        // On timeout, try one more time with longer timeout as fallback
+        // This handles slow devices/AsyncStorage reads
+        try {
+          d.log("[auth-hook]", "initial getSession timeout, retrying with longer timeout");
+          const { data } = (await withTimeout(supabase.auth.getSession(), 20000)) as any;
+          if (!alive) return;
+          setSession(data.session ?? null);
+          d.log("[auth-hook]", "retry getSession() succeeded", {
+            hasSession: !!data?.session,
+            userId: data?.session?.user?.id ?? null,
+          });
+        } catch (retryError) {
+          // Only treat as signed-out if retry also fails
+          // This prevents users from being logged out due to slow device/network
+          d.log("[auth-hook]", "initial getSession failed after retry", String(retryError));
+          // Don't set to null - let the persisted session in AsyncStorage be checked by onAuthStateChange
+          // This preserves session persistence behavior
+        }
       } finally {
         if (alive) setLoading(false);
       }
@@ -81,7 +97,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       // 🔒 hold navigation while we settle the new truth
       setLoading(true);
 
-      // 🆕 re-check the REAL session (prevents “half-ready” states) with timeout
+      // 🆕 re-check the REAL session (prevents "half-ready" states) with timeout
       let freshest: Session | null = null;
       try {
         const withTimeout = <T,>(p: Promise<T>, ms: number) =>
@@ -95,11 +111,28 @@ export function AuthProvider({ children }: PropsWithChildren) {
               reject(e);
             });
           });
-        const { data } = (await withTimeout(supabase.auth.getSession(), 3500)) as any;
+        // Increase timeout to 10s for state changes (should be faster than initial load)
+        const { data } = (await withTimeout(supabase.auth.getSession(), 10000)) as any;
         freshest = nextFromEvent ?? data?.session ?? null;
       } catch (e) {
+        // On timeout, prefer the session from the auth event (nextFromEvent) if available
+        // This is the most reliable source during state changes
+        // Only fall back to null if we have no event session AND timeout occurred
         freshest = nextFromEvent ?? null;
-        d.log("[auth-hook]", "onAuthStateChange getSession failed", String(e));
+        if (!nextFromEvent) {
+          d.log("[auth-hook]", "onAuthStateChange getSession failed", String(e));
+          // Try one retry to preserve session persistence
+          try {
+            d.log("[auth-hook]", "onAuthStateChange retrying getSession after timeout");
+            const { data } = (await withTimeout(supabase.auth.getSession(), 15000)) as any;
+            freshest = data?.session ?? null;
+            if (freshest) {
+              d.log("[auth-hook]", "onAuthStateChange retry succeeded, session preserved");
+            }
+          } catch (retryError) {
+            d.log("[auth-hook]", "onAuthStateChange retry also failed", String(retryError));
+          }
+        }
       }
 
       setSession(freshest);

@@ -374,7 +374,8 @@ export default function RootLayout() {
             });
           });
 
-        const { data } = await withTimeout(supabase.auth.getSession(), 3000) as any;
+        // Increase timeout to 15s for mobile devices - session should persist between app opens
+        const { data } = await withTimeout(supabase.auth.getSession(), 15000) as any;
         const _hasSession = !!data?.session;
         // We no longer force navigation here to avoid flicker/race conditions
       } catch (e) {

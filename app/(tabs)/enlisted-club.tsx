@@ -23,6 +23,9 @@ import { COLORS, SPACING } from "../../lib/theme";
 import { useUserId } from "../../lib/auth";
 import { success, tap } from "../../lib/haptics";
 import ThemedNotice from "../../components/ui/ThemedNotice";
+import VideoStreamTwitch from "../../components/VideoStreamTwitch";
+import VideoStreamYouTube from "../../components/VideoStreamYouTube";
+import VideoStreamCloudflare from "../../components/VideoStreamCloudflare";
 
 type Session = {
   id: string;
@@ -36,6 +39,7 @@ type Session = {
   started_at: string | null;
   total_tips_received_cents: number;
   room_id: string | null;
+  video_url: string | null;
   created_at: string;
   host_profile: {
     username: string | null;
@@ -66,10 +70,10 @@ export default function EnlistedClubScreen() {
 
   const loadSessions = useCallback(async () => {
     try {
-      // Load active and scheduled sessions
+      // Load active and scheduled sessions (include video_url for previews)
       const { data: sessionsData, error } = await supabase
         .from("enlisted_club_sessions")
-        .select("*")
+        .select("*, video_url")
         .in("status", ["scheduled", "active"])
         .order("created_at", { ascending: false })
         .limit(50);
@@ -220,6 +224,33 @@ export default function EnlistedClubScreen() {
     const hostUsername = item.host_profile?.username || "Chef";
     const recipeImage = item.recipe?.image_url;
     const recipeTitle = item.recipe?.title;
+    const hasVideo = isActive && (item.video_url || item.room_id);
+    const isVisible = Math.abs(currentIndex - index) <= 1; // Only play video if within 1 item of current
+    
+    // Detect video provider type
+    let videoProvider: "twitch" | "youtube" | "cloudflare" | "jitsi" | null = null;
+    let videoSource: string | null = null;
+    
+    if (hasVideo) {
+      const videoUrl = item.video_url || (item.room_id?.startsWith("http") ? item.room_id : null);
+      if (videoUrl) {
+        if (videoUrl.includes("twitch.tv")) {
+          videoProvider = "twitch";
+          const channelMatch = videoUrl.match(/twitch\.tv\/([^/?]+)/);
+          if (channelMatch) videoSource = channelMatch[1];
+        } else if (videoUrl.includes("youtube.com") || videoUrl.includes("youtu.be")) {
+          videoProvider = "youtube";
+          const videoIdMatch = videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?/]+)/);
+          if (videoIdMatch) videoSource = videoIdMatch[1];
+        } else if (videoUrl.includes("cloudflare") || videoUrl.includes(".m3u8")) {
+          videoProvider = "cloudflare";
+          videoSource = videoUrl;
+        } else if (videoUrl.includes("jit.si") || videoUrl.includes("jitsi")) {
+          videoProvider = "jitsi";
+          videoSource = videoUrl;
+        }
+      }
+    }
 
     return (
       <Pressable
@@ -230,9 +261,51 @@ export default function EnlistedClubScreen() {
           backgroundColor: COLORS.bg,
         }}
       >
-        {/* Fullscreen Background - Recipe Image or Gradient */}
+        {/* Fullscreen Background - Video Preview (if active) or Recipe Image */}
         <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}>
-          {recipeImage ? (
+          {hasVideo && isVisible && videoProvider && videoSource ? (
+            // Live video preview (muted, autoplay)
+            <View style={{ width: "100%", height: "100%" }}>
+              {videoProvider === "twitch" && (
+                <VideoStreamTwitch
+                  channelName={videoSource}
+                  isHost={false}
+                  muted={true}
+                  onError={() => {
+                    // Fallback to recipe image on error
+                  }}
+                />
+              )}
+              {videoProvider === "youtube" && (
+                <VideoStreamYouTube
+                  videoId={videoSource}
+                  isHost={false}
+                  muted={true}
+                  onError={() => {
+                    // Fallback to recipe image on error
+                  }}
+                />
+              )}
+              {videoProvider === "cloudflare" && (
+                <VideoStreamCloudflare
+                  hlsUrl={videoSource}
+                  isHost={false}
+                  onError={() => {
+                    // Fallback to recipe image on error
+                  }}
+                />
+              )}
+              {/* Jitsi preview would require a viewer-only component */}
+              {videoProvider === "jitsi" && recipeImage && (
+                <Image
+                  source={{ uri: recipeImage }}
+                  style={{ width: "100%", height: "100%" }}
+                  resizeMode="cover"
+                />
+              )}
+            </View>
+          ) : recipeImage ? (
+            // Static recipe image for scheduled sessions or when no video
             <Image
               source={{ uri: recipeImage }}
               style={{ width: "100%", height: "100%" }}

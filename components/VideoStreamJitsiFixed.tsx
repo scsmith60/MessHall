@@ -9,11 +9,13 @@ import { COLORS } from "../lib/theme";
 type Props = {
   roomUrl: string;
   isHost?: boolean;
+  displayName?: string;
+  avatarUrl?: string | null;
   onError?: (error: string) => void;
   onReady?: () => void;
 };
 
-export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, onError, onReady }: Props) {
+export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, displayName, avatarUrl, onError, onReady }: Props) {
   const [loading, setLoading] = useState(true);
   const webViewRef = useRef<WebView>(null);
   
@@ -24,32 +26,8 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, onError
   // Build Jitsi Meet URL with optimized configuration
   const jitsiBaseUrl = `https://meet.jit.si/${roomName}`;
   
-  // Configuration optimized for WebView compatibility
-  const configOptions = [
-    "config.startWithAudioMuted=false",
-    "config.startWithVideoMuted=false",
-    "config.prejoinPageEnabled=false",
-    "config.disableDeepLinking=true",
-    "config.disableInviteFunctions=true",
-    "config.enableWelcomePage=false",
-    "config.enableLayerSuspension=true",
-    "config.resolution=720",
-    "config.disableAEC=false", // Acoustic Echo Cancellation
-    "config.disableNS=false", // Noise Suppression
-    "config.disableAGC=false", // Automatic Gain Control
-    "config.enableTCC=true", // Transport-wide Congestion Control
-    "config.useStunTurn=true",
-    "interfaceConfig.SHOW_JITSI_WATERMARK=false",
-    "interfaceConfig.SHOW_WATERMARK_FOR_GUESTS=false",
-    "interfaceConfig.SHOW_BRAND_WATERMARK=false",
-    "interfaceConfig.HIDE_INVITE_MORE_HEADER=true",
-    "interfaceConfig.DISABLE_FOCUS_INDICATOR=true",
-    "interfaceConfig.DISABLE_DOMINANT_SPEAKER_INDICATOR=true",
-    "interfaceConfig.TOOLBAR_BUTTONS=[]",
-    "userInfo.displayName=" + (isHost ? "Host" : "Participant"),
-  ].join("&");
-
-  const fullJitsiUrl = `${jitsiBaseUrl}#${configOptions}`;
+  // Use provided displayName or fallback
+  const userDisplayName = displayName || (isHost ? "Host" : "Participant");
 
   // Modern WebView-compatible user agent
   const webViewUserAgent = Platform.select({
@@ -116,13 +94,29 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, onError
       try {
         // Use Jitsi External API for better WebView compatibility
         const domain = 'meet.jit.si';
+        const userDisplayName = ${JSON.stringify(userDisplayName)};
+        const userAvatarUrl = ${JSON.stringify(avatarUrl || null)};
+        
+        const userInfoObj = { 
+          displayName: userDisplayName
+        };
+        // Jitsi accepts avatar via avatarUrl - must be a publicly accessible URL
+        // Ensure it's a full HTTP/HTTPS URL that Jitsi can fetch
+        if (userAvatarUrl && (userAvatarUrl.startsWith('http://') || userAvatarUrl.startsWith('https://'))) {
+          // Use avatarUrl property (primary method)
+          userInfoObj.avatarUrl = userAvatarUrl;
+          console.log('Setting Jitsi avatar URL:', userAvatarUrl);
+        } else if (userAvatarUrl) {
+          console.warn('Avatar URL is not a full HTTP URL, skipping:', userAvatarUrl);
+        }
+        
         const options = {
           roomName: '${roomName}',
           parentNode: container,
           configOverwrite: {
             startWithAudioMuted: false,
             startWithVideoMuted: false,
-            prejoinPageEnabled: false,
+            prejoinPageEnabled: true, // Enable prejoin page so buttons work
             disableDeepLinking: true,
             disableInviteFunctions: true,
             enableWelcomePage: false,
@@ -139,9 +133,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, onError
             DISABLE_FOCUS_INDICATOR: true,
             TOOLBAR_BUTTONS: [],
           },
-          userInfo: {
-            displayName: '${isHost ? "Host" : "Participant"}',
-          },
+          userInfo: userInfoObj,
         };
 
         const api = new JitsiMeetExternalAPI(domain, options);
@@ -254,8 +246,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, onError
         originWhitelist={['*']}
         setSupportMultipleWindows={false}
         geolocationEnabled={false}
-        // Critical for camera/mic access
-        androidHardwareAccelerationDisabled={false}
+        // Android specific
         androidLayerType="hardware"
         // iOS specific
         allowsProtectedMedia={true}

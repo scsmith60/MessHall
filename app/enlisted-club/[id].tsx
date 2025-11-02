@@ -104,9 +104,48 @@ export default function SessionDetailScreen() {
   const [twitchChannel, setTwitchChannel] = useState<string | null>(null);
   const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
   const [startingVideo, setStartingVideo] = useState(false);
-  const [floatingEmojis, setFloatingEmojis] = useState<Array<{ id: string; emoji: string; x: Animated.Value; y: Animated.Value; opacity: Animated.Value }>>([]);
+  const [floatingEmojis, setFloatingEmojis] = useState<Array<{ 
+    id: string; 
+    emoji: string; 
+    x: Animated.Value; 
+    y: Animated.Value; 
+    opacity: Animated.Value;
+    staticX: number;
+    staticY: number;
+  }>>([]);
   const floatingEmojiIdRef = useRef(0);
   const sessionTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [userProfile, setUserProfile] = useState<{ username: string | null; avatar_url: string | null } | null>(null);
+
+  // Load current user profile and ensure avatar URL is publicly accessible
+  const loadUserProfile = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("username, avatar_url")
+        .eq("id", userId)
+        .maybeSingle();
+      if (error) throw error;
+      if (data) {
+        let publicAvatarUrl = data.avatar_url;
+        
+        // If avatar_url is a storage path (not a full URL), convert it to public URL
+        if (publicAvatarUrl && !publicAvatarUrl.startsWith("http")) {
+          // Assume it's in the avatars bucket
+          const { data: publicUrlData } = supabase.storage.from("avatars").getPublicUrl(publicAvatarUrl);
+          publicAvatarUrl = publicUrlData?.publicUrl || publicAvatarUrl;
+        }
+        
+        setUserProfile({
+          username: data.username,
+          avatar_url: publicAvatarUrl,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to load user profile:", err);
+    }
+  }, [userId]);
 
   // Check if user is admin
   const checkAdmin = useCallback(async () => {
@@ -123,11 +162,18 @@ export default function SessionDetailScreen() {
     }
   }, [userId]);
 
-  // Load monthly usage info
+  // Load monthly usage info (optional - function may not exist if migration not run)
   const loadUsageInfo = useCallback(async () => {
     try {
       const { data, error } = await supabase.rpc("get_monthly_usage");
-      if (error) throw error;
+      if (error) {
+        // Function doesn't exist yet or has SQL errors (migration not run or needs update) - this is OK
+        if (error.code === "PGRST202" || error.code === "42702") {
+          console.log("Usage tracking not available:", error.message || "migration not applied or needs update");
+          return;
+        }
+        throw error;
+      }
       if (data && data.length > 0) {
         setUsageInfo({
           total_minutes: data[0].total_minutes || 0,
@@ -135,7 +181,12 @@ export default function SessionDetailScreen() {
           limit_reached: data[0].limit_reached || false,
         });
       }
-    } catch (err) {
+    } catch (err: any) {
+      // Silently handle missing function - it's optional
+      if (err?.code === "PGRST202") {
+        console.log("Usage tracking not available (migration not applied)");
+        return;
+      }
       console.error("Failed to load usage info:", err);
     }
   }, []);
@@ -336,21 +387,35 @@ export default function SessionDetailScreen() {
     const startX = Dimensions.get("window").width / 2;
     const startY = Dimensions.get("window").height * 0.7;
     
-    const xAnim = new Animated.Value(startX);
-    const yAnim = new Animated.Value(startY);
+    // For native driver, we need to start translate values at 0
+    const translateXAnim = new Animated.Value(0);
+    const translateYAnim = new Animated.Value(0);
     const opacityAnim = new Animated.Value(1);
 
-    setFloatingEmojis((prev) => [...prev, { id: emojiId, emoji, x: xAnim, y: yAnim, opacity: opacityAnim }]);
+    // Store static position for rendering
+    const staticX = startX;
+    const staticY = startY;
+    const randomOffset = (Math.random() - 0.5) * 100;
+
+    setFloatingEmojis((prev) => [...prev, { 
+      id: emojiId, 
+      emoji, 
+      x: translateXAnim, 
+      y: translateYAnim, 
+      opacity: opacityAnim,
+      staticX,
+      staticY,
+    }]);
 
     // Animate floating emoji
     Animated.parallel([
-      Animated.timing(yAnim, {
-        toValue: startY - 200,
+      Animated.timing(translateYAnim, {
+        toValue: -200, // Move up 200 pixels
         duration: 2000,
         useNativeDriver: true,
       }),
-      Animated.timing(xAnim, {
-        toValue: startX + (Math.random() - 0.5) * 100,
+      Animated.timing(translateXAnim, {
+        toValue: randomOffset, // Random horizontal drift
         duration: 2000,
         useNativeDriver: true,
       }),
@@ -521,10 +586,13 @@ export default function SessionDetailScreen() {
   useEffect(() => {
     loadSession();
     loadParticipants();
+    loadUserProfile();
+    checkAdmin();
+    loadUsageInfo();
     loadRecentTips();
     loadChatMessages();
     setLoading(false);
-  }, [loadSession, loadParticipants, loadRecentTips, loadChatMessages]);
+  }, [loadSession, loadParticipants, loadUserProfile, checkAdmin, loadUsageInfo, loadRecentTips, loadChatMessages]);
 
   // Real-time subscriptions
   useEffect(() => {
@@ -718,8 +786,40 @@ export default function SessionDetailScreen() {
         },
       });
 
-      if (error || !data?.ok) {
-        throw new Error(error?.message || data?.error || "Failed to create video room");
+      if (error) {
+        // Try to extract more details from the error
+        const statusCode = (error as any)?.status || (error as any)?.context?.status || "unknown";
+        const errorMessage = (error as any)?.message || error.toString();
+        const errorData = (error as any)?.context?.body || (error as any)?.body;
+        
+        console.error("Jitsi edge function error:", {
+          error,
+          statusCode,
+          errorMessage,
+          errorData,
+          fullError: JSON.stringify(error, Object.getOwnPropertyNames(error)),
+        });
+        
+        // Try to extract error message from response body if available
+        let detailedError = errorMessage;
+        if (errorData && typeof errorData === 'object' && errorData.error) {
+          detailedError = errorData.error;
+        } else if (errorData && typeof errorData === 'string') {
+          try {
+            const parsed = JSON.parse(errorData);
+            detailedError = parsed.error || detailedError;
+          } catch {
+            detailedError = errorData;
+          }
+        }
+        
+        throw new Error(`Edge function error (${statusCode}): ${detailedError || "Unknown error. Check if function is deployed."}`);
+      }
+
+      if (!data || !data.ok) {
+        const errorMsg = data?.error || "Failed to create video room";
+        console.error("Jitsi room creation failed:", errorMsg, data);
+        throw new Error(errorMsg);
       }
 
       setVideoRoomId(data.room_url || data.room_id);
@@ -770,16 +870,51 @@ export default function SessionDetailScreen() {
         return;
       }
 
-      // Get Jitsi room URL for participant
-      if (!session.room_id && !session.video_url) {
-        throw new Error("Host hasn't started video yet");
+      // Get Jitsi room URL for participant via edge function
+      const { data, error } = await supabase.functions.invoke("jitsi-get-token", {
+        body: {
+          session_id: id,
+          user_id: userId,
+        },
+      });
+
+      if (error) {
+        // Try to extract more details from the error
+        const statusCode = (error as any)?.status || (error as any)?.context?.status || "unknown";
+        const errorMessage = (error as any)?.message || error.toString();
+        const errorData = (error as any)?.context?.body || (error as any)?.body;
+        
+        console.error("Jitsi get-token error:", {
+          error,
+          statusCode,
+          errorMessage,
+          errorData,
+          fullError: JSON.stringify(error, Object.getOwnPropertyNames(error)),
+        });
+        
+        // Try to extract error message from response body if available
+        let detailedError = errorMessage;
+        if (errorData && typeof errorData === 'object' && errorData.error) {
+          detailedError = errorData.error;
+        } else if (errorData && typeof errorData === 'string') {
+          try {
+            const parsed = JSON.parse(errorData);
+            detailedError = parsed.error || detailedError;
+          } catch {
+            detailedError = errorData;
+          }
+        }
+        
+        throw new Error(`Edge function error (${statusCode}): ${detailedError || "Unknown error. Check if function is deployed."}`);
       }
 
-      // Jitsi room URL is stored in video_url or room_id
-      const roomUrl = session.video_url || (session.room_id?.startsWith("http") 
-        ? session.room_id 
-        : `https://meet.jit.si/${session.room_id}`);
+      if (!data || !data.ok) {
+        const errorMsg = data?.error || "Failed to get video room";
+        console.error("Jitsi get-token failed:", errorMsg, data);
+        throw new Error(errorMsg);
+      }
 
+      const roomUrl = data.room_url;
       setVideoRoomId(roomUrl);
       setVideoToken(roomUrl);
       setStreamProvider("jitsi");
@@ -901,7 +1036,16 @@ export default function SessionDetailScreen() {
   };
 
   const confirmEndSession = async () => {
-    if (!userId || !id || !session) return;
+    if (!userId || !id || !session || session.host_id !== userId) {
+      // Only host can end session
+      setEndSessionConfirm(false);
+      setNotice({
+        visible: true,
+        title: "Permission Denied",
+        message: "Only the host can end the session.",
+      });
+      return;
+    }
     setEndSessionConfirm(false);
     
     try {
@@ -1098,6 +1242,8 @@ export default function SessionDetailScreen() {
               <VideoStreamJitsiFixed
                 roomUrl={videoRoomId}
                 isHost={isHost}
+                displayName={userProfile?.username || undefined}
+                avatarUrl={userProfile?.avatar_url || null}
                 onError={(error: string) => {
                   setNotice({
                     visible: true,
@@ -1118,11 +1264,14 @@ export default function SessionDetailScreen() {
               key={emojiItem.id}
               style={{
                 position: "absolute",
-                left: emojiItem.x,
-                top: emojiItem.y,
+                left: emojiItem.staticX - 25, // Center the emoji (50px width / 2)
+                top: emojiItem.staticY - 25, // Center the emoji (50px height / 2)
                 opacity: emojiItem.opacity,
                 zIndex: 1000,
-                transform: [{ translateX: -25 }, { translateY: -25 }],
+                transform: [
+                  { translateX: emojiItem.x }, // Animated horizontal movement
+                  { translateY: emojiItem.y }, // Animated vertical movement
+                ],
               }}
             >
               <Text style={{ fontSize: 50 }}>{emojiItem.emoji}</Text>
@@ -1149,7 +1298,21 @@ export default function SessionDetailScreen() {
                   <Ionicons name="arrow-back" size={24} color="#FFF" />
                 </TouchableOpacity>
                 <View style={{ flex: 1, alignItems: "center" }}>
-                  <Text style={{ color: "#FFF", fontWeight: "900", fontSize: 16 }}>{session.title}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Text style={{ color: "#FFF", fontWeight: "900", fontSize: 16 }}>{session.title}</Text>
+                    {isHost && (
+                      <View
+                        style={{
+                          backgroundColor: COLORS.accent,
+                          paddingHorizontal: 6,
+                          paddingVertical: 2,
+                          borderRadius: 6,
+                        }}
+                      >
+                        <Text style={{ color: "#000", fontWeight: "800", fontSize: 9 }}>HOST</Text>
+                      </View>
+                    )}
+                  </View>
                   {isActive && (
                     <View
                       style={{
@@ -1293,7 +1456,7 @@ export default function SessionDetailScreen() {
                 bottom: 0,
                 left: 0,
                 right: 0,
-                zIndex: 100,
+                zIndex: 50, // Lower than buttons
                 paddingHorizontal: SPACING.md,
                 paddingBottom: SPACING.md,
                 paddingTop: SPACING.lg,
@@ -1332,21 +1495,51 @@ export default function SessionDetailScreen() {
                       style={{
                         alignSelf: isOwnMessage ? "flex-end" : "flex-start",
                         maxWidth: "70%",
+                        flexDirection: isOwnMessage ? "row-reverse" : "row",
+                        gap: 6,
+                        alignItems: "flex-end",
+                        marginBottom: SPACING.sm,
                       }}
                     >
+                      {/* Avatar */}
+                      {msg.profile?.avatar_url ? (
+                        <Image
+                          source={{ uri: msg.profile.avatar_url }}
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: 14,
+                            backgroundColor: COLORS.elevated,
+                          }}
+                        />
+                      ) : (
+                        <View
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: 14,
+                            backgroundColor: COLORS.accent,
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <Text style={{ color: "#000", fontSize: 12, fontWeight: "700" }}>
+                            {(msg.profile?.username || "U").slice(0, 1).toUpperCase()}
+                          </Text>
+                        </View>
+                      )}
+                      {/* Message Bubble */}
                       <View
                         style={{
-                          backgroundColor: isOwnMessage ? COLORS.accent : COLORS.card,
+                          backgroundColor: isOwnMessage ? 'rgba(29, 185, 84, 0.5)' : COLORS.card, // More transparent green for own messages
                           paddingHorizontal: SPACING.sm,
                           paddingVertical: 6,
                           borderRadius: 18,
                         }}
                       >
-                        {!isOwnMessage && (
-                          <Text style={{ color: COLORS.text, fontSize: 10, fontWeight: "700", marginBottom: 2 }}>
-                            {msg.profile?.username || "User"}
-                          </Text>
-                        )}
+                        <Text style={{ color: COLORS.text, fontSize: 10, fontWeight: "700", marginBottom: 2, opacity: isOwnMessage ? 0.8 : 1 }}>
+                          {msg.profile?.username || "User"}
+                        </Text>
                         <Text style={{ color: isOwnMessage ? "#000" : COLORS.text, fontSize: 13, fontWeight: isOwnMessage ? "600" : "400" }}>
                           {msg.message}
                         </Text>
@@ -1412,7 +1605,7 @@ export default function SessionDetailScreen() {
                 bottom: showChat ? 280 : 100,
                 left: 0,
                 right: 0,
-                zIndex: 100,
+                zIndex: 150, // Higher than chat
                 alignItems: "center",
                 paddingHorizontal: SPACING.lg,
               }}
@@ -1452,7 +1645,7 @@ export default function SessionDetailScreen() {
                 bottom: showChat ? 280 : 100,
                 left: 0,
                 right: 0,
-                zIndex: 100,
+                zIndex: 150, // Higher than chat
                 alignItems: "center",
                 paddingHorizontal: SPACING.lg,
               }}
@@ -1486,7 +1679,7 @@ export default function SessionDetailScreen() {
                 bottom: showChat ? 280 : 100,
                 left: 0,
                 right: 0,
-                zIndex: 100,
+                zIndex: 150, // Higher than chat
                 alignItems: "center",
                 paddingHorizontal: SPACING.lg,
               }}
@@ -1798,9 +1991,23 @@ export default function SessionDetailScreen() {
                       </View>
                     )}
                     <View style={{ flex: 1 }}>
-                      <Text style={{ color: COLORS.text, fontWeight: "700", fontSize: 14 }}>
-                        {p.profile?.username || "User"}
-                      </Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <Text style={{ color: COLORS.text, fontWeight: "700", fontSize: 14 }}>
+                          {p.profile?.username || "User"}
+                        </Text>
+                        {p.user_id === session?.host_id && (
+                          <View
+                            style={{
+                              backgroundColor: COLORS.accent,
+                              paddingHorizontal: 6,
+                              paddingVertical: 1,
+                              borderRadius: 4,
+                            }}
+                          >
+                            <Text style={{ color: "#000", fontWeight: "800", fontSize: 9 }}>HOST</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text style={{ color: COLORS.subtext, fontSize: 12 }}>
                         {p.role === "host" ? "Host" : p.role === "cohost" ? "Co-host" : "Participant"}
                       </Text>
@@ -1878,28 +2085,59 @@ export default function SessionDetailScreen() {
                         style={{
                           alignSelf: isOwnMessage ? "flex-end" : "flex-start",
                           maxWidth: "75%",
+                          flexDirection: isOwnMessage ? "row-reverse" : "row",
+                          gap: 8,
+                          alignItems: "flex-end",
+                          marginBottom: SPACING.sm,
                         }}
                       >
+                        {/* Avatar */}
+                        {msg.profile?.avatar_url ? (
+                          <Image
+                            source={{ uri: msg.profile.avatar_url }}
+                            style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: 16,
+                              backgroundColor: COLORS.elevated,
+                            }}
+                          />
+                        ) : (
+                          <View
+                            style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: 16,
+                              backgroundColor: COLORS.accent,
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                          >
+                            <Text style={{ color: "#000", fontSize: 14, fontWeight: "700" }}>
+                              {(msg.profile?.username || "U").slice(0, 1).toUpperCase()}
+                            </Text>
+                          </View>
+                        )}
+                        {/* Message Bubble */}
                         <View
                           style={{
-                            backgroundColor: isOwnMessage ? COLORS.accent : COLORS.elevated,
+                            backgroundColor: isOwnMessage ? 'rgba(29, 185, 84, 0.5)' : COLORS.elevated, // More transparent green for own messages
                             paddingHorizontal: SPACING.sm,
                             paddingVertical: 8,
                             borderRadius: 12,
                           }}
                         >
-                          {!isOwnMessage && (
-                            <Text
-                              style={{
-                                color: COLORS.text,
-                                fontSize: 11,
-                                fontWeight: "700",
-                                marginBottom: 2,
-                              }}
-                            >
-                              {msg.profile?.username || "User"}
-                            </Text>
-                          )}
+                          <Text
+                            style={{
+                              color: COLORS.text,
+                              fontSize: 11,
+                              fontWeight: "700",
+                              marginBottom: 2,
+                              opacity: isOwnMessage ? 0.8 : 1,
+                            }}
+                          >
+                            {msg.profile?.username || "User"}
+                          </Text>
                           <Text
                             style={{
                               color: isOwnMessage ? "#000" : COLORS.text,

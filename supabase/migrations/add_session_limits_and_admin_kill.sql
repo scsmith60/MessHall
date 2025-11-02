@@ -128,7 +128,7 @@ BEGIN
     0,
     limit_value,
     false
-  WHERE NOT EXISTS (SELECT 1 FROM streaming_usage WHERE month_year = month_to_check);
+  WHERE NOT EXISTS (SELECT 1 FROM streaming_usage u2 WHERE u2.month_year = month_to_check);
 END;
 $$ LANGUAGE plpgsql;
 

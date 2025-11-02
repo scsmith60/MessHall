@@ -9,14 +9,15 @@ import { COLORS } from "../lib/theme";
 type Props = {
   channelName: string;
   isHost?: boolean;
+  muted?: boolean;
   onError?: (error: string) => void;
 };
 
-export default function VideoStreamTwitch({ channelName, isHost = false, onError }: Props) {
+export default function VideoStreamTwitch({ channelName, isHost = false, muted = false, onError }: Props) {
   const [loading, setLoading] = useState(true);
 
   // Twitch embed URL - viewers watch via embed
-  const twitchEmbedUrl = `https://player.twitch.tv/?channel=${channelName}&parent=localhost&muted=false&autoplay=true`;
+  const twitchEmbedUrl = `https://player.twitch.tv/?channel=${channelName}&parent=localhost&muted=${muted ? "true" : "false"}&autoplay=true`;
 
   const htmlContent = `
 <!DOCTYPE html>

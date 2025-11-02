@@ -9,14 +9,15 @@ import { COLORS } from "../lib/theme";
 type Props = {
   videoId: string; // YouTube live stream video ID
   isHost?: boolean;
+  muted?: boolean;
   onError?: (error: string) => void;
 };
 
-export default function VideoStreamYouTube({ videoId, isHost = false, onError }: Props) {
+export default function VideoStreamYouTube({ videoId, isHost = false, muted = false, onError }: Props) {
   const [loading, setLoading] = useState(true);
 
   // YouTube Live embed URL
-  const youtubeEmbedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=0&playsinline=1&rel=0&modestbranding=1`;
+  const youtubeEmbedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=${muted ? "1" : "0"}&playsinline=1&rel=0&modestbranding=1`;
 
   const htmlContent = `
 <!DOCTYPE html>

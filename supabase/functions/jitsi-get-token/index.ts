@@ -1,6 +1,5 @@
-// supabase/functions/jitsi-create-room/index.ts
-// Creates a Jitsi Meet room URL (100% FREE, no API keys needed)
-// Uses public meet.jit.si server - completely free forever
+// supabase/functions/jitsi-get-token/index.ts
+// Gets Jitsi room URL for participants to join
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -69,10 +68,9 @@ Deno.serve(async (req) => {
       }
     );
 
-    // Verify user is the host
     const { data: session, error: sessionError } = await supabase
       .from("enlisted_club_sessions")
-      .select("id, host_id, room_id, video_url, max_participants")
+      .select("id, room_id, video_url, status")
       .eq("id", session_id)
       .single();
 
@@ -91,10 +89,17 @@ Deno.serve(async (req) => {
       );
     }
 
-    if (session.host_id !== user_id) {
+    if (!session.room_id && !session.video_url) {
       return new Response(
-        JSON.stringify({ ok: false, error: "Only the host can create the video room" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ ok: false, error: "Host hasn't started video yet" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (session.status !== "active") {
+      return new Response(
+        JSON.stringify({ ok: false, error: "Session is not active" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -110,58 +115,22 @@ Deno.serve(async (req) => {
       );
     }
 
-    // If room already exists, return it
-    if (session.room_id && session.video_url) {
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          room_url: session.video_url,
-        }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-    
-    // If room_id exists but video_url doesn't, reconstruct it
-    if (session.room_id) {
-      const roomUrl = session.room_id.startsWith("http") 
+    // Construct Jitsi room URL
+    const roomUrl = session.video_url || 
+      (session.room_id?.startsWith("http") 
         ? session.room_id 
-        : `https://meet.jit.si/${session.room_id}`;
-      // Update video_url for consistency
-      await supabase
-        .from("enlisted_club_sessions")
-        .update({ video_url: roomUrl })
-        .eq("id", session_id);
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          room_url: roomUrl,
-        }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Generate unique room name
-    const roomName = `enlisted-${session_id.slice(0, 8)}-${Date.now().toString(36)}`;
-    const roomUrl = `https://meet.jit.si/${roomName}`;
-
-    // Save room_id to session (just the room name, not full URL)
-    await supabase
-      .from("enlisted_club_sessions")
-      .update({
-        room_id: roomName,
-        video_url: roomUrl,
-      })
-      .eq("id", session_id);
+        : `https://meet.jit.si/${session.room_id}`);
 
     return new Response(
       JSON.stringify({
         ok: true,
         room_url: roomUrl,
+        room_id: session.room_id,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: any) {
-    console.error("Unhandled error in jitsi-create-room:", {
+    console.error("Unhandled error in jitsi-get-token:", {
       message: error.message,
       stack: error.stack,
       name: error.name,
