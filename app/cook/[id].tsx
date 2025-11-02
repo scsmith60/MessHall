@@ -7,7 +7,6 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   ScrollView,
   Text,
   View,
@@ -75,6 +74,8 @@ export default function CookMode() {
   // recipe bits
   const [title, setTitle] = useState('Recipe');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [ingredients, setIngredients] = useState<string[]>([]);
+  const [showIngredients, setShowIngredients] = useState(false);
 
   // steps
   const [steps, setSteps] = useState<Array<{ text: string; seconds: number | null }>>([]);
@@ -86,8 +87,12 @@ export default function CookMode() {
   const [running, setRunning] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // exit popup
+  // modals
   const [showExit, setShowExit] = useState(false);
+  const [showAtBeginning, setShowAtBeginning] = useState(false);
+  const [showAllDone, setShowAllDone] = useState(false);
+  const [showMicBlocked, setShowMicBlocked] = useState(false);
+  const [showLoadError, setShowLoadError] = useState(false);
 
   // voice state
   const [listening, setListening] = useState(false); // mic ON?
@@ -224,7 +229,7 @@ export default function CookMode() {
     if (msg.includes('not-allowed') || msg.includes('permission')) {
       setVoiceReady(false);
       setAlwaysOn(false);
-      Alert.alert('Microphone blocked', 'Please allow microphone & speech in Settings.');
+      setShowMicBlocked(true);
     } else {
       if (alwaysOn && voiceReady && !ttsTalking) {
         setTimeout(() => safeStartVoice(), 300);
@@ -273,6 +278,9 @@ export default function CookMode() {
           img?.url ?? img ?? (r as any)?.photo ?? (r as any)?.originalImage ?? (r as any)?.cover ?? (r as any)?.hero ?? (r as any)?.thumbnail ?? null;
         setImageUrl(thumb);
 
+        // Store ingredients for reference during cooking
+        setIngredients((r?.ingredients ?? []).filter(Boolean));
+
         const rawSteps = (r?.steps ?? []).map((x: any) => {
           const givenSeconds = typeof x.seconds === 'number' ? x.seconds : null;
           const parsedSeconds = givenSeconds ?? parseDurationFromText(String(x.text)) ?? null;
@@ -292,8 +300,8 @@ export default function CookMode() {
         setIdx(0);
       } catch (e) {
         console.log('Cook load error', e);
-        Alert.alert('Oops', 'Could not load that recipe.');
-        router.back();
+        setShowLoadError(true);
+        setTimeout(() => router.back(), 2000);
       } finally {
         if (alive) setLoading(false);
       }
@@ -366,7 +374,7 @@ export default function CookMode() {
   const goBack = () => {
     if (idx === 0) {
       warn();
-      Alert.alert('At the beginning', 'This is the first step.');
+      setShowAtBeginning(true);
       return;
     }
     setIdx((i) => i - 1);
@@ -374,7 +382,7 @@ export default function CookMode() {
   const goNext = (_why?: 'timer' | 'tap') => {
     if (idx >= steps.length - 1) {
       success();
-      Alert.alert('All done!', 'Cook Mode complete. Bon appétit!', [{ text: 'Back to Recipe', onPress: () => router.back() }]);
+      setShowAllDone(true);
       return;
     }
     setIdx((i) => i + 1);
@@ -476,6 +484,36 @@ export default function CookMode() {
             Step {idx + 1} of {steps.length}
           </Text>
 
+          {/* ingredients toggle */}
+          {ingredients.length > 0 && (
+            <Pressable
+              onPress={() => setShowIngredients(!showIngredients)}
+              style={styles.ingredientsToggle}
+            >
+              <Ionicons
+                name={showIngredients ? 'chevron-down' : 'list-outline'}
+                size={16}
+                color={COLORS.text}
+              />
+              <Text style={styles.ingredientsToggleText}>
+                {showIngredients ? 'Hide Ingredients' : 'Show Ingredients'}
+              </Text>
+            </Pressable>
+          )}
+
+          {/* ingredients list */}
+          {showIngredients && ingredients.length > 0 && (
+            <View style={styles.ingredientsCard}>
+              <Text style={styles.ingredientsTitle}>Ingredients</Text>
+              {ingredients.map((ing, i) => (
+                <View key={i} style={styles.ingredientRow}>
+                  <View style={styles.ingredientBullet} />
+                  <Text style={styles.ingredientText}>{ing}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
           {/* step card */}
           <View style={styles.card}>
             <Text style={styles.cardText}>{steps[idx]?.text}</Text>
@@ -561,6 +599,84 @@ export default function CookMode() {
               <TinyButton
                 title="Exit"
                 onPress={confirmExit}
+                type="primary"
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* AT BEGINNING MODAL */}
+      <Modal visible={showAtBeginning} transparent animationType="fade" onRequestClose={() => setShowAtBeginning(false)}>
+        <Pressable style={modalStyles.backdrop} onPress={() => setShowAtBeginning(false)}>
+          <Pressable style={modalStyles.card} onPress={() => {}}>
+            <Text style={modalStyles.title}>At the beginning</Text>
+            <Text style={modalStyles.body}>This is the first step.</Text>
+
+            <View style={modalStyles.row}>
+              <TinyButton
+                title="OK"
+                onPress={() => setShowAtBeginning(false)}
+                type="primary"
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ALL DONE MODAL */}
+      <Modal visible={showAllDone} transparent animationType="fade" onRequestClose={() => setShowAllDone(false)}>
+        <Pressable style={modalStyles.backdrop} onPress={() => setShowAllDone(false)}>
+          <Pressable style={modalStyles.card} onPress={() => {}}>
+            <Text style={modalStyles.title}>All done!</Text>
+            <Text style={modalStyles.body}>Cook Mode complete. Bon appétit!</Text>
+
+            <View style={modalStyles.row}>
+              <TinyButton
+                title="Back to Recipe"
+                onPress={() => {
+                  setShowAllDone(false);
+                  router.back();
+                }}
+                type="primary"
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* MIC BLOCKED MODAL */}
+      <Modal visible={showMicBlocked} transparent animationType="fade" onRequestClose={() => setShowMicBlocked(false)}>
+        <Pressable style={modalStyles.backdrop} onPress={() => setShowMicBlocked(false)}>
+          <Pressable style={modalStyles.card} onPress={() => {}}>
+            <Text style={modalStyles.title}>Microphone blocked</Text>
+            <Text style={modalStyles.body}>Please allow microphone & speech in Settings.</Text>
+
+            <View style={modalStyles.row}>
+              <TinyButton
+                title="OK"
+                onPress={() => setShowMicBlocked(false)}
+                type="primary"
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* LOAD ERROR MODAL */}
+      <Modal visible={showLoadError} transparent animationType="fade" onRequestClose={() => setShowLoadError(false)}>
+        <Pressable style={modalStyles.backdrop} onPress={() => setShowLoadError(false)}>
+          <Pressable style={modalStyles.card} onPress={() => {}}>
+            <Text style={modalStyles.title}>Oops</Text>
+            <Text style={modalStyles.body}>Could not load that recipe.</Text>
+
+            <View style={modalStyles.row}>
+              <TinyButton
+                title="OK"
+                onPress={() => {
+                  setShowLoadError(false);
+                  router.back();
+                }}
                 type="primary"
               />
             </View>
@@ -762,6 +878,59 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   micBtnText: { color: COLORS.text, fontWeight: '800' },
+
+  ingredientsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(2,6,23,0.35)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
+    marginBottom: 12,
+    alignSelf: 'flex-start',
+  },
+  ingredientsToggleText: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  ingredientsCard: {
+    backgroundColor: 'rgba(15,23,42,0.55)',
+    borderRadius: RADIUS.lg,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  ingredientsTitle: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  ingredientRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  ingredientBullet: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLORS.accent,
+    marginTop: 6,
+    marginRight: 10,
+    flexShrink: 0,
+  },
+  ingredientText: {
+    color: COLORS.subtext,
+    fontSize: 15,
+    lineHeight: 22,
+    flex: 1,
+  },
 });
 
 // === modal styles ====================================================

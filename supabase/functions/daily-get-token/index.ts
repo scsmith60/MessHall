@@ -1,15 +1,15 @@
 // supabase/functions/daily-get-token/index.ts
 // Generates a Daily.co participant token for joining a session
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -91,6 +91,10 @@ serve(async (req) => {
         properties: {
           room_name: session.room_id,
           is_owner: session.host_id === user_id,
+          // If not host, join as viewer (one-way: can watch, can't stream)
+          permissions: session.host_id === user_id 
+            ? { canSend: true, canAdmin: true, canUpdate: true } // Host: full permissions
+            : { canSend: false, canAdmin: false, canUpdate: false }, // Viewers: watch only
         },
       }),
     });

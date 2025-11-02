@@ -23,3 +23,7 @@ if (!STRIPE_PUBLISHABLE_KEY) {
     "[stripe] Stripe publishable key is missing. Add EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY to your .env"
   );
 }
+
+// Cloudflare Stream (server-side only - used in edge functions)
+// Note: These should be in Supabase secrets, not client .env
+// Added here for reference but won't be available in client

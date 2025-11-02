@@ -22,11 +22,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
-import VideoStream from "../../components/VideoStream";
+import VideoStreamJitsiFixed from "../../components/VideoStreamJitsiFixed";
+import VideoStreamTwitch from "../../components/VideoStreamTwitch";
+import VideoStreamYouTube from "../../components/VideoStreamYouTube";
 import { COLORS, SPACING } from "../../lib/theme";
 import { useUserId } from "../../lib/auth";
 import { success, tap, warn } from "../../lib/haptics";
 import ThemedNotice from "../../components/ui/ThemedNotice";
+import ThemedConfirm from "../../components/ui/ThemedConfirm";
 import { useStripe } from "@stripe/stripe-react-native";
 
 type Participant = {
@@ -82,6 +85,7 @@ export default function SessionDetailScreen() {
     title: "",
     message: "",
   });
+  const [endSessionConfirm, setEndSessionConfirm] = useState(false);
   const [hostHasStripe, setHostHasStripe] = useState<boolean | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatText, setChatText] = useState("");
@@ -90,12 +94,51 @@ export default function SessionDetailScreen() {
   const [showParticipants, setShowParticipants] = useState(true);
   const [showReactions, setShowReactions] = useState(true);
   const [countdown, setCountdown] = useState<string | null>(null);
+  const [sessionTimeRemaining, setSessionTimeRemaining] = useState<number | null>(null); // seconds remaining
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [usageInfo, setUsageInfo] = useState<{ total_minutes: number; limit_minutes: number; limit_reached: boolean } | null>(null);
   const [videoReady, setVideoReady] = useState(false);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoRoomId, setVideoRoomId] = useState<string | null>(null);
   const [videoToken, setVideoToken] = useState<string | null>(null);
+  const [streamProvider, setStreamProvider] = useState<"jitsi" | "twitch" | "youtube">("jitsi");
+  const [twitchChannel, setTwitchChannel] = useState<string | null>(null);
+  const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
   const [startingVideo, setStartingVideo] = useState(false);
   const [floatingEmojis, setFloatingEmojis] = useState<Array<{ id: string; emoji: string; x: Animated.Value; y: Animated.Value; opacity: Animated.Value }>>([]);
   const floatingEmojiIdRef = useRef(0);
+  const sessionTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Check if user is admin
+  const checkAdmin = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const { data } = await supabase
+        .from("profiles")
+        .select("is_admin")
+        .eq("id", userId)
+        .maybeSingle();
+      setIsAdmin(!!data?.is_admin);
+    } catch (err) {
+      console.error("Failed to check admin status:", err);
+    }
+  }, [userId]);
+
+  // Load monthly usage info
+  const loadUsageInfo = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.rpc("get_monthly_usage");
+      if (error) throw error;
+      if (data && data.length > 0) {
+        setUsageInfo({
+          total_minutes: data[0].total_minutes || 0,
+          limit_minutes: data[0].limit_minutes || 100000,
+          limit_reached: data[0].limit_reached || false,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to load usage info:", err);
+    }
+  }, []);
 
   const loadSession = useCallback(async () => {
     if (!id) return;
@@ -114,6 +157,15 @@ export default function SessionDetailScreen() {
         return;
       }
 
+      // Check if session was admin-killed
+      if (data.admin_killed) {
+        setNotice({
+          visible: true,
+          title: "Session Terminated",
+          message: data.admin_kill_reason || "This session was terminated by an administrator.",
+        });
+      }
+
       // Load host profile separately
       const { data: hostProfile } = await supabase
         .from("profiles")
@@ -122,8 +174,25 @@ export default function SessionDetailScreen() {
         .maybeSingle();
 
       // Check if video room exists
-      if (data.room_id && data.video_url) {
-        setVideoUrl(data.video_url);
+      if (data.video_url || data.room_id) {
+        const roomUrl = data.video_url || (data.room_id?.startsWith("http") 
+          ? data.room_id 
+          : `https://meet.jit.si/${data.room_id}`);
+        setVideoRoomId(roomUrl);
+        setVideoToken(roomUrl);
+        
+        // Detect provider type
+        if (roomUrl.includes("twitch.tv")) {
+          setStreamProvider("twitch");
+          const channelMatch = roomUrl.match(/twitch\.tv\/([^/?]+)/);
+          if (channelMatch) setTwitchChannel(channelMatch[1]);
+        } else if (roomUrl.includes("youtube.com") || roomUrl.includes("youtu.be")) {
+          setStreamProvider("youtube");
+          const videoIdMatch = roomUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?/]+)/);
+          if (videoIdMatch) setYoutubeVideoId(videoIdMatch[1]);
+        } else {
+          setStreamProvider("jitsi");
+        }
       }
 
       // Load recipe if exists
@@ -154,6 +223,8 @@ export default function SessionDetailScreen() {
           .maybeSingle();
         setHostHasStripe(!!hostStripe?.stripe_account_id);
       }
+
+      // Note: Timer will be started in useEffect after component mounts
     } catch (err: any) {
       setNotice({ visible: true, title: "Error", message: err?.message || "Failed to load session." });
     }
@@ -588,6 +659,14 @@ export default function SessionDetailScreen() {
       await success();
       setIsParticipant(true);
       await loadParticipants();
+      
+      // Auto-join video if host has already started streaming
+      if (session && session.status === "active" && session.room_id) {
+        // Small delay to let UI update
+        setTimeout(async () => {
+          await joinVideo();
+        }, 500);
+      }
     } catch (err: any) {
       await warn();
       setNotice({ visible: true, title: "Error", message: err?.message || "Failed to join session." });
@@ -631,8 +710,8 @@ export default function SessionDetailScreen() {
         return;
       }
 
-      // Create or get Daily.co room
-      const { data, error } = await supabase.functions.invoke("daily-create-room", {
+      // Create or get Jitsi room (try Jitsi first - it's free!)
+      const { data, error } = await supabase.functions.invoke("jitsi-create-room", {
         body: {
           session_id: id,
           user_id: userId,
@@ -643,21 +722,25 @@ export default function SessionDetailScreen() {
         throw new Error(error?.message || data?.error || "Failed to create video room");
       }
 
-      setVideoUrl(data.room_url);
-      setVideoToken(data.token);
+      setVideoRoomId(data.room_url || data.room_id);
+      setVideoToken(data.room_url || data.room_id);
+      setStreamProvider("jitsi");
       setVideoReady(true);
       await success();
 
       // If session isn't active yet, activate it
       if (session.status !== "active") {
+        const startedAt = new Date().toISOString();
         await supabase
           .from("enlisted_club_sessions")
           .update({
             status: "active",
-            started_at: new Date().toISOString(),
+            started_at: startedAt,
           })
           .eq("id", id);
         await loadSession();
+        
+        // Timer will start automatically via useEffect when session updates
       }
     } catch (err: any) {
       await warn();
@@ -687,24 +770,35 @@ export default function SessionDetailScreen() {
         return;
       }
 
-      // Get Daily.co token for participant
-      if (!session.room_id) {
+      // Get Jitsi room URL for participant
+      if (!session.room_id && !session.video_url) {
         throw new Error("Host hasn't started video yet");
       }
 
-      const { data, error } = await supabase.functions.invoke("daily-get-token", {
-        body: {
-          session_id: id,
-          user_id: userId,
-        },
-      });
+      // Jitsi room URL is stored in video_url or room_id
+      const roomUrl = session.video_url || (session.room_id?.startsWith("http") 
+        ? session.room_id 
+        : `https://meet.jit.si/${session.room_id}`);
 
-      if (error || !data?.ok) {
-        throw new Error(error?.message || data?.error || "Failed to get video token");
+      setVideoRoomId(roomUrl);
+      setVideoToken(roomUrl);
+      setStreamProvider("jitsi");
+      
+      // Check if it's Twitch or YouTube
+      if (roomUrl.includes("twitch.tv")) {
+        const channelMatch = roomUrl.match(/twitch\.tv\/([^/?]+)/);
+        if (channelMatch) {
+          setStreamProvider("twitch");
+          setTwitchChannel(channelMatch[1]);
+        }
+      } else if (roomUrl.includes("youtube.com") || roomUrl.includes("youtu.be")) {
+        const videoIdMatch = roomUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?/]+)/);
+        if (videoIdMatch) {
+          setStreamProvider("youtube");
+          setYoutubeVideoId(videoIdMatch[1]);
+        }
       }
 
-      setVideoUrl(data.room_url);
-      setVideoToken(data.token);
       setVideoReady(true);
       await success();
     } catch (err: any) {
@@ -753,44 +847,86 @@ export default function SessionDetailScreen() {
     );
   };
 
-  const onEndSession = async () => {
-    if (!userId || !id || !session) return;
+  // Admin kill session function
+  const adminKillSession = useCallback(async (reason?: string) => {
+    if (!isAdmin || !id) return;
+
     Alert.alert(
-      "End Session?",
-      "This will end the session for all participants. They won't be able to join or tip after this.",
+      "Kill Session?",
+      reason ? `Reason: ${reason}\n\nThis will immediately end the session for all participants.` : "This will immediately end the session for all participants.",
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "End Session",
+          text: "Kill Session",
           style: "destructive",
           onPress: async () => {
             try {
-              const { error } = await supabase
-                .from("enlisted_club_sessions")
-                .update({
-                  status: "ended",
-                  ended_at: new Date().toISOString(),
-                })
-                .eq("id", id)
-                .eq("host_id", userId);
+              const { data, error } = await supabase.functions.invoke("admin-kill-session", {
+                body: {
+                  session_id: id,
+                  reason: reason || "Session terminated by administrator",
+                },
+              });
 
-              if (error) throw error;
+              if (error || !data?.ok) {
+                throw new Error(error?.message || data?.error || "Failed to kill session");
+              }
 
               await success();
               setNotice({
                 visible: true,
-                title: "Session Ended",
-                message: "Thanks for hosting! Participants can no longer join.",
+                title: "Session Terminated",
+                message: "The session has been terminated successfully.",
               });
-              setTimeout(() => router.back(), 2000);
+              
+              // Reload session to show updated status
+              await loadSession();
             } catch (err: any) {
               await warn();
-              setNotice({ visible: true, title: "Error", message: err?.message || "Failed to end session." });
+              setNotice({
+                visible: true,
+                title: "Error",
+                message: err?.message || "Failed to kill session.",
+              });
             }
           },
         },
       ]
     );
+  }, [isAdmin, id, loadSession]);
+
+  const onEndSession = async () => {
+    if (!userId || !id || !session) return;
+    setEndSessionConfirm(true);
+  };
+
+  const confirmEndSession = async () => {
+    if (!userId || !id || !session) return;
+    setEndSessionConfirm(false);
+    
+    try {
+      const { error } = await supabase
+        .from("enlisted_club_sessions")
+        .update({
+          status: "ended",
+          ended_at: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .eq("host_id", userId);
+
+      if (error) throw error;
+
+      await success();
+      setNotice({
+        visible: true,
+        title: "Session Ended",
+        message: "Thanks for hosting! Participants can no longer join.",
+      });
+      setTimeout(() => router.back(), 2000);
+    } catch (err: any) {
+      await warn();
+      setNotice({ visible: true, title: "Error", message: err?.message || "Failed to end session." });
+    }
   };
 
   const onLeave = async () => {
@@ -930,22 +1066,50 @@ export default function SessionDetailScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
       {/* TikTok-style Fullscreen Layout */}
-      {videoReady && videoUrl && videoToken ? (
+      {videoReady && videoRoomId ? (
         <View style={{ flex: 1, position: "relative" }}>
           {/* Fullscreen Video Background */}
           <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 1 }}>
-            <VideoStream
-              roomUrl={videoUrl}
-              token={videoToken}
-              isHost={isHost}
-              onError={(error) => {
-                setNotice({
-                  visible: true,
-                  title: "Video Error",
-                  message: error || "Failed to load video stream.",
-                });
-              }}
-            />
+            {streamProvider === "twitch" && twitchChannel ? (
+              <VideoStreamTwitch
+                channelName={twitchChannel}
+                isHost={isHost}
+                onError={(error: string) => {
+                  setNotice({
+                    visible: true,
+                    title: "Video Error",
+                    message: error || "Failed to load Twitch stream.",
+                  });
+                }}
+              />
+            ) : streamProvider === "youtube" && youtubeVideoId ? (
+              <VideoStreamYouTube
+                videoId={youtubeVideoId}
+                isHost={isHost}
+                onError={(error: string) => {
+                  setNotice({
+                    visible: true,
+                    title: "Video Error",
+                    message: error || "Failed to load YouTube stream.",
+                  });
+                }}
+              />
+            ) : (
+              <VideoStreamJitsiFixed
+                roomUrl={videoRoomId}
+                isHost={isHost}
+                onError={(error: string) => {
+                  setNotice({
+                    visible: true,
+                    title: "Video Error",
+                    message: error || "Failed to load video stream. Try Twitch/YouTube option.",
+                  });
+                }}
+                onReady={() => {
+                  console.log("Jitsi video ready");
+                }}
+              />
+            )}
           </View>
 
           {/* Floating Emoji Reactions Overlay */}
@@ -1020,7 +1184,8 @@ export default function SessionDetailScreen() {
           </View>
 
           {/* Right-Side Action Buttons (TikTok-style) */}
-          {(isParticipant || isHost) && isActive && (
+          {/* Show buttons when participant/host AND (active session OR video is ready) */}
+          {((isParticipant || isHost) && (isActive || videoReady)) && (
             <View
               style={{
                 position: "absolute",
@@ -1037,21 +1202,21 @@ export default function SessionDetailScreen() {
                   key={emoji}
                   onPress={() => sendReaction(emoji)}
                   style={{
-                    backgroundColor: "rgba(0,0,0,0.5)",
+                    backgroundColor: COLORS.overlay,
                     width: 50,
                     height: 50,
                     borderRadius: 25,
                     alignItems: "center",
                     justifyContent: "center",
                     borderWidth: 2,
-                    borderColor: "rgba(255,255,255,0.3)",
+                    borderColor: COLORS.border,
                   }}
                 >
                   <Text style={{ fontSize: 24 }}>{emoji}</Text>
                 </TouchableOpacity>
               ))}
 
-              {/* Tip Button (for participants only) */}
+              {/* Tip Button (for participants only) - Always visible when participant */}
               {isParticipant && !isHost && (
                 <TouchableOpacity
                   onPress={() => {
@@ -1066,17 +1231,17 @@ export default function SessionDetailScreen() {
                     setTipModalVisible(true);
                   }}
                   style={{
-                    backgroundColor: hostHasStripe === false ? "rgba(100,100,100,0.7)" : "rgba(21, 183, 126, 0.9)",
+                    backgroundColor: hostHasStripe === false ? COLORS.elevated : COLORS.accent,
                     width: 50,
                     height: 50,
                     borderRadius: 25,
                     alignItems: "center",
                     justifyContent: "center",
                     borderWidth: 2,
-                    borderColor: "rgba(255,255,255,0.3)",
+                    borderColor: COLORS.border,
                   }}
                 >
-                  <Ionicons name="cash" size={24} color="#FFF" />
+                  <Ionicons name="cash" size={24} color={hostHasStripe === false ? COLORS.subtext : "#000"} />
                 </TouchableOpacity>
               )}
 
@@ -1084,18 +1249,18 @@ export default function SessionDetailScreen() {
               <TouchableOpacity
                 onPress={() => setShowChat(!showChat)}
                 style={{
-                  backgroundColor: "rgba(0,0,0,0.5)",
+                  backgroundColor: COLORS.overlay,
                   width: 50,
                   height: 50,
                   borderRadius: 25,
                   alignItems: "center",
                   justifyContent: "center",
                   borderWidth: 2,
-                  borderColor: showChat ? "rgba(21, 183, 126, 0.8)" : "rgba(255,255,255,0.3)",
+                  borderColor: showChat ? COLORS.accent : COLORS.border,
                   position: "relative",
                 }}
               >
-                <Ionicons name="chatbubble" size={24} color="#FFF" />
+                <Ionicons name="chatbubble" size={24} color={COLORS.text} />
                 {chatMessages.length > 0 && (
                   <View
                     style={{
@@ -1143,7 +1308,7 @@ export default function SessionDetailScreen() {
                   left: 0,
                   right: 0,
                   height: 300,
-                  backgroundColor: "rgba(0,0,0,0.4)",
+                  backgroundColor: COLORS.overlay,
                   zIndex: -1,
                 }}
               />
@@ -1171,20 +1336,18 @@ export default function SessionDetailScreen() {
                     >
                       <View
                         style={{
-                          backgroundColor: isOwnMessage
-                            ? "rgba(21, 183, 126, 0.9)"
-                            : "rgba(0, 0, 0, 0.65)",
+                          backgroundColor: isOwnMessage ? COLORS.accent : COLORS.card,
                           paddingHorizontal: SPACING.sm,
                           paddingVertical: 6,
                           borderRadius: 18,
                         }}
                       >
                         {!isOwnMessage && (
-                          <Text style={{ color: "#FFF", fontSize: 10, fontWeight: "700", marginBottom: 2 }}>
+                          <Text style={{ color: COLORS.text, fontSize: 10, fontWeight: "700", marginBottom: 2 }}>
                             {msg.profile?.username || "User"}
                           </Text>
                         )}
-                        <Text style={{ color: "#FFF", fontSize: 13, fontWeight: isOwnMessage ? "600" : "400" }}>
+                        <Text style={{ color: isOwnMessage ? "#000" : COLORS.text, fontSize: 13, fontWeight: isOwnMessage ? "600" : "400" }}>
                           {msg.message}
                         </Text>
                       </View>
@@ -1200,17 +1363,17 @@ export default function SessionDetailScreen() {
                     value={chatText}
                     onChangeText={setChatText}
                     placeholder="Say something..."
-                    placeholderTextColor="rgba(255,255,255,0.6)"
+                    placeholderTextColor={COLORS.subtext}
                     multiline
                     maxLength={500}
                     style={{
                       flex: 1,
-                      backgroundColor: "rgba(255,255,255,0.2)",
-                      color: "#FFF",
+                      backgroundColor: COLORS.elevated,
+                      color: COLORS.text,
                       padding: SPACING.sm,
                       borderRadius: 20,
                       borderWidth: 1,
-                      borderColor: "rgba(255,255,255,0.3)",
+                      borderColor: COLORS.border,
                       fontSize: 14,
                       maxHeight: 80,
                     }}
@@ -1221,7 +1384,7 @@ export default function SessionDetailScreen() {
                     onPress={sendChatMessage}
                     disabled={!chatText.trim() || sendingChat}
                     style={{
-                      backgroundColor: chatText.trim() ? "rgba(21, 183, 126, 0.9)" : "rgba(255,255,255,0.2)",
+                      backgroundColor: chatText.trim() ? COLORS.accent : COLORS.elevated,
                       width: 44,
                       height: 44,
                       borderRadius: 22,
@@ -1231,9 +1394,9 @@ export default function SessionDetailScreen() {
                     }}
                   >
                     {sendingChat ? (
-                      <ActivityIndicator size="small" color="#FFF" />
+                      <ActivityIndicator size="small" color={chatText.trim() ? "#000" : COLORS.text} />
                     ) : (
-                      <Ionicons name="send" size={18} color="#FFF" />
+                      <Ionicons name="send" size={18} color={chatText.trim() ? "#000" : COLORS.text} />
                     )}
                   </TouchableOpacity>
                 </View>
@@ -1241,8 +1404,48 @@ export default function SessionDetailScreen() {
             </View>
           )}
 
-          {/* Join Button (when not participant) */}
-          {!isParticipant && (isActive || session.status === "scheduled") && !videoReady && (
+          {/* Start Video Button (for host) */}
+          {isHost && isActive && !videoReady && (
+            <View
+              style={{
+                position: "absolute",
+                bottom: showChat ? 280 : 100,
+                left: 0,
+                right: 0,
+                zIndex: 100,
+                alignItems: "center",
+                paddingHorizontal: SPACING.lg,
+              }}
+            >
+              <Pressable
+                onPress={startVideo}
+                disabled={startingVideo}
+                style={{
+                  backgroundColor: COLORS.accent,
+                  paddingHorizontal: SPACING.xl,
+                  paddingVertical: SPACING.md,
+                  borderRadius: 25,
+                  alignItems: "center",
+                  flexDirection: "row",
+                  gap: 8,
+                  minWidth: 200,
+                  justifyContent: "center",
+                }}
+              >
+                {startingVideo ? (
+                  <ActivityIndicator color="#000" />
+                ) : (
+                  <>
+                    <Ionicons name="videocam" size={20} color="#000" />
+                    <Text style={{ color: "#000", fontWeight: "800", fontSize: 16 }}>Start Video</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          )}
+
+          {/* Join Session Button (when not participant and not host) */}
+          {!isParticipant && !isHost && (isActive || session.status === "scheduled") && !videoReady && (
             <View
               style={{
                 position: "absolute",
@@ -1274,6 +1477,46 @@ export default function SessionDetailScreen() {
               </Pressable>
             </View>
           )}
+
+          {/* Join Video Button (for participants when host started) */}
+          {isParticipant && !isHost && isActive && !videoReady && session.room_id && (
+            <View
+              style={{
+                position: "absolute",
+                bottom: showChat ? 280 : 100,
+                left: 0,
+                right: 0,
+                zIndex: 100,
+                alignItems: "center",
+                paddingHorizontal: SPACING.lg,
+              }}
+            >
+              <Pressable
+                onPress={joinVideo}
+                disabled={startingVideo}
+                style={{
+                  backgroundColor: COLORS.accent,
+                  paddingHorizontal: SPACING.xl,
+                  paddingVertical: SPACING.md,
+                  borderRadius: 25,
+                  alignItems: "center",
+                  flexDirection: "row",
+                  gap: 8,
+                  minWidth: 200,
+                  justifyContent: "center",
+                }}
+              >
+                {startingVideo ? (
+                  <ActivityIndicator color="#000" />
+                ) : (
+                  <>
+                    <Ionicons name="videocam" size={20} color="#000" />
+                    <Text style={{ color: "#000", fontWeight: "800", fontSize: 16 }}>Join Video</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          )}
         </View>
       ) : (
         <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top"]}>
@@ -1295,19 +1538,50 @@ export default function SessionDetailScreen() {
             <View style={{ flex: 1, alignItems: "center" }}>
               <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 16 }}>{session.title}</Text>
               {isActive && (
-                <View
-                  style={{
-                    backgroundColor: COLORS.accent,
-                    paddingHorizontal: 8,
-                    paddingVertical: 2,
-                    borderRadius: 8,
-                    marginTop: 4,
-                  }}
-                >
-                  <Text style={{ color: "#000", fontWeight: "800", fontSize: 10 }}>LIVE</Text>
-                </View>
+                <>
+                  <View
+                    style={{
+                      backgroundColor: COLORS.accent,
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      borderRadius: 8,
+                      marginTop: 4,
+                    }}
+                  >
+                    <Text style={{ color: "#000", fontWeight: "800", fontSize: 10 }}>LIVE</Text>
+                  </View>
+                  {sessionTimeRemaining !== null && sessionTimeRemaining > 0 && (
+                    <View
+                      style={{
+                        marginTop: 4,
+                        paddingHorizontal: 8,
+                        paddingVertical: 2,
+                        borderRadius: 6,
+                        backgroundColor: sessionTimeRemaining < 300 ? COLORS.danger : COLORS.elevated,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: sessionTimeRemaining < 300 ? "#fff" : COLORS.subtext,
+                          fontWeight: "700",
+                          fontSize: 11,
+                        }}
+                      >
+                        {Math.floor(sessionTimeRemaining / 60)}:{(sessionTimeRemaining % 60).toString().padStart(2, "0")} remaining
+                      </Text>
+                    </View>
+                  )}
+                </>
               )}
             </View>
+            {isAdmin && isActive && (
+              <TouchableOpacity
+                onPress={() => adminKillSession()}
+                style={{ marginRight: 8 }}
+              >
+                <Ionicons name="warning" size={24} color={COLORS.danger} />
+              </TouchableOpacity>
+            )}
             {isHost && isActive && (
               <TouchableOpacity onPress={onEndSession}>
                 <Text style={{ color: COLORS.danger, fontWeight: "800" }}>End</Text>
@@ -1326,6 +1600,37 @@ export default function SessionDetailScreen() {
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: SPACING.lg }}>
+          {/* Usage Limit Warning */}
+          {usageInfo?.limit_reached && (
+            <ThemedNotice
+              visible={true}
+              title="Monthly Limit Reached"
+              message={`Streaming is temporarily unavailable. Monthly usage: ${usageInfo.total_minutes.toLocaleString()}/${usageInfo.limit_minutes.toLocaleString()} minutes.`}
+              onClose={() => {}}
+            />
+          )}
+
+          {/* Admin Kill Warning */}
+          {session?.admin_killed && (
+            <View
+              style={{
+                backgroundColor: COLORS.danger + "20",
+                borderLeftWidth: 4,
+                borderLeftColor: COLORS.danger,
+                padding: SPACING.md,
+                borderRadius: 8,
+                marginBottom: SPACING.md,
+              }}
+            >
+              <Text style={{ color: COLORS.danger, fontWeight: "800", fontSize: 14, marginBottom: 4 }}>
+                Session Terminated
+              </Text>
+              <Text style={{ color: COLORS.text, fontSize: 13 }}>
+                {session.admin_kill_reason || "This session was terminated by an administrator."}
+              </Text>
+            </View>
+          )}
+
           <View
             style={{
               backgroundColor: COLORS.card,
@@ -1700,78 +2005,6 @@ export default function SessionDetailScreen() {
           </View>
         )}
 
-        {/* Action Buttons */}
-        {!isParticipant && (isActive || session.status === "scheduled") && (
-          <Pressable
-            onPress={onJoin}
-            disabled={joining || session.status === "ended"}
-            style={{
-              backgroundColor: session.status === "ended" ? COLORS.elevated : COLORS.accent,
-              padding: SPACING.md,
-              borderRadius: 12,
-              alignItems: "center",
-              opacity: session.status === "ended" ? 0.5 : 1,
-              marginBottom: SPACING.lg,
-            }}
-          >
-            {joining ? (
-              <ActivityIndicator color="#000" />
-            ) : (
-              <Text
-                style={{
-                  color: session.status === "ended" ? COLORS.subtext : "#000",
-                  fontWeight: "800",
-                  fontSize: 16,
-                }}
-              >
-                {session.status === "ended" ? "Session Ended" : "Join Session"}
-              </Text>
-            )}
-          </Pressable>
-        )}
-
-        {/* Tip Button for Participants */}
-        {isParticipant && !isHost && isActive && (
-          <TouchableOpacity
-            onPress={() => {
-              if (hostHasStripe === false) {
-                setNotice({
-                  visible: true,
-                  title: "Payments Not Set Up",
-                  message: "This host hasn't set up payment receiving yet.",
-                });
-                return;
-              }
-              setTipModalVisible(true);
-            }}
-            style={{
-              backgroundColor: hostHasStripe === false ? COLORS.elevated : COLORS.accent,
-              padding: SPACING.md,
-              borderRadius: 12,
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-              marginBottom: SPACING.lg,
-            }}
-          >
-            <Ionicons
-              name="cash"
-              size={20}
-              color={hostHasStripe === false ? COLORS.subtext : "#000"}
-            />
-            <Text
-              style={{
-                color: hostHasStripe === false ? COLORS.subtext : "#000",
-                fontWeight: "800",
-                fontSize: 16,
-              }}
-            >
-              Send Tip
-            </Text>
-          </TouchableOpacity>
-        )}
-
         {/* Session Info */}
         <View style={{ marginBottom: SPACING.lg }}>
           <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 18, marginBottom: 8 }}>
@@ -1782,38 +2015,9 @@ export default function SessionDetailScreen() {
           )}
         </View>
 
-        {/* Join Button */}
-        {!isParticipant && (isActive || session.status === "scheduled") && (
-              <Pressable
-                onPress={onJoin}
-                disabled={joining || session.status === "ended"}
-                style={{
-                  backgroundColor: session.status === "ended" ? COLORS.elevated : COLORS.accent,
-                  padding: SPACING.md,
-                  borderRadius: 12,
-                  alignItems: "center",
-                  opacity: session.status === "ended" ? 0.5 : 1,
-                  marginBottom: SPACING.lg,
-                }}
-              >
-                {joining ? (
-                  <ActivityIndicator color="#000" />
-                ) : (
-                  <Text
-                    style={{
-                      color: session.status === "ended" ? COLORS.subtext : "#000",
-                      fontWeight: "800",
-                      fontSize: 16,
-                    }}
-                  >
-                    {session.status === "ended" ? "Session Ended" : "Join Session"}
-                  </Text>
-                )}
-              </Pressable>
-            )}
 
-            {/* Tip Button for Participants */}
-            {isParticipant && !isHost && (isActive || session.status === "scheduled") && (
+        {/* Tip Button for Participants */}
+        {isParticipant && !isHost && (isActive || session.status === "scheduled") && (
               <TouchableOpacity
                 onPress={() => {
                   if (hostHasStripe === false) {
@@ -1864,6 +2068,17 @@ export default function SessionDetailScreen() {
         message={notice.message}
         onClose={() => setNotice({ visible: false, title: "", message: "" })}
         confirmText="OK"
+      />
+
+      <ThemedConfirm
+        visible={endSessionConfirm}
+        title="End Session?"
+        message="This will end the session for all participants. They won't be able to join or tip after this."
+        confirmText="End Session"
+        cancelText="Cancel"
+        onConfirm={confirmEndSession}
+        onCancel={() => setEndSessionConfirm(false)}
+        destructive={true}
       />
 
       {/* Tip Modal */}

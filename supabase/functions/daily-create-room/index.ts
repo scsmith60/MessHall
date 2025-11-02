@@ -1,15 +1,15 @@
 // supabase/functions/daily-create-room/index.ts
 // Creates a Daily.co room for an Enlisted Club session and returns room URL + token
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -53,6 +53,29 @@ serve(async (req) => {
     if (session.host_id !== user_id) {
       return new Response(
         JSON.stringify({ ok: false, error: "Only the host can create the video room" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Check if streaming is allowed (usage limits)
+    const { data: canStart, error: limitError } = await supabase.rpc("can_start_new_session");
+    if (limitError || !canStart) {
+      return new Response(
+        JSON.stringify({ 
+          ok: false, 
+          error: "Streaming is currently unavailable. Monthly usage limit reached or too many concurrent sessions." 
+        }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Check if session was admin-killed
+    if (session.admin_killed) {
+      return new Response(
+        JSON.stringify({ 
+          ok: false, 
+          error: session.admin_kill_reason || "This session was terminated by an administrator." 
+        }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -134,6 +157,10 @@ serve(async (req) => {
           start_video_off: false,
           start_audio_off: false,
           max_participants: session.max_participants || 50,
+          // Broadcast mode: Host streams, participants watch (one-way)
+          enable_broadcast: true,
+          // Allow recording if needed (optional)
+          enable_recording: false,
         },
       }),
     });
