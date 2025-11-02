@@ -1253,6 +1253,7 @@ export default function SessionDetailScreen() {
                 }}
                 onReady={() => {
                   console.log("Jitsi video ready");
+                  setVideoReady(true); // This is critical - without this, UI stays on join screen
                 }}
               />
             )}
