@@ -34,7 +34,7 @@
 
     "android": {
       "package": "app.messhall",
-      "permissions": ["RECORD_AUDIO"],
+      "permissions": ["RECORD_AUDIO", "CAMERA"],
       "userInterfaceStyle": "automatic",
       "intentFilters": [
         {

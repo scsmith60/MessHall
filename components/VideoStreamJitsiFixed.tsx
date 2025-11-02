@@ -4,6 +4,8 @@
 import React, { useState, useRef } from "react";
 import { View, StyleSheet, ActivityIndicator, Text, Platform } from "react-native";
 import { WebView } from "react-native-webview";
+import type { WebViewPermissionRequestEvent } from "react-native-webview/lib/WebViewTypes";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { COLORS } from "../lib/theme";
 
 type Props = {
@@ -18,6 +20,8 @@ type Props = {
 export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, displayName, avatarUrl, onError, onReady }: Props) {
   const [loading, setLoading] = useState(true);
   const webViewRef = useRef<WebView>(null);
+  const insets = useSafeAreaInsets();
+  const bottomPadding = Platform.OS === "android" ? Math.max(insets.bottom, 16) : insets.bottom;
   
   // Extract room name from URL
   const roomUrlFull = roomUrl.startsWith("http") ? roomUrl : `https://meet.jit.si/${roomUrl}`;
@@ -82,17 +86,6 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
       z-index: 1000;
       display: none;
     }
-    #status {
-      position: absolute;
-      top: 20px;
-      left: 20px;
-      color: #fff;
-      background: rgba(0,0,0,0.7);
-      padding: 10px;
-      border-radius: 5px;
-      z-index: 2000;
-      font-size: 12px;
-    }
     /* Force Jitsi toolbar to always be visible */
     [class*="toolbox"],
     [class*="toolbar"],
@@ -112,7 +105,6 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
   <!-- No script tags - all code moved to injected JavaScript -->
 </head>
 <body>
-  <div id="status">Initializing Jitsi...</div>
   <div id="jitsi-container"></div>
   <div id="error" class="error-message"></div>
 </body>
@@ -1009,10 +1001,18 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
     onError?.(nativeEvent?.description || "Failed to load Jitsi Meet");
   };
 
+  const handlePermissionRequest = (event: WebViewPermissionRequestEvent) => {
+    try {
+      event.grant?.(event.resources);
+    } catch (permissionError) {
+      console.error("Failed to grant media capture permission:", permissionError);
+    }
+  };
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingBottom: bottomPadding }]}>
       {loading && (
-        <View style={styles.loading}>
+        <View style={[styles.loading, { bottom: bottomPadding }]}>
           <ActivityIndicator size="large" color={COLORS.accent} />
           <Text style={styles.loadingText}>Connecting to Jitsi Meet...</Text>
         </View>
@@ -1031,8 +1031,12 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
         mediaPlaybackRequiresUserAction={false}
         allowsInlineMediaPlayback={true}
         injectedJavaScript={jitsiInitScript}
+        mediaCapturePermissionGrantType="grant"
+        onPermissionRequest={handlePermissionRequest}
         // Android specific
         androidLayerType="hardware"
+        androidCameraAccessDisabled={false}
+        androidMicrophoneAccessDisabled={false}
         // iOS specific  
         allowsProtectedMedia={true}
         // Additional media settings

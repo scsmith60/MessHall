@@ -17,8 +17,9 @@ import {
   View,
   Platform,
   PermissionsAndroid,
+  Linking,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
@@ -69,6 +70,8 @@ type ChatMessage = {
 export default function SessionDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { userId } = useUserId();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 16 : 0);
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const [session, setSession] = useState<any>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -747,14 +750,52 @@ export default function SessionDetailScreen() {
 
   const requestPermissions = async () => {
     if (Platform.OS === "android") {
-      const granted = await PermissionsAndroid.requestMultiple([
+      const permissions = [
         PermissionsAndroid.PERMISSIONS.CAMERA,
         PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-      ]);
-      return (
-        granted[PermissionsAndroid.PERMISSIONS.CAMERA] === PermissionsAndroid.RESULTS.GRANTED &&
-        granted[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === PermissionsAndroid.RESULTS.GRANTED
+      ];
+
+      const currentStatuses = await Promise.all(
+        permissions.map(async (perm) => ({
+          permission: perm,
+          granted: await PermissionsAndroid.check(perm),
+        }))
       );
+
+      const allGranted = currentStatuses.every(({ granted }) => granted);
+      if (allGranted) return true;
+
+      const result = await PermissionsAndroid.requestMultiple(permissions);
+
+      const cameraStatus = result[PermissionsAndroid.PERMISSIONS.CAMERA];
+      const micStatus = result[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO];
+
+      const cameraGranted = cameraStatus === PermissionsAndroid.RESULTS.GRANTED;
+      const micGranted = micStatus === PermissionsAndroid.RESULTS.GRANTED;
+
+      if (cameraGranted && micGranted) {
+        return true;
+      }
+
+      const permanentlyDenied =
+        cameraStatus === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN ||
+        micStatus === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN;
+
+      if (permanentlyDenied) {
+        Alert.alert(
+          "Enable Camera & Mic",
+          "Android is blocking camera/mic for MessHall. Please open App Settings and enable both permissions.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Open Settings",
+              onPress: () => Linking.openSettings(),
+            },
+          ]
+        );
+      }
+
+      return false;
     }
     return true; // iOS handles permissions automatically
   };
@@ -1354,7 +1395,7 @@ export default function SessionDetailScreen() {
               style={{
                 position: "absolute",
                 right: SPACING.md,
-                bottom: showChat ? 280 : 80,
+                bottom: bottomInset + (showChat ? 280 : 80),
                 zIndex: 100,
                 gap: SPACING.md,
                 alignItems: "center",
@@ -1459,7 +1500,7 @@ export default function SessionDetailScreen() {
                 right: 0,
                 zIndex: 50, // Lower than buttons
                 paddingHorizontal: SPACING.md,
-                paddingBottom: SPACING.md,
+                paddingBottom: bottomInset + SPACING.md,
                 paddingTop: SPACING.lg,
                 maxHeight: screenHeight * 0.35,
               }}
@@ -1471,7 +1512,7 @@ export default function SessionDetailScreen() {
                   bottom: 0,
                   left: 0,
                   right: 0,
-                  height: 300,
+                  height: 300 + bottomInset,
                   backgroundColor: COLORS.overlay,
                   zIndex: -1,
                 }}
@@ -1603,7 +1644,7 @@ export default function SessionDetailScreen() {
             <View
               style={{
                 position: "absolute",
-                bottom: showChat ? 280 : 100,
+                bottom: bottomInset + (showChat ? 280 : 100),
                 left: 0,
                 right: 0,
                 zIndex: 150, // Higher than chat
@@ -1643,7 +1684,7 @@ export default function SessionDetailScreen() {
             <View
               style={{
                 position: "absolute",
-                bottom: showChat ? 280 : 100,
+                bottom: bottomInset + (showChat ? 280 : 100),
                 left: 0,
                 right: 0,
                 zIndex: 150, // Higher than chat
@@ -1677,7 +1718,7 @@ export default function SessionDetailScreen() {
             <View
               style={{
                 position: "absolute",
-                bottom: showChat ? 280 : 100,
+                bottom: bottomInset + (showChat ? 280 : 100),
                 left: 0,
                 right: 0,
                 zIndex: 150, // Higher than chat
