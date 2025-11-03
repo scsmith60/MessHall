@@ -48,6 +48,7 @@ import { logAdEvent as logAdEventV2 } from "../../lib/ads/logAdEvent";
 import SearchFab from "../../components/SearchFab";
 import { useUserId } from "../../lib/auth";
 import { supabase } from "../../lib/supabase";
+import { logDebug } from "../../lib/logger";
 import Comments from "../../components/Comments";
 
 /* ───────── storage: scroll memory ───────── */
@@ -1159,11 +1160,11 @@ export default function HomeScreen() {
     if (data.length > 0 && lastSortedModeRef.current !== mode) {
       lastSortedModeRef.current = mode;
       
-      console.log(`[FEED] Mode changed to: ${mode}, currently have ${data.length} items`);
+      logDebug(`[FEED] Mode changed to: ${mode}, currently have ${data.length} items`);
       
       // For trending/top_week, we need more data for meaningful sorting
       if ((mode === "trending" || mode === "top_week") && data.length < 50 && !loadingPagesRef.current) {
-        console.log(`[FEED] Loading more pages for ${mode} mode...`);
+        logDebug(`[FEED] Loading more pages for ${mode} mode...`);
         loadingPagesRef.current = true;
         const loadMore = async () => {
           const pagesToLoad = 4; // Load 4 more pages (48 more items)
@@ -1176,7 +1177,7 @@ export default function HomeScreen() {
           setTimeout(() => {
             setData((prev) => {
               const sorted = applyClientSortFilter([...prev]);
-              console.log(`[FEED] After loading more pages - ${sorted.length} items sorted, first 5:`, sorted.slice(0, 5).map((r: any) => ({
+              logDebug(`[FEED] After loading more pages - ${sorted.length} items sorted, first 5:`, sorted.slice(0, 5).map((r: any) => ({
                 title: r.title?.slice(0, 30),
                 likes: r.likes,
                 cooks: r.cooks,
@@ -1195,7 +1196,7 @@ export default function HomeScreen() {
       } else {
         // Just sort existing data
         const sorted = applyClientSortFilter([...data]);
-        console.log(`[FEED] After sort - ${sorted.length} items, first 5:`, sorted.slice(0, 5).map((r: any) => ({
+        logDebug(`[FEED] After sort - ${sorted.length} items, first 5:`, sorted.slice(0, 5).map((r: any) => ({
           title: r.title?.slice(0, 30),
           likes: r.likes,
           cooks: r.cooks,

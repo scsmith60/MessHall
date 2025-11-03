@@ -20,6 +20,7 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../../lib/supabase";
 import { COLORS as THEME } from "@/lib/theme";
+import { logDebug } from "../../../lib/logger";
 
 /* ----------------------------- Tiny theme ----------------------------- */
 // 🟢 MessHall-like theme (works in dark/light). Keep or wire to your design system.
@@ -194,11 +195,11 @@ export default function OwnerDashboard() {
     let alive = true;
     (async () => {
       try {
-        console.log("[OwnerGate] start check");
+        logDebug("[OwnerGate] start check");
         const { data: session } = await supabase.auth.getSession();
         const token = session.session?.access_token;
         if (!token) {
-          console.log("[OwnerGate] no session token");
+          logDebug("[OwnerGate] no session token");
           if (alive) setGate("unauthorized");
           return;
         }
@@ -206,7 +207,7 @@ export default function OwnerDashboard() {
         const { data: auth } = await supabase.auth.getUser();
         const uid = auth.user?.id;
         if (!uid) {
-          console.log("[OwnerGate] no user id");
+          logDebug("[OwnerGate] no user id");
           if (alive) setGate("unauthorized");
           return;
         }
@@ -219,12 +220,12 @@ export default function OwnerDashboard() {
           .maybeSingle();
 
         if (error) {
-          console.log("[OwnerGate] profiles error:", error.message);
+          logDebug("[OwnerGate] profiles error:", error.message);
           if (alive) setGate("unauthorized");
           return;
         }
         if (!data) {
-          console.log("[OwnerGate] no profile row for user");
+          logDebug("[OwnerGate] no profile row for user");
           if (alive) setGate("unauthorized");
           return;
         }
@@ -232,11 +233,11 @@ export default function OwnerDashboard() {
         const isAdminFlag = Boolean(
           data.is_admin === true || data.is_admin === "true" || data.is_admin === "TRUE"
         );
-        console.log("[OwnerGate] is_admin:", isAdminFlag, "=> allowed:", isAdminFlag);
+        logDebug("[OwnerGate] is_admin:", isAdminFlag, "=> allowed:", isAdminFlag);
 
         if (alive) setGate(isAdminFlag ? "authorized" : "unauthorized");
       } catch (e: any) {
-        console.log("[OwnerGate] exception:", e?.message || e);
+        logDebug("[OwnerGate] exception:", e?.message || e);
         if (alive) setGate("unauthorized");
       }
     })();
@@ -254,7 +255,7 @@ export default function OwnerDashboard() {
       const { data: session } = await supabase.auth.getSession();
       const token = session.session?.access_token;
       if (!token) {
-        console.log("[OwnerMetrics] no JWT token");
+        logDebug("[OwnerMetrics] no JWT token");
         setErr("Not signed in.");
         setMetrics(null);
         return;
@@ -272,8 +273,8 @@ export default function OwnerDashboard() {
       });
 
       const text = await res.text();
-      console.log("[OwnerMetrics] status:", res.status);
-      console.log("[OwnerMetrics] body:", text);
+      logDebug("[OwnerMetrics] status:", res.status);
+      logDebug("[OwnerMetrics] body:", text);
 
       if (!res.ok) {
         try {
@@ -302,9 +303,9 @@ export default function OwnerDashboard() {
       }
 
       setMetrics(payload);
-      console.log("[OwnerMetrics] loaded at", payload?.generated_at);
+      logDebug("[OwnerMetrics] loaded at", payload?.generated_at);
     } catch (e: any) {
-      console.log("[OwnerMetrics] exception:", e?.message || e);
+      logDebug("[OwnerMetrics] exception:", e?.message || e);
       setErr(e?.message || "Couldn’t load metrics.");
       setMetrics(null);
     } finally {
@@ -352,7 +353,7 @@ export default function OwnerDashboard() {
               label="Check Again"
               variant="primary"
               onPress={() => {
-                console.log("[OwnerGate] manual recheck");
+                logDebug("[OwnerGate] manual recheck");
                 // Toggle gate to re-run the effect
                 setGate("checking");
               }}

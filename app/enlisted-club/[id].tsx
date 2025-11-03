@@ -33,6 +33,7 @@ import ThemedNotice from "../../components/ui/ThemedNotice";
 import ThemedConfirm from "../../components/ui/ThemedConfirm";
 import { useStripe } from "@stripe/stripe-react-native";
 import Constants from "expo-constants";
+import { logDebug, logError, logWarn } from "../../lib/logger";
 
 type Participant = {
   id: string;
@@ -149,7 +150,7 @@ export default function SessionDetailScreen() {
         });
       }
     } catch (err) {
-      console.error("Failed to load user profile:", err);
+      logError("Failed to load user profile:", err);
     }
   }, [userId]);
 
@@ -164,7 +165,7 @@ export default function SessionDetailScreen() {
         .maybeSingle();
       setIsAdmin(!!data?.is_admin);
     } catch (err) {
-      console.error("Failed to check admin status:", err);
+      logError("Failed to check admin status:", err);
     }
   }, [userId]);
 
@@ -180,9 +181,9 @@ export default function SessionDetailScreen() {
     
     if (envAppId) {
       setAgoraAppId(envAppId);
-      console.log("[Agora] App ID loaded");
+      logDebug("[Agora] App ID loaded");
     } else {
-      console.warn("[Agora] Agora App ID not found. Add EXPO_PUBLIC_AGORA_APP_ID to your .env file and rebuild.");
+      logWarn("[Agora] Agora App ID not found. Add EXPO_PUBLIC_AGORA_APP_ID to your .env file and rebuild.");
     }
   }, []);
 
@@ -193,7 +194,7 @@ export default function SessionDetailScreen() {
       if (error) {
         // Function doesn't exist yet or has SQL errors (migration not run or needs update) - this is OK
         if (error.code === "PGRST202" || error.code === "42702") {
-          console.log("Usage tracking not available:", error.message || "migration not applied or needs update");
+          logDebug("Usage tracking not available:", error.message || "migration not applied or needs update");
           return;
         }
         throw error;
@@ -208,10 +209,10 @@ export default function SessionDetailScreen() {
     } catch (err: any) {
       // Silently handle missing function - it's optional
       if (err?.code === "PGRST202") {
-        console.log("Usage tracking not available (migration not applied)");
+        logDebug("Usage tracking not available (migration not applied)");
         return;
       }
-      console.error("Failed to load usage info:", err);
+      logError("Failed to load usage info:", err);
     }
   }, []);
 
@@ -349,7 +350,7 @@ export default function SessionDetailScreen() {
       setParticipants(transformed);
       setIsParticipant(transformed.some((p) => p.user_id === userId));
     } catch (err: any) {
-      console.error("Failed to load participants:", err);
+      logError("Failed to load participants:", err);
       setNotice({ visible: true, title: "Error", message: err?.message || "Failed to load participants." });
     }
   }, [id, userId]);
@@ -367,7 +368,7 @@ export default function SessionDetailScreen() {
       if (error) {
         // If table doesn't exist (PGRST205), just set empty array - migration hasn't been run yet
         if (error.code === "PGRST205") {
-          console.log("Chat table not found - migration needs to be applied");
+          logDebug("Chat table not found - migration needs to be applied");
           setChatMessages([]);
           return;
         }
@@ -399,7 +400,7 @@ export default function SessionDetailScreen() {
       setChatMessages(transformed);
     } catch (err: any) {
       // Gracefully handle errors - chat is optional
-      console.error("Failed to load chat messages:", err);
+      logError("Failed to load chat messages:", err);
       setChatMessages([]);
     }
   }, [id]);
@@ -472,7 +473,7 @@ export default function SessionDetailScreen() {
           // RLS policy error - check if user is host
           const isHostUser = session?.host_id === userId;
           if (!isHostUser) {
-            console.error("RLS policy violation - user cannot send reaction");
+            logError("RLS policy violation - user cannot send reaction");
           }
         } else {
           throw error;
@@ -480,7 +481,7 @@ export default function SessionDetailScreen() {
       }
     } catch (err: any) {
       // Silently fail - reactions are optional
-      console.error("Failed to send reaction:", err);
+      logError("Failed to send reaction:", err);
     }
   }, [userId, id, session?.status, session?.host_id]);
 
@@ -565,7 +566,7 @@ export default function SessionDetailScreen() {
 
       setRecentTips(transformed as Tip[]);
     } catch (err: any) {
-      console.error("Failed to load tips:", err);
+      logError("Failed to load tips:", err);
     }
   }, [id]);
 
@@ -700,7 +701,7 @@ export default function SessionDetailScreen() {
       .subscribe((status) => {
         // Silently handle subscription failures (table might not exist yet)
         if (status === "CHANNEL_ERROR") {
-          console.log("Chat subscription unavailable (table may not exist)");
+          logDebug("Chat subscription unavailable (table may not exist)");
         }
       });
 
@@ -768,7 +769,7 @@ export default function SessionDetailScreen() {
       .subscribe((status) => {
         // Silently handle subscription failures (table might not exist yet)
         if (status === "CHANNEL_ERROR") {
-          console.log("Reactions subscription unavailable (table may not exist)");
+          logDebug("Reactions subscription unavailable (table may not exist)");
         }
       });
 
@@ -903,7 +904,7 @@ export default function SessionDetailScreen() {
         const errorMessage = (error as any)?.message || error.toString();
         const errorData = (error as any)?.context?.body || (error as any)?.body;
         
-        console.error("Jitsi edge function error:", {
+        logError("Jitsi edge function error:", {
           error,
           statusCode,
           errorMessage,
@@ -929,7 +930,7 @@ export default function SessionDetailScreen() {
 
       if (!data || !data.ok) {
         const errorMsg = data?.error || "Failed to create video room";
-        console.error("Agora room creation failed:", errorMsg, data);
+        logError("Agora room creation failed:", errorMsg, data);
         throw new Error(errorMsg);
       }
 
@@ -998,7 +999,7 @@ export default function SessionDetailScreen() {
         const errorMessage = (error as any)?.message || error.toString();
         const errorData = (error as any)?.context?.body || (error as any)?.body;
         
-        console.error("Agora get-channel error:", {
+        logError("Agora get-channel error:", {
           error,
           statusCode,
           errorMessage,
@@ -1024,7 +1025,7 @@ export default function SessionDetailScreen() {
 
       if (!data || !data.ok) {
         const errorMsg = data?.error || "Failed to get video room";
-        console.error("Agora get-channel failed:", errorMsg, data);
+        logError("Agora get-channel failed:", errorMsg, data);
         throw new Error(errorMsg);
       }
 
@@ -1357,7 +1358,7 @@ export default function SessionDetailScreen() {
                   });
                 }}
                 onReady={() => {
-                  console.log("Agora video ready");
+                  logDebug("Agora video ready");
                   setVideoReady(true);
                 }}
               />

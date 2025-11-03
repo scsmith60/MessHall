@@ -12,6 +12,7 @@ import RtcEngine, {
 } from "react-native-agora";
 import { COLORS } from "../lib/theme";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { logDebug, logError } from "../lib/logger";
 
 type Props = {
   appId: string; // Agora App ID from dashboard
@@ -82,24 +83,24 @@ export default function VideoStreamAgora({
 
         // Event handlers
         engine.addListener("onJoinChannelSuccess", (connection: any, elapsed: number) => {
-          console.log("[Agora] Joined channel:", connection.channelId, "uid:", connection.localUid);
+          logDebug("[Agora] Joined channel:", connection.channelId, "uid:", connection.localUid);
           setLoading(false);
           onReady?.();
         });
 
         engine.addListener("onError", (err: number, msg: string) => {
-          console.error("[Agora] Error:", err, msg);
+          logError("[Agora] Error:", err, msg);
           onError?.(`Agora error: ${msg || String(err)}`);
         });
 
         engine.addListener("onUserJoined", (connection: any, remoteUid: number, elapsed: number) => {
-          console.log("[Agora] User joined:", remoteUid);
+          logDebug("[Agora] User joined:", remoteUid);
           setRemoteUids((prev) => [...prev, remoteUid]);
           onUserJoined?.(remoteUid);
         });
 
         engine.addListener("onUserOffline", (connection: any, remoteUid: number, reason: number) => {
-          console.log("[Agora] User offline:", remoteUid);
+          logDebug("[Agora] User offline:", remoteUid);
           setRemoteUids((prev) => prev.filter((id) => id !== remoteUid));
           onUserOffline?.(remoteUid);
         });
@@ -112,7 +113,7 @@ export default function VideoStreamAgora({
         });
 
       } catch (error: any) {
-        console.error("[Agora] Initialization error:", error);
+        logError("[Agora] Initialization error:", error);
         onError?.(error.message || "Failed to initialize Agora");
         setLoading(false);
       }
@@ -128,7 +129,7 @@ export default function VideoStreamAgora({
           engineRef.current.removeAllListeners();
           engineRef.current.release();
         } catch (e) {
-          console.error("[Agora] Error during cleanup:", e);
+          logError("[Agora] Error during cleanup:", e);
         }
         engineRef.current = null;
       }
@@ -227,14 +228,14 @@ export default function VideoStreamAgora({
                 if (muted) {
                   await engineRef.current.muteLocalAudioStream(false);
                   setMuted(false);
-                  console.log("[Agora] Microphone unmuted");
+                  logDebug("[Agora] Microphone unmuted");
                 } else {
                   await engineRef.current.muteLocalAudioStream(true);
                   setMuted(true);
-                  console.log("[Agora] Microphone muted");
+                  logDebug("[Agora] Microphone muted");
                 }
               } catch (e) {
-                console.error("[Agora] Error toggling audio:", e);
+                logError("[Agora] Error toggling audio:", e);
               }
             }}
           >
@@ -249,15 +250,15 @@ export default function VideoStreamAgora({
                   // Actually disable the camera, not just mute
                   await engineRef.current.enableLocalVideo(false);
                   setVideoEnabled(false);
-                  console.log("[Agora] Camera disabled");
+                  logDebug("[Agora] Camera disabled");
                 } else {
                   // Re-enable the camera
                   await engineRef.current.enableLocalVideo(true);
                   setVideoEnabled(true);
-                  console.log("[Agora] Camera enabled");
+                  logDebug("[Agora] Camera enabled");
                 }
               } catch (e) {
-                console.error("[Agora] Error toggling video:", e);
+                logError("[Agora] Error toggling video:", e);
               }
             }}
           >
@@ -271,9 +272,9 @@ export default function VideoStreamAgora({
               onPress={async () => {
                 try {
                   await engineRef.current.switchCamera();
-                  console.log("[Agora] Camera switched");
+                  logDebug("[Agora] Camera switched");
                 } catch (e) {
-                  console.error("[Agora] Error switching camera:", e);
+                  logError("[Agora] Error switching camera:", e);
                 }
               }}
             >

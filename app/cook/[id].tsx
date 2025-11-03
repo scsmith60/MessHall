@@ -26,6 +26,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, RADIUS, SPACING } from '../../lib/theme';
 import BigButton from '../../components/ui/BigButton';
 import { fmtMMSS, clamp, parseDurationFromText } from '../../lib/timer';
+import { logDebug, logError } from '../../lib/logger';
 
 // we’ll still keep your helpers available
 import { speak as oldSpeak, stopSpeak as oldStopSpeak } from '../../lib/speak';
@@ -145,7 +146,7 @@ export default function CookMode() {
       });
       setVoiceReady(true);
     } catch (e) {
-      console.log('Failed to start speech recognition', e);
+      logError('Failed to start speech recognition', e);
       setVoiceReady(false);
     }
   };
@@ -223,7 +224,7 @@ export default function CookMode() {
   });
 
   useSpeechRecognitionEvent('error', (event: any) => {
-    console.log('Speech error:', event?.error, event?.message);
+    logDebug('Speech error:', event?.error, event?.message);
     setListening(false);
     const msg = `${event?.error ?? ''} ${event?.message ?? ''}`.toLowerCase();
     if (msg.includes('not-allowed') || msg.includes('permission')) {
@@ -299,7 +300,7 @@ export default function CookMode() {
         );
         setIdx(0);
       } catch (e) {
-        console.log('Cook load error', e);
+        logDebug('Cook load error', e);
         setShowLoadError(true);
         setTimeout(() => router.back(), 2000);
       } finally {

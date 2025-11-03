@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from "react-native";
 import WebView, { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
+import { logDebug, logError } from "../lib/logger";
 
 type ResultPayload = {
   ok: boolean;
@@ -117,10 +118,10 @@ export default function TTDomScraper({
 
   const onMessage = (e: WebViewMessageEvent) => {
     // Log raw message for debugging
-    try { console.log('[TTDOM] raw message', e.nativeEvent.data && e.nativeEvent.data.slice ? e.nativeEvent.data.slice(0, 200) : e.nativeEvent.data); } catch (e) { }
+    try { logDebug('[TTDOM] raw message', e.nativeEvent.data && e.nativeEvent.data.slice ? e.nativeEvent.data.slice(0, 200) : e.nativeEvent.data); } catch (e) { }
     let data: any;
-    try { data = JSON.parse(e.nativeEvent.data); } catch (err) { console.error('[TTDOM] failed to parse message', err); return; }
-    if (data.type === "log") { console.log("[TIKTOK]", data.msg, data.extra || ""); return; }
+    try { data = JSON.parse(e.nativeEvent.data); } catch (err) { logError('[TTDOM] failed to parse message', err); return; }
+    if (data.type === "log") { logDebug("[TIKTOK]", data.msg, data.extra || ""); return; }
     if (data.type === "done") {
       const out: ResultPayload = {
         ok: !!data.ok,

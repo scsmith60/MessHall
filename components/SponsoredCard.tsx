@@ -18,6 +18,7 @@ import { logAdEvent } from "@/lib/ads/logAdEvent";
 
 // 🔌 used only for the last-resort direct insert path (should almost never run)
 import { supabase } from "../lib/supabase";
+import { logDebug } from "../lib/logger";
 
 /* ----------------------------------------------------------------------------
  * 1) TYPES (what the card understands)
@@ -150,10 +151,10 @@ export default function SponsoredCard(props: Props) {
       });
 
       wrote = !!ok;
-      console.log("[SponsoredCard] click wrote?", wrote, "slot:", resolvedSlotId);
+      logDebug("[SponsoredCard] click wrote?", wrote, "slot:", resolvedSlotId);
     } catch (e) {
       // if something weird happens, we'll try one more time directly below
-      console.log("[SponsoredCard] helper threw; will try direct", (e as any)?.message || e);
+      logDebug("[SponsoredCard] helper threw; will try direct", (e as any)?.message || e);
       wrote = false;
     }
 
@@ -183,12 +184,12 @@ export default function SponsoredCard(props: Props) {
         const { error } = await supabase.from("ad_events").insert(direct);
         if (!error) {
           wrote = true;
-          console.log("[SponsoredCard] direct insert OK (slot:", resolvedSlotId, ")");
+          logDebug("[SponsoredCard] direct insert OK (slot:", resolvedSlotId, ")");
         } else {
-          console.log("[SponsoredCard] direct insert error:", error.message);
+          logDebug("[SponsoredCard] direct insert error:", error.message);
         }
       } catch (e: any) {
-        console.log("[SponsoredCard] direct insert threw:", e?.message || e);
+        logDebug("[SponsoredCard] direct insert threw:", e?.message || e);
       }
     }
 

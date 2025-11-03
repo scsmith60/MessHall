@@ -31,6 +31,7 @@ const Gate =
 
 // 🎨 centralized colors
 import { COLORS } from "../lib/theme";
+import { logWarn } from "../lib/logger";
 
 /* -----------------------------------------------------------
    🧸 helper: am I at an auth route?
@@ -127,7 +128,7 @@ class RootErrorBoundary extends React.Component<
     return { hasError: true, message: err?.message ?? "Something went wrong." };
   }
   componentDidCatch(err: any) {
-    console.warn("[RootErrorBoundary]", err);
+    logWarn("[RootErrorBoundary]", err);
   }
   render() {
     if (!this.state.hasError) return this.props.children;
@@ -211,10 +212,10 @@ function InnerApp() {
         if (code && typeof code !== "string") code = String(code);
         if (code) {
           const { error } = await (supabase.auth as any).exchangeCodeForSession(code);
-          if (error) console.warn("[oauth] exchange failed", error);
+          if (error) logWarn("[oauth] exchange failed", error);
         }
       } catch (e) {
-        console.warn("[oauth] deep link handler failed", e);
+        logWarn("[oauth] deep link handler failed", e);
       }
     }
 
@@ -380,7 +381,7 @@ export default function RootLayout() {
         // We no longer force navigation here to avoid flicker/race conditions
       } catch (e) {
         // If it errors, we still want to render something (not black screen)
-        console.warn("[startup] getSession failed:", e);
+        logWarn("[startup] getSession failed:", e);
       } finally {
         if (alive) setCheckedOnce(true);
       }

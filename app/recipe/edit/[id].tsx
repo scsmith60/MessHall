@@ -24,6 +24,7 @@ import * as Clipboard from 'expo-clipboard';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ThemedNotice from '@/components/ui/ThemedNotice';
 import { Ionicons } from '@expo/vector-icons';
+import { logDebug } from '@/lib/logger';
 
 // Hidden WebView + snapshot tool
 import { WebView } from 'react-native-webview';
@@ -393,7 +394,7 @@ export default function EditRecipe() {
     try {
   const meta: any = await fetchMeta(url);
   // Debug: log fetched meta so we can confirm title extraction in the app runtime
-  console.log('[IMPORT] fetchMeta result for', url, meta);
+  logDebug('[IMPORT] fetchMeta result for', url, meta);
 
       if (meta.title) setTitle(meta.title);
       if (meta.ingredients?.length) setIngredients(meta.ingredients as string[]);
@@ -401,7 +402,7 @@ export default function EditRecipe() {
 
       // If the static extraction indicates a client-render is required, open the hidden WebView
       if (meta.needsClientRender) {
-        console.log('[IMPORT] meta indicates client render needed, opening WebView for', url);
+        logDebug('[IMPORT] meta indicates client render needed, opening WebView for', url);
         setWebSnapInProgress(true);
         setWebSnapUrl(url);
       }

@@ -7,6 +7,7 @@ import { WebView } from "react-native-webview";
 import type { WebViewPermissionRequestEvent } from "react-native-webview/lib/WebViewTypes";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { COLORS } from "../lib/theme";
+import { logDebug, logError } from "../lib/logger";
 
 type Props = {
   roomUrl: string;
@@ -114,14 +115,14 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
   // Create the full Jitsi initialization script to inject
   const jitsiInitScript = `
     (function() {
-      console.log('[JITSI INJECTED] Starting initialization...');
+      logDebug('[JITSI INJECTED] Starting initialization...');
       const statusDiv = document.getElementById('status');
       const container = document.getElementById('jitsi-container');
       const errorDiv = document.getElementById('error');
       
       function updateStatus(msg) {
         if (statusDiv) statusDiv.textContent = msg;
-        console.log('[Jitsi]', msg);
+        logDebug('[Jitsi]', msg);
         if (window.ReactNativeWebView) {
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: msg }));
         }
@@ -133,7 +134,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
       function loadJitsiAPI() {
         return new Promise(function(resolve, reject) {
           if (typeof JitsiMeetExternalAPI !== 'undefined') {
-            console.log('[Jitsi] API already loaded');
+            logDebug('[Jitsi] API already loaded');
             resolve();
             return;
           }
@@ -147,7 +148,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
           var currentUrlIndex = 0;
           
           function tryLoadScript(url) {
-            console.log('[Jitsi] Attempting to load from:', url);
+            logDebug('[Jitsi] Attempting to load from:', url);
             updateStatus('Loading from: ' + url.replace('https://', ''));
             
             var script = document.createElement('script');
@@ -157,7 +158,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
             script.src = url;
             
             var timeout = setTimeout(function() {
-              console.error('[Jitsi] Script load timeout for:', url);
+              logError('[Jitsi] Script load timeout for:', url);
               script.onload = null;
               script.onerror = null;
               tryNextUrl();
@@ -165,14 +166,14 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
             
             script.onload = function() {
               clearTimeout(timeout);
-              console.log('[Jitsi] Script onload fired for:', url);
+              logDebug('[Jitsi] Script onload fired for:', url);
               setTimeout(function() {
                 if (typeof JitsiMeetExternalAPI !== 'undefined') {
-                  console.log('[Jitsi] ✅ API loaded successfully from:', url);
+                  logDebug('[Jitsi] ✅ API loaded successfully from:', url);
                   updateStatus('✅ API loaded from: ' + url.replace('https://', ''));
                   resolve();
                 } else {
-                  console.log('[Jitsi] Script loaded but API not available, trying next URL...');
+                  logDebug('[Jitsi] Script loaded but API not available, trying next URL...');
                   tryNextUrl();
                 }
               }, 2000);
@@ -180,16 +181,16 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
             
             script.onerror = function(err) {
               clearTimeout(timeout);
-              console.error('[Jitsi] Script onerror fired for:', url, err);
+              logError('[Jitsi] Script onerror fired for:', url, err);
               updateStatus('Failed: ' + url.replace('https://', ''));
               tryNextUrl();
             };
             
             try {
               document.head.appendChild(script);
-              console.log('[Jitsi] Script tag appended to head');
+              logDebug('[Jitsi] Script tag appended to head');
             } catch(e) {
-              console.error('[Jitsi] Failed to append script:', e);
+              logError('[Jitsi] Failed to append script:', e);
               tryNextUrl();
             }
           }
@@ -199,7 +200,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
             if (currentUrlIndex < urls.length) {
               tryLoadScript(urls[currentUrlIndex]);
             } else {
-              console.error('[Jitsi] All script URLs failed to load');
+              logError('[Jitsi] All script URLs failed to load');
               reject(new Error('Failed to load Jitsi API from all CDN URLs. Check internet connection.'));
             }
           }
@@ -217,7 +218,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
         // CRITICAL: Request media permissions via getUserMedia BEFORE initializing Jitsi
         // This ensures permissions are granted when Jitsi tries to access devices
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-          console.log('[Jitsi] Requesting media permissions before initializing...');
+          logDebug('[Jitsi] Requesting media permissions before initializing...');
           if (window.ReactNativeWebView) {
             window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Requesting camera/microphone permissions...' }));
           }
@@ -229,7 +230,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
           
           navigator.mediaDevices.getUserMedia(constraints)
             .then(function(stream) {
-              console.log('[Jitsi] ✅ Media permissions granted!');
+              logDebug('[Jitsi] ✅ Media permissions granted!');
               if (window.ReactNativeWebView) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅ Camera/mic permissions granted!' }));
               }
@@ -241,7 +242,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
               initializeJitsi();
             })
             .catch(function(error) {
-              console.error('[Jitsi] Media permission denied:', error);
+              logError('[Jitsi] Media permission denied:', error);
               if (window.ReactNativeWebView) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ 
                   type: 'status', 
@@ -252,7 +253,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
               initializeJitsi();
             });
         } else {
-          console.log('[Jitsi] getUserMedia not available, initializing without pre-permission');
+          logDebug('[Jitsi] getUserMedia not available, initializing without pre-permission');
           initializeJitsi();
         }
         
@@ -295,18 +296,18 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
           try {
             if (typeof JitsiMeetExternalAPI !== 'undefined' && JitsiMeetExternalAPI.prototype) {
               // Check if there's a way to disable prejoin via constructor options
-              console.log('[Jitsi] Creating API instance...');
+              logDebug('[Jitsi] Creating API instance...');
             }
           } catch(e) {}
           
           // Create API instance - configOverwrite should handle skipping prejoin
-          console.log('[Jitsi] Creating API instance with room:', roomName);
+          logDebug('[Jitsi] Creating API instance with room:', roomName);
           const api = new JitsiMeetExternalAPI('meet.jit.si', jitsiOptions);
           
           // Force click "Join" buttons immediately to bypass prejoin screen
           function forceClickJoinButton() {
             try {
-              console.log('[Jitsi] Searching for join buttons...');
+              logDebug('[Jitsi] Searching for join buttons...');
               if (window.ReactNativeWebView) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Searching for join button...' }));
               }
@@ -317,24 +318,24 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
               
               // Find all iframes and add their documents
               var iframes = document.querySelectorAll('iframe');
-              console.log('[Jitsi] Found', iframes.length, 'iframes');
+              logDebug('[Jitsi] Found', iframes.length, 'iframes');
               iframes.forEach(function(iframe) {
                 try {
                   // Try to access iframe content (may fail due to CORS)
                   if (iframe.contentDocument) {
                     documentsToCheck.push(iframe.contentDocument);
-                    console.log('[Jitsi] Added iframe document');
+                    logDebug('[Jitsi] Added iframe document');
                   } else if (iframe.contentWindow) {
                     try {
                       var iframeDoc = iframe.contentWindow.document;
                       documentsToCheck.push(iframeDoc);
-                      console.log('[Jitsi] Added iframe document via contentWindow');
+                      logDebug('[Jitsi] Added iframe document via contentWindow');
                     } catch(e) {
-                      console.log('[Jitsi] Cannot access iframe document (CORS):', e);
+                      logDebug('[Jitsi] Cannot access iframe document (CORS):', e);
                     }
                   }
                 } catch(e) {
-                  console.log('[Jitsi] Error accessing iframe:', e);
+                  logDebug('[Jitsi] Error accessing iframe:', e);
                 }
               });
               
@@ -344,11 +345,11 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                   var allClickable = doc.querySelectorAll('button, a, [role="button"], div[class*="button"], span[class*="button"], [class*="join"]');
                   clickableCount += allClickable.length;
                 } catch(e) {
-                  console.log('[Jitsi] Error querying document:', e);
+                  logDebug('[Jitsi] Error querying document:', e);
                 }
               });
               
-              console.log('[Jitsi] Found', clickableCount, 'total clickable elements across all documents');
+              logDebug('[Jitsi] Found', clickableCount, 'total clickable elements across all documents');
               if (window.ReactNativeWebView) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Found ' + clickableCount + ' clickable elements (including iframes)' }));
               }
@@ -370,7 +371,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                   if ((text.includes('join') || text.includes('enter') || ariaLabel.includes('join')) && 
                       !text.includes('leave') && !text.includes('end') && !text.includes('download')) {
                     foundButtons.push(text);
-                    console.log('[Jitsi] Found join button! Text:', text);
+                    logDebug('[Jitsi] Found join button! Text:', text);
                     if (window.ReactNativeWebView) {
                       window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Found join button: ' + text }));
                     }
@@ -379,12 +380,12 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                     try {
                       el.click();
                       clicked = true;
-                      console.log('[Jitsi] ✅ Clicked via .click()');
+                      logDebug('[Jitsi] ✅ Clicked via .click()');
                       if (window.ReactNativeWebView) {
                         window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅ Clicked join button!' }));
                       }
                     } catch(e1) {
-                      console.log('[Jitsi] .click() failed:', e1);
+                      logDebug('[Jitsi] .click() failed:', e1);
                     }
                     
                     try {
@@ -392,10 +393,10 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                         var clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
                         el.dispatchEvent(clickEvent);
                         clicked = true;
-                        console.log('[Jitsi] ✅ Clicked via dispatchEvent');
+                        logDebug('[Jitsi] ✅ Clicked via dispatchEvent');
                       }
                     } catch(e2) {
-                      console.log('[Jitsi] dispatchEvent failed:', e2);
+                      logDebug('[Jitsi] dispatchEvent failed:', e2);
                     }
                     
                     try {
@@ -405,10 +406,10 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                         el.dispatchEvent(touchStart);
                         el.dispatchEvent(touchEnd);
                         clicked = true;
-                        console.log('[Jitsi] ✅ Clicked via touch event');
+                        logDebug('[Jitsi] ✅ Clicked via touch event');
                       }
                     } catch(e3) {
-                      console.log('[Jitsi] touch event failed:', e3);
+                      logDebug('[Jitsi] touch event failed:', e3);
                     }
                     
                     // Also try focus and then click
@@ -416,27 +417,27 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                       el.focus();
                       el.click();
                       clicked = true;
-                      console.log('[Jitsi] ✅ Clicked after focus');
+                      logDebug('[Jitsi] ✅ Clicked after focus');
                     } catch(e4) {
-                      console.log('[Jitsi] focus+click failed:', e4);
+                      logDebug('[Jitsi] focus+click failed:', e4);
                     }
                   }
                   } catch(e) {
-                    console.log('[Jitsi] Error checking element:', e);
+                    logDebug('[Jitsi] Error checking element:', e);
                   }
                 });
                 } catch(e) {
-                  console.log('[Jitsi] Error checking document:', e);
+                  logDebug('[Jitsi] Error checking document:', e);
                 }
               });
               
               if (foundButtons.length > 0 && !clicked) {
-                console.log('[Jitsi] ⚠️ Found buttons but clicking failed:', foundButtons);
+                logDebug('[Jitsi] ⚠️ Found buttons but clicking failed:', foundButtons);
                 if (window.ReactNativeWebView) {
                   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '⚠️ Found ' + foundButtons.length + ' join buttons but clicking failed' }));
                 }
               } else if (foundButtons.length === 0) {
-                console.log('[Jitsi] ⚠️ No join button found');
+                logDebug('[Jitsi] ⚠️ No join button found');
                 if (window.ReactNativeWebView) {
                   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '⚠️ No join button found to click' }));
                 }
@@ -447,7 +448,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                 try {
                   var prejoinContainers = doc.querySelectorAll('[class*="prejoin"], [class*="lobby"], [id*="prejoin"], [id*="lobby"], [class*="join-screen"]');
                   if (prejoinContainers.length > 0) {
-                    console.log('[Jitsi] Hiding', prejoinContainers.length, 'prejoin containers in document');
+                    logDebug('[Jitsi] Hiding', prejoinContainers.length, 'prejoin containers in document');
                     prejoinContainers.forEach(function(container) {
                       container.style.display = 'none';
                       container.style.visibility = 'hidden';
@@ -461,14 +462,14 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                     }
                   }
                 } catch(e) {
-                  console.log('[Jitsi] Error hiding containers in document:', e);
+                  logDebug('[Jitsi] Error hiding containers in document:', e);
                 }
               });
               
               // If no button found, try using Jitsi API commands directly
               if (!clicked && typeof api !== 'undefined') {
                 try {
-                  console.log('[Jitsi] Trying API commands to force join...');
+                  logDebug('[Jitsi] Trying API commands to force join...');
                   if (window.ReactNativeWebView) {
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Trying API commands to force join...' }));
                   }
@@ -488,11 +489,11 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                     }
                   } catch(e) {}
                 } catch(e) {
-                  console.log('[Jitsi] API command error:', e);
+                  logDebug('[Jitsi] API command error:', e);
                 }
               }
             } catch(e) {
-              console.log('[Jitsi] Error in forceClickJoinButton:', e);
+              logDebug('[Jitsi] Error in forceClickJoinButton:', e);
               if (window.ReactNativeWebView) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Error: ' + e.message }));
               }
@@ -525,11 +526,11 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                 var text = (div.textContent || '').toLowerCase();
                 if (text.includes('how do you want to join') || text.includes('join this meeting')) {
                   div.style.display = 'none';
-                  console.log('[Jitsi] Hid prejoin div by text');
+                  logDebug('[Jitsi] Hid prejoin div by text');
                 }
               });
             } catch(e) {
-              console.log('[Jitsi] Error hiding prejoin UI:', e);
+              logDebug('[Jitsi] Error hiding prejoin UI:', e);
             }
           }
           
@@ -576,7 +577,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                     } catch(e) {}
                   }
                 } catch(e) {
-                  console.log('[Jitsi] Error searching document:', docName, e);
+                  logDebug('[Jitsi] Error searching document:', docName, e);
                 }
               }
               
@@ -585,7 +586,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
               
               // Search all iframes
               var iframes = document.querySelectorAll('iframe');
-              console.log('[Jitsi] Checking', iframes.length, 'iframes for buttons...');
+              logDebug('[Jitsi] Checking', iframes.length, 'iframes for buttons...');
               iframes.forEach(function(iframe, idx) {
                 try {
                   if (iframe.contentDocument) {
@@ -594,11 +595,11 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                     searchDocument(iframe.contentWindow.document, 'iframe-' + idx);
                   }
                 } catch(e) {
-                  console.log('[Jitsi] Cannot access iframe', idx, '(CORS):', e.message);
+                  logDebug('[Jitsi] Cannot access iframe', idx, '(CORS):', e.message);
                 }
               });
               
-              console.log('[Jitsi] Found', foundButtons.length, 'potential buttons');
+              logDebug('[Jitsi] Found', foundButtons.length, 'potential buttons');
               
               // Click buttons in priority order
               foundButtons.forEach(function(btnInfo) {
@@ -626,7 +627,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                   
                   // Click "Join in browser" first
                   if (btnInfo.type === 'join-in-browser' && !joinButtonsClicked.inBrowser) {
-                    console.log('[Jitsi] 🎯 Clicking "Join in browser":', btnInfo.text);
+                    logDebug('[Jitsi] 🎯 Clicking "Join in browser":', btnInfo.text);
                     if (window.ReactNativeWebView) {
                       window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '🎯 Clicking "Join in browser" button' }));
                     }
@@ -655,7 +656,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                     } catch(e) {}
                     
                     joinButtonsClicked.inBrowser = true;
-                    console.log('[Jitsi] ✅ Attempted to click "Join in browser"');
+                    logDebug('[Jitsi] ✅ Attempted to click "Join in browser"');
                     if (window.ReactNativeWebView) {
                       window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅ Clicked "Join in browser"!' }));
                     }
@@ -668,7 +669,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                   
                   // Click "Join meeting" second
                   if (btnInfo.type === 'join-meeting' && !joinButtonsClicked.meeting) {
-                    console.log('[Jitsi] 🎯 Clicking "Join meeting":', btnInfo.text);
+                    logDebug('[Jitsi] 🎯 Clicking "Join meeting":', btnInfo.text);
                     if (window.ReactNativeWebView) {
                       window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '🎯 Clicking "Join meeting" button' }));
                     }
@@ -696,18 +697,18 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                     } catch(e) {}
                     
                     joinButtonsClicked.meeting = true;
-                    console.log('[Jitsi] ✅ Attempted to click "Join meeting"');
+                    logDebug('[Jitsi] ✅ Attempted to click "Join meeting"');
                     if (window.ReactNativeWebView) {
                       window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅ Clicked "Join meeting"!' }));
                     }
                   }
                 } catch(e) {
-                  console.log('[Jitsi] Error clicking button:', e);
+                  logDebug('[Jitsi] Error clicking button:', e);
                 }
               });
               
             } catch(e) {
-              console.log('[Jitsi] Error in autoClickJoinButtons:', e);
+              logDebug('[Jitsi] Error in autoClickJoinButtons:', e);
             }
           }
           
@@ -750,74 +751,74 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
           function tryDirectJoin() {
             try {
               if (!api) {
-                console.log('[Jitsi] ⚠️ API not available in tryDirectJoin');
+                logDebug('[Jitsi] ⚠️ API not available in tryDirectJoin');
                 return;
               }
               
-              console.log('[Jitsi] 🔧🔧🔧 ATTEMPTING DIRECT JOIN VIA API COMMANDS...');
+              logDebug('[Jitsi] 🔧🔧🔧 ATTEMPTING DIRECT JOIN VIA API COMMANDS...');
               if (window.ReactNativeWebView) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '🔧🔧🔧 Trying direct join via API commands...' }));
               }
               
               // Method 1: Try to toggle lobby off first
-              console.log('[Jitsi] 🔧 Step 1: Calling api.executeCommand("toggleLobby")');
+              logDebug('[Jitsi] 🔧 Step 1: Calling api.executeCommand("toggleLobby")');
               try {
                 api.executeCommand('toggleLobby').then(function() {
-                  console.log('[Jitsi] ✅✅✅ toggleLobby SUCCEEDED!');
+                  logDebug('[Jitsi] ✅✅✅ toggleLobby SUCCEEDED!');
                   if (window.ReactNativeWebView) {
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅✅✅ toggleLobby succeeded!' }));
                   }
                 }).catch(function(e) {
-                  console.log('[Jitsi] ❌ toggleLobby FAILED:', e.message || e.toString());
+                  logDebug('[Jitsi] ❌ toggleLobby FAILED:', e.message || e.toString());
                 });
               } catch(e) {
-                console.log('[Jitsi] ❌ toggleLobby EXCEPTION:', e.message || e.toString());
+                logDebug('[Jitsi] ❌ toggleLobby EXCEPTION:', e.message || e.toString());
               }
               
               // Method 2: Try to set display name which sometimes triggers join
-              console.log('[Jitsi] 🔧 Step 2: Calling api.executeCommand("displayName")');
+              logDebug('[Jitsi] 🔧 Step 2: Calling api.executeCommand("displayName")');
               try {
                 api.executeCommand('displayName', userDisplayName || 'User').then(function() {
-                  console.log('[Jitsi] ✅✅✅ displayName SUCCEEDED!');
+                  logDebug('[Jitsi] ✅✅✅ displayName SUCCEEDED!');
                   if (window.ReactNativeWebView) {
                     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅✅✅ displayName succeeded!' }));
                   }
                 }).catch(function(e) {
-                  console.log('[Jitsi] ❌ displayName FAILED:', e.message || e.toString());
+                  logDebug('[Jitsi] ❌ displayName FAILED:', e.message || e.toString());
                 });
               } catch(e) {
-                console.log('[Jitsi] ❌ displayName EXCEPTION:', e.message || e.toString());
+                logDebug('[Jitsi] ❌ displayName EXCEPTION:', e.message || e.toString());
               }
               
               // Method 3: For hosts, try to enable video/audio to trigger join
               if (isHostConfig) {
-                console.log('[Jitsi] 🔧 Step 3: Calling api.executeCommand("toggleVideo") (HOST)');
+                logDebug('[Jitsi] 🔧 Step 3: Calling api.executeCommand("toggleVideo") (HOST)');
                 try {
                   api.executeCommand('toggleVideo').then(function() {
-                    console.log('[Jitsi] ✅✅✅ toggleVideo SUCCEEDED!');
+                    logDebug('[Jitsi] ✅✅✅ toggleVideo SUCCEEDED!');
                     if (window.ReactNativeWebView) {
                       window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅✅✅ toggleVideo succeeded!' }));
                     }
                   }).catch(function(e) {
-                    console.log('[Jitsi] ❌ toggleVideo FAILED:', e.message || e.toString());
+                    logDebug('[Jitsi] ❌ toggleVideo FAILED:', e.message || e.toString());
                   });
                 } catch(e) {
-                  console.log('[Jitsi] ❌ toggleVideo EXCEPTION:', e.message || e.toString());
+                  logDebug('[Jitsi] ❌ toggleVideo EXCEPTION:', e.message || e.toString());
                 }
                 
                 setTimeout(function() {
-                  console.log('[Jitsi] 🔧 Step 4: Calling api.executeCommand("toggleAudio") (HOST)');
+                  logDebug('[Jitsi] 🔧 Step 4: Calling api.executeCommand("toggleAudio") (HOST)');
                   try {
                     api.executeCommand('toggleAudio').then(function() {
-                      console.log('[Jitsi] ✅✅✅ toggleAudio SUCCEEDED!');
+                      logDebug('[Jitsi] ✅✅✅ toggleAudio SUCCEEDED!');
                       if (window.ReactNativeWebView) {
                         window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅✅✅ toggleAudio succeeded!' }));
                       }
                     }).catch(function(e) {
-                      console.log('[Jitsi] ❌ toggleAudio FAILED:', e.message || e.toString());
+                      logDebug('[Jitsi] ❌ toggleAudio FAILED:', e.message || e.toString());
                     });
                   } catch(e) {
-                    console.log('[Jitsi] ❌ toggleAudio EXCEPTION:', e.message || e.toString());
+                    logDebug('[Jitsi] ❌ toggleAudio EXCEPTION:', e.message || e.toString());
                   }
                 }, 200);
               }
@@ -825,54 +826,54 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
               // Method 4: Check participant count to see if we're actually in
               try {
                 var participantCount = api.getNumberOfParticipants();
-                console.log('[Jitsi] 📊 Participant count:', participantCount);
+                logDebug('[Jitsi] 📊 Participant count:', participantCount);
                 if (window.ReactNativeWebView) {
                   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '📊 Participant count: ' + participantCount }));
                 }
               } catch(e) {
-                console.log('[Jitsi] ❌ getNumberOfParticipants FAILED:', e.message || e.toString());
+                logDebug('[Jitsi] ❌ getNumberOfParticipants FAILED:', e.message || e.toString());
               }
             } catch(e) {
-              console.log('[Jitsi] ❌ Direct join error:', e.message || e.toString());
+              logDebug('[Jitsi] ❌ Direct join error:', e.message || e.toString());
             }
           }
           
           // Force join after API is ready
           api.addEventListener('ready', function() {
             updateStatus('API ready, joining...');
-            console.log('[Jitsi] ✅✅✅ API READY EVENT FIRED - Starting join attempts...');
+            logDebug('[Jitsi] ✅✅✅ API READY EVENT FIRED - Starting join attempts...');
             if (window.ReactNativeWebView) {
               window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: '✅✅✅ API ready - starting join attempts...' }));
             }
             
             // Try direct join immediately with logging
-            console.log('[Jitsi] 🔧 Scheduling tryDirectJoin at 100ms');
+            logDebug('[Jitsi] 🔧 Scheduling tryDirectJoin at 100ms');
             setTimeout(function() {
-              console.log('[Jitsi] 🔧 Executing tryDirectJoin (100ms)');
+              logDebug('[Jitsi] 🔧 Executing tryDirectJoin (100ms)');
               tryDirectJoin();
             }, 100);
             
-            console.log('[Jitsi] 🔧 Scheduling tryDirectJoin at 500ms');
+            logDebug('[Jitsi] 🔧 Scheduling tryDirectJoin at 500ms');
             setTimeout(function() {
-              console.log('[Jitsi] 🔧 Executing tryDirectJoin (500ms)');
+              logDebug('[Jitsi] 🔧 Executing tryDirectJoin (500ms)');
               tryDirectJoin();
             }, 500);
             
-            console.log('[Jitsi] 🔧 Scheduling tryDirectJoin at 1000ms');
+            logDebug('[Jitsi] 🔧 Scheduling tryDirectJoin at 1000ms');
             setTimeout(function() {
-              console.log('[Jitsi] 🔧 Executing tryDirectJoin (1000ms)');
+              logDebug('[Jitsi] 🔧 Executing tryDirectJoin (1000ms)');
               tryDirectJoin();
             }, 1000);
             
-            console.log('[Jitsi] 🔧 Scheduling tryDirectJoin at 2000ms');
+            logDebug('[Jitsi] 🔧 Scheduling tryDirectJoin at 2000ms');
             setTimeout(function() {
-              console.log('[Jitsi] 🔧 Executing tryDirectJoin (2000ms)');
+              logDebug('[Jitsi] 🔧 Executing tryDirectJoin (2000ms)');
               tryDirectJoin();
             }, 2000);
             
-            console.log('[Jitsi] 🔧 Scheduling tryDirectJoin at 3000ms');
+            logDebug('[Jitsi] 🔧 Scheduling tryDirectJoin at 3000ms');
             setTimeout(function() {
-              console.log('[Jitsi] 🔧 Executing tryDirectJoin (3000ms)');
+              logDebug('[Jitsi] 🔧 Executing tryDirectJoin (3000ms)');
               tryDirectJoin();
             }, 3000);
             
@@ -881,7 +882,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
               try {
                 // Check if we're actually in
                 var participants = api.getNumberOfParticipants();
-                console.log('[Jitsi] Participant count:', participants);
+                logDebug('[Jitsi] Participant count:', participants);
                 if (window.ReactNativeWebView) {
                   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Participant count: ' + participants }));
                 }
@@ -894,17 +895,17 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                     // Force video/audio on to trigger join
                     if (isHostConfig) {
                       api.executeCommand('toggleVideo').then(function() {
-                        console.log('[Jitsi] Video toggled');
+                        logDebug('[Jitsi] Video toggled');
                         api.executeCommand('toggleVideo'); // Toggle back on
                       }).catch(function(e) {
-                        console.log('[Jitsi] Video toggle failed:', e);
+                        logDebug('[Jitsi] Video toggle failed:', e);
                       });
                       
                       api.executeCommand('toggleAudio').then(function() {
-                        console.log('[Jitsi] Audio toggled');
+                        logDebug('[Jitsi] Audio toggled');
                         api.executeCommand('toggleAudio'); // Toggle back on
                       }).catch(function(e) {
-                        console.log('[Jitsi] Audio toggle failed:', e);
+                        logDebug('[Jitsi] Audio toggle failed:', e);
                       });
                     }
                     
@@ -913,7 +914,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                       api.executeCommand('subject', '');
                     } catch(e) {}
                   } catch(e) {
-                    console.log('[Jitsi] API command error:', e);
+                    logDebug('[Jitsi] API command error:', e);
                   }
                   
                   // Even if we're "in", click join to dismiss UI
@@ -923,7 +924,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
                   forceClickJoinButton();
                 }
               } catch(e) {
-                console.log('[Jitsi] Error checking participants:', e);
+                logDebug('[Jitsi] Error checking participants:', e);
                 if (window.ReactNativeWebView) {
                   window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Error: ' + e.message }));
                 }
@@ -950,7 +951,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
           });
         } catch(e) {
           updateStatus('ERROR: ' + e.message);
-          console.error('[Jitsi]', e);
+          logError('[Jitsi]', e);
           if (window.ReactNativeWebView) {
             window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error', message: 'Initialization error: ' + e.message }));
           }
@@ -958,7 +959,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
         } // End of initializeJitsi function
       }).catch(function(error) {
         updateStatus('ERROR: ' + error.message);
-        console.error('[Jitsi]', error);
+        logError('[Jitsi]', error);
       });
     })();
     true;
@@ -973,7 +974,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
   const handleMessage = (event: any) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
-      console.log('[WebView Message]', data.type, data.message || '');
+      logDebug('[WebView Message]', data.type, data.message || '');
       
       if (data.type === 'ready') {
         setLoading(false);
@@ -984,19 +985,19 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
       } else if (data.type === 'loading') {
         // Keep loading state
       } else if (data.type === 'status') {
-        console.log('[Jitsi Status]', data.message);
+        logDebug('[Jitsi Status]', data.message);
       } else if (data.type === 'test') {
         // Test message confirms JavaScript injection works
-        console.log('[WebView Test] ✅ JavaScript injection confirmed:', data.message);
+        logDebug('[WebView Test] ✅ JavaScript injection confirmed:', data.message);
       }
     } catch (e) {
-      console.error("Failed to parse message:", e);
+      logError("Failed to parse message:", e);
     }
   };
 
   const handleError = (syntheticEvent: any) => {
     const { nativeEvent } = syntheticEvent;
-    console.error("WebView error:", nativeEvent);
+    logError("WebView error:", nativeEvent);
     setLoading(false);
     onError?.(nativeEvent?.description || "Failed to load Jitsi Meet");
   };
@@ -1005,7 +1006,7 @@ export default function VideoStreamJitsiFixed({ roomUrl, isHost = false, display
     try {
       event.grant?.(event.resources);
     } catch (permissionError) {
-      console.error("Failed to grant media capture permission:", permissionError);
+      logError("Failed to grant media capture permission:", permissionError);
     }
   };
 

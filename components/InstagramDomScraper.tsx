@@ -8,6 +8,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from "react-native";
 import WebView, { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
+import { logDebug } from "../lib/logger";
 
 type ResultPayload = {
   ok: boolean;
@@ -268,7 +269,7 @@ export default function InstagramDomScraper({
   const onMessage = (e: WebViewMessageEvent) => {
     let data: any;
     try { data = JSON.parse(e.nativeEvent.data); } catch { return; }
-    if (data.type === "log") { console.log("[INSTAGRAM]", data.msg, data.extra || ""); return; }
+    if (data.type === "log") { logDebug("[INSTAGRAM]", data.msg, data.extra || ""); return; }
     if (data.type === "done") {
       const out: ResultPayload = {
         ok: !!data.ok,

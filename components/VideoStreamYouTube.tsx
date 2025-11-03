@@ -5,6 +5,7 @@ import React, { useState } from "react";
 import { View, StyleSheet, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 import { COLORS } from "../lib/theme";
+import { logError } from "../lib/logger";
 
 type Props = {
   videoId: string; // YouTube live stream video ID
@@ -104,7 +105,7 @@ export default function VideoStreamYouTube({ videoId, isHost = false, muted = fa
 
   const handleError = (syntheticEvent: any) => {
     const { nativeEvent } = syntheticEvent;
-    console.error("WebView error:", nativeEvent);
+    logError("WebView error:", nativeEvent);
     setLoading(false);
     onError?.(nativeEvent?.description || "Failed to load YouTube stream");
   };

@@ -26,6 +26,7 @@ import { COLORS } from "@/lib/theme";
 
 // 👇 blocking helpers you already have
 import { isBlocked, blockUser, unblockUser } from "@/lib/blocking";
+import { logError } from "@/lib/logger";
 
 // use centralized COLORS from lib/theme
 
@@ -318,7 +319,7 @@ export default function PublicProfile() {
         setFollowing(0);
       }
     } catch (e) {
-      console.log("[PublicProfile] load error:", e);
+      logError("[PublicProfile] load error:", e);
       setProfile(null);
       setRecipes([]);
       setFollowers(0);

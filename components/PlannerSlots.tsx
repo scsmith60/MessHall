@@ -11,6 +11,7 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/lib/theme";
+import { logDebug, logError, logWarn } from "@/lib/logger";
 
 // ---------- Types ----------
 type RecipeLite = {
@@ -122,7 +123,7 @@ const PlannerSlots: React.FC<Props> = ({
       // Ask for notification permission once and set up Android channel
   useEffect(() => {
     ensureNotificationPermissions().catch((err) => {
-      console.warn("⚠️ NOTIFICATION PERMISSION DENIED:", err);
+      logWarn("⚠️ NOTIFICATION PERMISSION DENIED:", err);
     });
   }, []);
 
@@ -155,7 +156,7 @@ const PlannerSlots: React.FC<Props> = ({
       const updatedSlot = updated.find((r) => r.id === pickerState.openForId);
       if (updatedSlot?.notify) {
         scheduleReminder(updatedSlot).catch((err) => {
-          console.error("⚠️ RESCHEDULE FAILED — TIME CHANGE:", err);
+          logError("⚠️ RESCHEDULE FAILED — TIME CHANGE:", err);
         });
       }
       return updated;
@@ -168,7 +169,7 @@ const PlannerSlots: React.FC<Props> = ({
       // First, ensure we have permissions
       const hasPermission = await ensureNotificationPermissions();
       if (!hasPermission) {
-        console.warn("⚠️ PERMISSION DENIED — REMINDER NOT SCHEDULED");
+        logWarn("⚠️ PERMISSION DENIED — REMINDER NOT SCHEDULED");
         return;
       }
 
@@ -180,14 +181,14 @@ const PlannerSlots: React.FC<Props> = ({
       const startAtTime = startAt.getTime();
 
       if (isNaN(startAtTime)) {
-        console.warn("⚠️ INVALID DATE — REMINDER ABORTED");
+        logWarn("⚠️ INVALID DATE — REMINDER ABORTED");
         return;
       }
 
       // Check if the start time is in the past
       if (startAtTime < now) {
         const timeDiff = Math.round((now - startAtTime) / 1000 / 60); // minutes
-        console.warn(
+        logWarn(
           `⚠️ TIME INVALID — SCHEDULE IN PAST (${timeDiff} min ago). Start: ${startAt.toLocaleString()}, Now: ${new Date(now).toLocaleString()}`
         );
         // If it's less than 1 hour in the past, schedule for the next day instead
@@ -198,7 +199,7 @@ const PlannerSlots: React.FC<Props> = ({
           const nextDayStartAt = new Date(nextDayReadyAt.getTime() - (mins + bufferMinutes) * 60000);
           
           if (nextDayStartAt.getTime() > now) {
-            console.log(`⚠️ AUTO-RESCHEDULE — NEXT DAY: ${nextDayStartAt.toLocaleString()}`);
+            logDebug(`⚠️ AUTO-RESCHEDULE — NEXT DAY: ${nextDayStartAt.toLocaleString()}`);
             // Update readyAt and startAt to next day
             readyAt = nextDayReadyAt;
             startAt = nextDayStartAt;
@@ -222,7 +223,7 @@ const PlannerSlots: React.FC<Props> = ({
 
       // Verify the trigger date is valid
       if (startAt.getTime() <= now) {
-        console.warn(`⚠️ ALARM TIME TOO CLOSE — Scheduling ${Math.round((startAt.getTime() - now) / 1000)}s in the future`);
+        logWarn(`⚠️ ALARM TIME TOO CLOSE — Scheduling ${Math.round((startAt.getTime() - now) / 1000)}s in the future`);
       }
 
       const notificationId = await Notifications.scheduleNotificationAsync({
@@ -239,19 +240,19 @@ const PlannerSlots: React.FC<Props> = ({
       notificationIdsRef.current[slot.id] = notificationId;
       
       const timeUntil = Math.round((startAt.getTime() - Date.now()) / 1000 / 60); // minutes
-      console.log(`✅ REMINDER SCHEDULED — ${slotName}`);
-      console.log(`   Ready: ${hhmm(readyAt)} | Alarm: ${hhmm(startAt)} (${timeUntil} min from now)`);
-      console.log(`   Buffer: ${bufferMinutes} min${mins > 0 ? ` + ${mins} min recipe` : ''}`);
-      console.log(`   Notification ID: ${notificationId}`);
+      logDebug(`✅ REMINDER SCHEDULED — ${slotName}`);
+      logDebug(`   Ready: ${hhmm(readyAt)} | Alarm: ${hhmm(startAt)} (${timeUntil} min from now)`);
+      logDebug(`   Buffer: ${bufferMinutes} min${mins > 0 ? ` + ${mins} min recipe` : ''}`);
+      logDebug(`   Notification ID: ${notificationId}`);
       
       // Verify notification was actually scheduled (with delay for system to process)
       setTimeout(async () => {
         try {
           const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-          console.log(`   Total scheduled: ${scheduled.length}`);
+          logDebug(`   Total scheduled: ${scheduled.length}`);
           // Log first few to see structure
           if (scheduled.length > 0) {
-            console.log(`   Sample notification identifiers:`, scheduled.slice(0, 3).map(n => n.identifier));
+            logDebug(`   Sample notification identifiers:`, scheduled.slice(0, 3).map(n => n.identifier));
           }
           
           // Check both string and potential number formats
@@ -261,23 +262,23 @@ const PlannerSlots: React.FC<Props> = ({
             return id === notificationIdStr || id === notificationId;
           });
           
-          console.log(`   Verified in schedule: ${found ? 'YES ✅' : 'NO ⚠️'}`);
+          logDebug(`   Verified in schedule: ${found ? 'YES ✅' : 'NO ⚠️'}`);
           
           if (found) {
-            console.log(`   Trigger date: ${found.trigger && typeof found.trigger === 'object' && 'date' in found.trigger ? new Date(found.trigger.date as number).toLocaleString() : 'unknown'}`);
+            logDebug(`   Trigger date: ${found.trigger && typeof found.trigger === 'object' && 'date' in found.trigger ? new Date(found.trigger.date as number).toLocaleString() : 'unknown'}`);
           } else if (scheduled.length > 0) {
             // Debug: check if any match by content
             const byTitle = scheduled.find((n) => n.content?.title === title);
             if (byTitle) {
-              console.log(`   ⚠️ Found by title but ID mismatch: ${byTitle.identifier} vs ${notificationId}`);
+              logDebug(`   ⚠️ Found by title but ID mismatch: ${byTitle.identifier} vs ${notificationId}`);
             }
           }
         } catch (verifyError) {
-          console.warn(`⚠️ Could not verify notification:`, verifyError);
+          logWarn(`⚠️ Could not verify notification:`, verifyError);
         }
       }, 1000);
     } catch (error) {
-      console.error("⚠️ SCHEDULE FAILED — REMINDER NOT SET:", error);
+      logError("⚠️ SCHEDULE FAILED — REMINDER NOT SET:", error);
     }
   };
 
@@ -296,9 +297,9 @@ const PlannerSlots: React.FC<Props> = ({
         try {
           await Notifications.cancelScheduledNotificationAsync(notificationId);
           delete notificationIdsRef.current[id];
-          console.log(`✅ REMINDER CANCELLED — Slot ${id}`);
+          logDebug(`✅ REMINDER CANCELLED — Slot ${id}`);
         } catch (error) {
-          console.error("⚠️ CANCELLATION FAILED:", error);
+          logError("⚠️ CANCELLATION FAILED:", error);
         }
       }
     }

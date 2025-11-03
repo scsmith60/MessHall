@@ -41,6 +41,7 @@ import { dedupeNormalized } from "@/lib/parsers/types";
 import { extractTikTokTitleFromState } from "@/lib/extractTitle";
 
 import { COLORS } from "@/lib/theme";
+import { logDebug } from "@/lib/logger";
 
 // -------------- timings --------------
 const CAPTURE_DELAY_MS = 700;
@@ -1229,9 +1230,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
           try { return JSON.stringify(a); } catch { return String(a); }
         })
         .join(" ");
-      console.log("[IMPORT]", line);
+      logDebug("[IMPORT]", line);
     } catch (err) {
-      try { console.log("[IMPORT]", "dbg-failed", String(err)); } catch {}
+      try { logDebug("[IMPORT]", "dbg-failed", String(err)); } catch {}
     }
   }, []);
   const safeErr = useCallback((e: any): string => {
@@ -2430,7 +2431,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           }}
           onFound={async (uri) => {
             setTikTokShots((prev)=> (prev.includes(uri) ? prev : [...prev, uri]));
-            console.log("≡ƒô╕ snap onFound", uri);
+            logDebug("≡ƒô╕ snap onFound", uri);
             gotSomethingForRunRef.current = true;
             // Resolve any pending snap promise so autoSnapTikTok can continue.
             try {

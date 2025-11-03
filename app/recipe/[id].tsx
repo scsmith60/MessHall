@@ -657,7 +657,10 @@ export default function RecipeDetail() {
         const base: any = { list_id: listId, ingredient: name, quantity: null, checked: false, category: categorizeIngredient(name) };
         const ins = await supabase.from('shopping_list_items').insert(base);
         // @ts-ignore
-        if (ins.error && ins.error.code !== '42703') console.warn('insert error', ins.error.message);
+        if (ins.error && ins.error.code !== '42703') {
+          // Only log in dev - this is a known error for missing columns
+          if (__DEV__) console.warn('insert error', ins.error.message);
+        }
       }
     } else {
       await supabase.from('shopping_list_items').delete().eq('list_id', listId).eq('ingredient', name);

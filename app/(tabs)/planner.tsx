@@ -35,6 +35,7 @@ import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context"
 
 import { supabase } from "@/lib/supabase";
 import PlannerSlots from "@/components/PlannerSlots";
+import { logDebug, logError, logWarn } from "@/lib/logger";
 
 dayjs.extend(isoWeek);
 
@@ -223,7 +224,7 @@ export default function PlannerScreen() {
       if (!groups[key]) groups[key] = [];
       groups[key].push(m);
     }
-    console.log(`📦 Grouped meals:`, Object.keys(groups).map(k => `${k}:${groups[k].length}`).join(', '));
+    logDebug(`📦 Grouped meals:`, Object.keys(groups).map(k => `${k}:${groups[k].length}`).join(', '));
     return groups;
   }, [dayMealsRaw, mealsRefreshKey]);
 
@@ -263,14 +264,14 @@ export default function PlannerScreen() {
         byDate[key].push(item);
         // Debug log for the specific meal we're tracking
         if (item.id && item.meal_slot) {
-          console.log(`  Meal ${item.id.slice(0, 8)}... slot: ${item.meal_slot}`);
+          logDebug(`  Meal ${item.id.slice(0, 8)}... slot: ${item.meal_slot}`);
         }
       }
       setWeekMeals(byDate);
       const selectedMeals = byDate[selectedDate] ?? [];
-      console.log(`📋 Loaded meals for week, selected date has ${selectedMeals.length} meals`);
+      logDebug(`📋 Loaded meals for week, selected date has ${selectedMeals.length} meals`);
       selectedMeals.forEach(m => {
-        console.log(`  - ${m.recipe?.title || 'Untitled'} in ${m.meal_slot || 'dinner'}`);
+        logDebug(`  - ${m.recipe?.title || 'Untitled'} in ${m.meal_slot || 'dinner'}`);
       });
     } catch (e: any) {
       // This one still uses Alert because it needs user action (DB migration)
@@ -475,7 +476,7 @@ export default function PlannerScreen() {
   // Change slot for a meal (and give it the next sort_index in that slot)
   const updateMealSlot = async (meal: PlannerMeal, newSlot: string) => {
     try {
-      console.log(`🔄 Updating meal ${meal.id} from ${meal.meal_slot} to ${newSlot}`);
+      logDebug(`🔄 Updating meal ${meal.id} from ${meal.meal_slot} to ${newSlot}`);
       
       // First verify the meal exists and we can read it
       const { data: existing, error: checkError } = await supabase
@@ -485,19 +486,19 @@ export default function PlannerScreen() {
         .maybeSingle();
       
       if (checkError) {
-        console.error(`❌ Error checking meal existence:`, checkError);
+        logError(`❌ Error checking meal existence:`, checkError);
         throw checkError;
       }
       
       if (!existing) {
-        console.error(`❌ Meal ${meal.id} not found in database`);
+        logError(`❌ Meal ${meal.id} not found in database`);
         throw new Error("Meal not found");
       }
       
-      console.log(`✅ Meal exists: current slot is ${existing.meal_slot}`);
+      logDebug(`✅ Meal exists: current slot is ${existing.meal_slot}`);
       
       const nextIdx = await getNextSortIndex(meal.meal_date, newSlot);
-      console.log(`📝 Setting sort_index to ${nextIdx} for ${newSlot}`);
+      logDebug(`📝 Setting sort_index to ${nextIdx} for ${newSlot}`);
       
       // Check if meal has user_id column and verify ownership
       // First try to see what columns the meal has
@@ -508,14 +509,14 @@ export default function PlannerScreen() {
         .maybeSingle();
       
       if (ownerCheckError) {
-        console.warn(`⚠️ Could not check meal ownership:`, ownerCheckError);
+        logWarn(`⚠️ Could not check meal ownership:`, ownerCheckError);
       } else if (mealWithOwner) {
         const { data: { user } } = await supabase.auth.getUser();
         if (mealWithOwner.user_id && mealWithOwner.user_id !== user?.id) {
-          console.error(`❌ User ${user?.id} does not own meal (owned by ${mealWithOwner.user_id})`);
+          logError(`❌ User ${user?.id} does not own meal (owned by ${mealWithOwner.user_id})`);
           throw new Error("You don't have permission to update this meal");
         }
-        console.log(`✅ Ownership verified (or no user_id column)`);
+        logDebug(`✅ Ownership verified (or no user_id column)`);
       }
       
       // Update the database
@@ -526,8 +527,8 @@ export default function PlannerScreen() {
         .select("meal_slot, id");
       
       if (error) {
-        console.error(`❌ Database update error:`, error);
-        console.error(`   Error details:`, JSON.stringify(error, null, 2));
+        logError(`❌ Database update error:`, error);
+        logError(`   Error details:`, JSON.stringify(error, null, 2));
         throw error;
       }
       
@@ -535,15 +536,15 @@ export default function PlannerScreen() {
       if (!updateData || updateData.length === 0) {
         // Try to get current user to check permissions
         const { data: { user } } = await supabase.auth.getUser();
-        console.error(`❌ Update returned 0 rows`);
-        console.error(`   Meal ID: ${meal.id}`);
-        console.error(`   User ID: ${user?.id}`);
-        console.error(`   Meal owner (if exists): ${mealWithOwner?.user_id || 'no user_id column'}`);
-        console.error(`   Current meal_slot in DB: ${existing.meal_slot}`);
-        console.error(`   Attempting to set: ${newSlot}`);
+        logError(`❌ Update returned 0 rows`);
+        logError(`   Meal ID: ${meal.id}`);
+        logError(`   User ID: ${user?.id}`);
+        logError(`   Meal owner (if exists): ${mealWithOwner?.user_id || 'no user_id column'}`);
+        logError(`   Current meal_slot in DB: ${existing.meal_slot}`);
+        logError(`   Attempting to set: ${newSlot}`);
         
         // Try a workaround: delete and re-insert (if RLS allows)
-        console.log(`🔄 Attempting workaround: delete and re-insert...`);
+        logDebug(`🔄 Attempting workaround: delete and re-insert...`);
         try {
           const { error: delError } = await supabase
             .from("planner_meals")
@@ -551,7 +552,7 @@ export default function PlannerScreen() {
             .eq("id", meal.id);
           
           if (delError) {
-            console.error(`❌ Delete also failed:`, delError);
+            logError(`❌ Delete also failed:`, delError);
             throw new Error("Update failed: RLS policy prevents update. Database administrator needs to fix RLS policies for planner_meals table.");
           }
           
@@ -577,11 +578,11 @@ export default function PlannerScreen() {
             .single();
           
           if (insertError || !insertData) {
-            console.error(`❌ Re-insert failed:`, insertError);
+            logError(`❌ Re-insert failed:`, insertError);
             throw new Error("Update failed: Could not re-insert meal. Please try again.");
           }
           
-          console.log(`✅ Workaround succeeded: meal_slot is now ${insertData.meal_slot}`);
+          logDebug(`✅ Workaround succeeded: meal_slot is now ${insertData.meal_slot}`);
           
           // Force reload
           await loadMeals();
@@ -591,12 +592,12 @@ export default function PlannerScreen() {
           }, 150);
           return; // Exit early since we handled it
         } catch (workaroundError: any) {
-          console.error(`❌ Workaround also failed:`, workaroundError);
+          logError(`❌ Workaround also failed:`, workaroundError);
           throw new Error("Update failed: No rows affected. Check RLS policies.");
         }
       }
       
-      console.log(`✅ Update response: meal_slot is now ${updateData[0]?.meal_slot}`);
+      logDebug(`✅ Update response: meal_slot is now ${updateData[0]?.meal_slot}`);
       
       // Wait a moment for database to propagate
       await new Promise(resolve => setTimeout(resolve, 200));
@@ -609,11 +610,11 @@ export default function PlannerScreen() {
         .maybeSingle();
       
       if (verifyError) {
-        console.error(`❌ Verification error:`, verifyError);
+        logError(`❌ Verification error:`, verifyError);
       } else if (verify) {
-        console.log(`✅ Verified: meal_slot is now ${verify?.meal_slot}`);
+        logDebug(`✅ Verified: meal_slot is now ${verify?.meal_slot}`);
       } else {
-        console.warn(`⚠️ Verification returned no data - meal might have been deleted`);
+        logWarn(`⚠️ Verification returned no data - meal might have been deleted`);
       }
       
       // Force reload to update the UI immediately
@@ -627,7 +628,7 @@ export default function PlannerScreen() {
         toast.show(`Moved to ${newSlot}.`, "success");
       }, 150);
     } catch (e: any) {
-      console.error(`❌ Failed to update meal slot:`, e);
+      logError(`❌ Failed to update meal slot:`, e);
       const message = e?.message || "Move failed";
       toast.show(message.includes("RLS") ? "Permission denied - check database policies" : message, "error", 2400);
     }

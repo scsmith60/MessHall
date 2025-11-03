@@ -5,6 +5,7 @@ import React, { useState, useRef } from "react";
 import { View, StyleSheet, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 import { COLORS } from "../lib/theme";
+import { logError } from "../lib/logger";
 
 type Props = {
   hlsUrl: string;
@@ -70,7 +71,7 @@ export default function VideoStreamCloudflare({ hlsUrl, isHost = false, onError 
 
       hls.on(Hls.Events.MANIFEST_PARSED, function() {
         video.play().catch(function(err) {
-          console.error('Play error:', err);
+          logError('Play error:', err);
           errorDiv.textContent = 'Failed to play video. Please try again.';
           errorDiv.style.display = 'block';
         });
@@ -81,15 +82,15 @@ export default function VideoStreamCloudflare({ hlsUrl, isHost = false, onError 
         if (data.fatal) {
           switch(data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              console.error('Fatal network error, trying to recover...');
+              logError('Fatal network error, trying to recover...');
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
-              console.error('Fatal media error, trying to recover...');
+              logError('Fatal media error, trying to recover...');
               hls.recoverMediaError();
               break;
             default:
-              console.error('Fatal error, destroying player');
+              logError('Fatal error, destroying player');
               hls.destroy();
               errorDiv.textContent = 'Failed to load stream. The host may not be streaming yet.';
               errorDiv.style.display = 'block';
@@ -104,7 +105,7 @@ export default function VideoStreamCloudflare({ hlsUrl, isHost = false, onError 
       });
 
       video.addEventListener('error', function(e) {
-        console.error('Video error:', e);
+        logError('Video error:', e);
         errorDiv.textContent = 'Failed to load video stream.';
         errorDiv.style.display = 'block';
         setLoading(false);
@@ -116,7 +117,7 @@ export default function VideoStreamCloudflare({ hlsUrl, isHost = false, onError 
         setLoading(false);
       });
       video.addEventListener('error', function(e) {
-        console.error('Video error:', e);
+        logError('Video error:', e);
         errorDiv.textContent = 'Failed to load video stream.';
         errorDiv.style.display = 'block';
         setLoading(false);
@@ -159,7 +160,7 @@ export default function VideoStreamCloudflare({ hlsUrl, isHost = false, onError 
 
   const handleError = (syntheticEvent: any) => {
     const { nativeEvent } = syntheticEvent;
-    console.error("WebView error:", nativeEvent);
+    logError("WebView error:", nativeEvent);
     setLoading(false);
     onError?.(nativeEvent?.description || "Failed to load Cloudflare Stream");
   };

@@ -6,12 +6,13 @@
 import { useEffect } from "react";
 import { Text, View } from "react-native";
 import { router, useGlobalSearchParams } from "expo-router";
+import { logDebug } from "@/lib/logger";
 
 export default function NotFound() {
   const params = useGlobalSearchParams();
 
-  // helpful logs so we can see the offender once in Metro
-  console.log("[+not-found] params:", params);
+  // helpful logs so we can see the offender once in Metro (dev only)
+  logDebug("[+not-found] params:", params);
 
   useEffect(() => {
     // groups are invisible → Home lives at "/"

@@ -5,6 +5,7 @@ import React, { useRef } from "react";
 import { View, StyleSheet, ActivityIndicator, Text } from "react-native";
 import { WebView } from "react-native-webview";
 import { COLORS } from "../lib/theme";
+import { logError } from "../lib/logger";
 
 type Props = {
   roomUrl: string;
@@ -77,13 +78,13 @@ export default function VideoStream({ roomUrl, token, isHost = false, onError }:
         onError={(syntheticEvent) => {
           const { nativeEvent } = syntheticEvent;
           const error = `WebView error: ${nativeEvent.code} - ${nativeEvent.description}`;
-          console.error(error);
+          logError(error);
           onError?.(error);
         }}
         onHttpError={(syntheticEvent) => {
           const { nativeEvent } = syntheticEvent;
           const error = `HTTP error: ${nativeEvent.statusCode}`;
-          console.error(error);
+          logError(error);
           onError?.(error);
         }}
       />

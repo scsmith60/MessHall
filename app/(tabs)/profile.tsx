@@ -40,6 +40,7 @@ import { useAuth } from "../../lib/auth";
 import { getConnectedProviders } from "@/lib/cart/providers";
 import { COLORS } from "@/lib/theme";
 import ThemedNotice from "@/components/ui/ThemedNotice";
+import { logDebug } from "@/lib/logger";
 
 type ProfileRow = {
   id: string;
@@ -222,7 +223,7 @@ export default function Profile() {
         if (e?.message?.includes("does not exist") || e?.code === "PGRST116") {
           // Column doesn't exist - this is expected, just continue
         } else {
-          console.log("Optional preference fields not available:", e?.message || e);
+          logDebug("Optional preference fields not available:", e?.message || e);
         }
       }
       
@@ -448,10 +449,10 @@ export default function Profile() {
   // =============== auth helper (unchanged) ===============
   async function requireSession() {
     const { data, error } = await supabase.auth.getSession();
-    if (error) console.log("getSession error:", error.message);
+    if (error) logDebug("getSession error:", error.message);
     if (data?.session) return data.session;
     const { data: userData, error: userErr } = await supabase.auth.getUser();
-    if (userErr) console.log("getUser error:", userErr.message);
+    if (userErr) logDebug("getUser error:", userErr.message);
     return userData?.user ? (await supabase.auth.getSession()).data.session : null;
   }
 
@@ -483,7 +484,7 @@ export default function Profile() {
       if (!publicUrl) throw new Error("Could not get public URL for uploaded avatar.");
       return publicUrl;
     } catch (e: any) {
-      console.log("uploadAvatarIfNeeded error:", e?.message || e);
+      logDebug("uploadAvatarIfNeeded error:", e?.message || e);
       setNotice({ visible: true, title: "Upload Failed", message: e?.message ?? String(e) });
       return null;
     } finally { setUploading(false); }
@@ -505,7 +506,7 @@ export default function Profile() {
       setEditAvatar("");
       setNotice({ visible: true, title: "Saved", message: "Profile updated." });
     } catch (e: any) {
-      console.log("saveProfileFields error:", e?.message || e);
+      logDebug("saveProfileFields error:", e?.message || e);
       setNotice({ visible: true, title: "Could not save", message: e?.message ?? String(e) });
     }
   }
@@ -544,7 +545,7 @@ export default function Profile() {
       if (error) throw error;
       setSavedRecipes((prev) => prev.filter((r) => r.id !== recipeId));
     } catch (e: any) {
-      console.log("handleUnsave error:", e?.message || e);
+      logDebug("handleUnsave error:", e?.message || e);
       setNotice({ visible: true, title: "Oops", message: e?.message ?? "Could not remove from saved." });
     }
   }
