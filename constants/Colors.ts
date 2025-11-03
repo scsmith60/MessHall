@@ -8,12 +8,12 @@ const palette = {
     text: '#E6F7F6',
     subtext: '#A9C7C6',
     muted: '#5E8583',
-    background: '#071F20', // root background
-    surface: '#0A2A2B',
-    card: '#0F3A3B',
-    elevated: '#123C3D',
+    background: '#071F1C', // root background
+    surface: '#0A2A26',
+    card: '#0F3A33',
+    elevated: '#123C36',
     border: 'rgba(255,255,255,0.06)',
-    overlay: 'rgba(7,31,32,0.6)',
+    overlay: 'rgba(7,31,28,0.6)',
     tint: tintColorDark,
     accent: '#1DB954',
     accentActive: '#17A84A',

@@ -4,7 +4,7 @@
 // https://www.agora.io/en/pricing/
 
 import React, { useEffect, useRef, useState } from "react";
-import { View, StyleSheet, ActivityIndicator, Text, Platform } from "react-native";
+import { View, StyleSheet, ActivityIndicator, Text, Platform, TouchableOpacity } from "react-native";
 import RtcEngine, {
   ChannelProfileType,
   ClientRoleType,
@@ -24,6 +24,8 @@ type Props = {
   onReady?: () => void;
   onUserJoined?: (uid: number) => void;
   onUserOffline?: (uid: number) => void;
+  showControls?: boolean; // Show mute/camera controls
+  viewerCount?: number; // Optional: show live viewer count
 };
 
 export default function VideoStreamAgora({
@@ -37,9 +39,14 @@ export default function VideoStreamAgora({
   onReady,
   onUserJoined,
   onUserOffline,
+  showControls = true,
+  viewerCount,
 }: Props) {
   const [loading, setLoading] = useState(true);
   const [remoteUids, setRemoteUids] = useState<number[]>([]);
+  const [muted, setMuted] = useState(false);
+  const [videoEnabled, setVideoEnabled] = useState(true);
+  const [connectionQuality, setConnectionQuality] = useState<"excellent" | "good" | "poor" | "unknown">("unknown");
   const engineRef = useRef<any>(null);
   const insets = useSafeAreaInsets();
 
@@ -139,35 +146,140 @@ export default function VideoStreamAgora({
         </View>
       )}
 
-      {/* Local video view (host only) */}
-      {isHost && engineRef.current && (
-        <View style={styles.localVideoContainer}>
-          <RtcSurfaceView
-            style={styles.localVideo}
-            canvas={{
-              uid: 0, // 0 = local user
-            }}
-          />
+      {/* Live Viewer Count Overlay (Top Right) */}
+      {(viewerCount !== undefined || remoteUids.length > 0) && (
+        <View style={[styles.viewerCountBadge, { top: insets.top + 60, right: 16 }]}>
+          <Text style={styles.viewerIcon}>👁️</Text>
+          <Text style={styles.viewerCountText}>
+            {viewerCount !== undefined ? viewerCount : remoteUids.length}
+          </Text>
         </View>
       )}
 
-      {/* Remote video views */}
-      <View style={styles.remoteVideos}>
-        {remoteUids.map((remoteUid) => (
-          <View key={remoteUid} style={styles.remoteVideoContainer}>
-            <RtcSurfaceView
-              style={styles.remoteVideo}
-              canvas={{
-                uid: remoteUid,
-              }}
-            />
-          </View>
-        ))}
-      </View>
+      {/* Connection Quality Indicator (Top Left) */}
+      {connectionQuality !== "unknown" && (
+        <View style={[
+          styles.qualityBadge,
+          { top: insets.top + 60 },
+          connectionQuality === "excellent" ? styles.qualityExcellent :
+          connectionQuality === "good" ? styles.qualityGood :
+          styles.qualityPoor
+        ]}>
+          <View style={[
+            styles.qualityDot,
+            connectionQuality === "excellent" ? styles.qualityDotExcellent :
+            connectionQuality === "good" ? styles.qualityDotGood :
+            styles.qualityDotPoor
+          ]} />
+          <Text style={styles.qualityText}>
+            {connectionQuality === "excellent" ? "HD" : connectionQuality === "good" ? "Good" : "Poor"}
+          </Text>
+        </View>
+      )}
 
-      {!loading && remoteUids.length === 0 && !isHost && (
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyText}>Waiting for host to start...</Text>
+      {/* Host view: Show host's own video large in center */}
+      {isHost && engineRef.current && videoEnabled ? (
+        <View style={styles.hostMainVideo}>
+          <RtcSurfaceView
+            style={styles.mainVideo}
+            canvas={{
+              uid: 0, // 0 = local user (host's own video)
+            }}
+          />
+        </View>
+      ) : isHost && !videoEnabled ? (
+        <View style={styles.hostMainVideo}>
+          <View style={styles.videoDisabledPlaceholder}>
+            <Text style={styles.videoDisabledText}>📵 Camera Off</Text>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Remote video views (for viewers - show host's video large) */}
+      {!isHost && (
+        <View style={styles.remoteVideos}>
+          {remoteUids.length > 0 ? (
+            remoteUids.map((remoteUid) => (
+              <View key={remoteUid} style={styles.remoteVideoContainer}>
+                <RtcSurfaceView
+                  style={styles.remoteVideo}
+                  canvas={{
+                    uid: remoteUid,
+                  }}
+                />
+              </View>
+            ))
+          ) : (
+            <View style={styles.waitingForHost}>
+              <Text style={styles.waitingText}>Waiting for host to start video...</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Video/Audio Controls for Host */}
+      {showControls && isHost && engineRef.current && !loading && (
+        <View style={styles.controlsContainer}>
+          <TouchableOpacity
+            style={[styles.controlButton, muted && styles.controlButtonActive]}
+            onPress={async () => {
+              try {
+                if (muted) {
+                  await engineRef.current.muteLocalAudioStream(false);
+                  setMuted(false);
+                  console.log("[Agora] Microphone unmuted");
+                } else {
+                  await engineRef.current.muteLocalAudioStream(true);
+                  setMuted(true);
+                  console.log("[Agora] Microphone muted");
+                }
+              } catch (e) {
+                console.error("[Agora] Error toggling audio:", e);
+              }
+            }}
+          >
+            <Text style={styles.controlIcon}>{muted ? "🔇" : "🎤"}</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[styles.controlButton, !videoEnabled && styles.controlButtonActive]}
+            onPress={async () => {
+              try {
+                if (videoEnabled) {
+                  // Actually disable the camera, not just mute
+                  await engineRef.current.enableLocalVideo(false);
+                  setVideoEnabled(false);
+                  console.log("[Agora] Camera disabled");
+                } else {
+                  // Re-enable the camera
+                  await engineRef.current.enableLocalVideo(true);
+                  setVideoEnabled(true);
+                  console.log("[Agora] Camera enabled");
+                }
+              } catch (e) {
+                console.error("[Agora] Error toggling video:", e);
+              }
+            }}
+          >
+            <Text style={styles.controlIcon}>{videoEnabled ? "📹" : "📵"}</Text>
+          </TouchableOpacity>
+
+          {/* Switch Camera Button (only when video is enabled) */}
+          {videoEnabled && (
+            <TouchableOpacity
+              style={styles.controlButton}
+              onPress={async () => {
+                try {
+                  await engineRef.current.switchCamera();
+                  console.log("[Agora] Camera switched");
+                } catch (e) {
+                  console.error("[Agora] Error switching camera:", e);
+                }
+              }}
+            >
+              <Text style={styles.controlIcon}>🔄</Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
     </View>
@@ -195,20 +307,36 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
   },
-  localVideoContainer: {
-    position: "absolute",
-    top: 16,
-    right: 16,
-    width: 120,
-    height: 160,
-    borderRadius: 8,
-    overflow: "hidden",
+  hostMainVideo: {
+    flex: 1,
+    width: "100%",
     backgroundColor: COLORS.card || "#000",
-    zIndex: 100,
   },
-  localVideo: {
+  mainVideo: {
     width: "100%",
     height: "100%",
+  },
+  videoDisabledPlaceholder: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: COLORS.card || "#000",
+  },
+  videoDisabledText: {
+    color: COLORS.muted || "#999",
+    fontSize: 24,
+    marginTop: 12,
+  },
+  waitingForHost: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: COLORS.card || "#000",
+  },
+  waitingText: {
+    color: COLORS.muted || "#999",
+    fontSize: 16,
+    textAlign: "center",
   },
   remoteVideos: {
     flex: 1,
@@ -235,5 +363,102 @@ const styles = StyleSheet.create({
   emptyText: {
     color: COLORS.muted || "#999",
     fontSize: 16,
+  },
+  controlsContainer: {
+    position: "absolute",
+    bottom: 20,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 16,
+    zIndex: 200,
+    paddingHorizontal: 20,
+  },
+  controlButton: {
+    backgroundColor: "rgba(0, 0, 0, 0.75)",
+    borderRadius: 30,
+    width: 56,
+    height: 56,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.4)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  controlButtonActive: {
+    backgroundColor: "rgba(244, 67, 54, 0.8)",
+    borderColor: "rgba(255, 255, 255, 0.8)",
+  },
+  controlIcon: {
+    fontSize: 24,
+  },
+  viewerCountBadge: {
+    position: "absolute",
+    top: 16,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    zIndex: 150,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.2)",
+  },
+  viewerIcon: {
+    fontSize: 16,
+    marginRight: 6,
+  },
+  viewerCountText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  qualityBadge: {
+    position: "absolute",
+    top: 16,
+    left: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    zIndex: 150,
+    gap: 6,
+  },
+  qualityExcellent: {
+    borderColor: "rgba(76, 175, 80, 0.6)",
+  },
+  qualityGood: {
+    borderColor: "rgba(255, 193, 7, 0.6)",
+  },
+  qualityPoor: {
+    borderColor: "rgba(244, 67, 54, 0.6)",
+  },
+  qualityDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  qualityDotExcellent: {
+    backgroundColor: "#4CAF50",
+  },
+  qualityDotGood: {
+    backgroundColor: "#FFC107",
+  },
+  qualityDotPoor: {
+    backgroundColor: "#F44336",
+  },
+  qualityText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
   },
 });

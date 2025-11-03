@@ -32,6 +32,7 @@ import { success, tap, warn } from "../../lib/haptics";
 import ThemedNotice from "../../components/ui/ThemedNotice";
 import ThemedConfirm from "../../components/ui/ThemedConfirm";
 import { useStripe } from "@stripe/stripe-react-native";
+import Constants from "expo-constants";
 
 type Participant = {
   id: string;
@@ -167,13 +168,21 @@ export default function SessionDetailScreen() {
     }
   }, [userId]);
 
-  // Load Agora App ID from environment
+  // Load Agora App ID from environment or config
   useEffect(() => {
-    const envAppId = process.env.EXPO_PUBLIC_AGORA_APP_ID;
+    // Try process.env first (dev), then Constants.expoConfig.extra (production builds)
+    let envAppId = process.env.EXPO_PUBLIC_AGORA_APP_ID;
+    
+    // For production builds, read from Constants
+    if (!envAppId) {
+      envAppId = Constants.expoConfig?.extra?.agoraAppId;
+    }
+    
     if (envAppId) {
       setAgoraAppId(envAppId);
+      console.log("[Agora] App ID loaded");
     } else {
-      console.warn("[Agora] EXPO_PUBLIC_AGORA_APP_ID not found. Add it to your .env file.");
+      console.warn("[Agora] Agora App ID not found. Add EXPO_PUBLIC_AGORA_APP_ID to your .env file and rebuild.");
     }
   }, []);
 
@@ -706,8 +715,54 @@ export default function SessionDetailScreen() {
           table: "enlisted_club_reactions",
           filter: `session_id=eq.${id}`,
         },
-        () => {
-          // Reactions are recorded but we don't show floating animations anymore
+        (payload: any) => {
+          // Show floating emoji animation when other users send reactions
+          if (payload.new && payload.new.user_id !== userId) {
+            const emoji = payload.new.emoji;
+            const emojiId = `emoji_${floatingEmojiIdRef.current++}`;
+            const startX = Dimensions.get("window").width / 2;
+            const startY = Dimensions.get("window").height * 0.7;
+            
+            const translateXAnim = new Animated.Value(0);
+            const translateYAnim = new Animated.Value(0);
+            const opacityAnim = new Animated.Value(1);
+            const staticX = startX;
+            const staticY = startY;
+            const randomOffset = (Math.random() - 0.5) * 100;
+
+            setFloatingEmojis((prev) => [...prev, { 
+              id: emojiId, 
+              emoji, 
+              x: translateXAnim, 
+              y: translateYAnim, 
+              opacity: opacityAnim,
+              staticX,
+              staticY,
+            }]);
+
+            Animated.parallel([
+              Animated.timing(translateYAnim, {
+                toValue: -200,
+                duration: 2000,
+                useNativeDriver: true,
+              }),
+              Animated.timing(translateXAnim, {
+                toValue: randomOffset,
+                duration: 2000,
+                useNativeDriver: true,
+              }),
+              Animated.sequence([
+                Animated.delay(1500),
+                Animated.timing(opacityAnim, {
+                  toValue: 0,
+                  duration: 500,
+                  useNativeDriver: true,
+                }),
+              ]),
+            ]).start(() => {
+              setFloatingEmojis((prev) => prev.filter((e) => e.id !== emojiId));
+            });
+          }
         }
       )
       .subscribe((status) => {
@@ -1293,6 +1348,7 @@ export default function SessionDetailScreen() {
                 token={videoToken || undefined}
                 isHost={isHost}
                 displayName={userProfile?.username || undefined}
+                viewerCount={participants.length}
                 onError={(error: string) => {
                   setNotice({
                     visible: true,
