@@ -11,6 +11,15 @@ async function tryPlayWithExpoAV(source: any): Promise<boolean> {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const AV = require("expo-av");
     const { Audio } = AV as typeof import("expo-av");
+    // make sure sound plays even if device is on silent (Android)
+    try {
+      await Audio.setAudioModeAsync({
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        interruptionModeAndroid: 1,
+        shouldDuckAndroid: true,
+      } as any);
+    } catch {}
     const sound = new Audio.Sound();
     await sound.loadAsync(source, { shouldPlay: true, volume: 1.0 });
     sound.setOnPlaybackStatusUpdate((st: any) => {
@@ -44,6 +53,54 @@ export async function playDonutEasterEgg(): Promise<void> {
 
   // 3) fallback: say the line via TTS so the moment still lands
   try { speak("What have we got here?"); } catch {}
+}
+
+
+// New easter eggs
+export async function playLiverEasterEgg(): Promise<void> {
+  // Try local asset → env URL → TTS
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const local = require("../assets/sounds/ate-his-liver.mp3");
+    const ok = await tryPlayWithExpoAV(local);
+    if (ok) return;
+  } catch {}
+  const url = process.env.EXPO_PUBLIC_LIVER_SFX_URL;
+  if (url && /^https?:\/\//i.test(url)) {
+    const ok = await tryPlayWithExpoAV({ uri: url });
+    if (ok) return;
+  }
+  try { speak("Ate his liver"); } catch {}
+}
+
+export async function playRockyMountainOystersEasterEgg(): Promise<void> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const local = require("../assets/sounds/do-you-suck-dicks.mp3");
+    const ok = await tryPlayWithExpoAV(local);
+    if (ok) return;
+  } catch {}
+  const url = process.env.EXPO_PUBLIC_OYSTERS_SFX_URL;
+  if (url && /^https?:\/\//i.test(url)) {
+    const ok = await tryPlayWithExpoAV({ uri: url });
+    if (ok) return;
+  }
+  try { speak("Do you suck dicks"); } catch {}
+}
+
+export async function playLambEasterEgg(): Promise<void> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const local = require("../assets/sounds/what-became-of-your-lamb.mp3");
+    const ok = await tryPlayWithExpoAV(local);
+    if (ok) return;
+  } catch {}
+  const url = process.env.EXPO_PUBLIC_LAMB_SFX_URL;
+  if (url && /^https?:\/\//i.test(url)) {
+    const ok = await tryPlayWithExpoAV({ uri: url });
+    if (ok) return;
+  }
+  try { speak("What became of your lamb"); } catch {}
 }
 
 

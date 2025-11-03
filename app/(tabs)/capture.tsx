@@ -12,7 +12,7 @@ import {
 import { router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import ThemedNotice from "../../components/ui/ThemedNotice";
-import { playDonutEasterEgg } from "@/lib/sounds";
+import { playDonutEasterEgg, playLiverEasterEgg, playRockyMountainOystersEasterEgg } from "@/lib/sounds";
 import { Swipeable, RectButton } from "react-native-gesture-handler";
 import { useFocusEffect } from "@react-navigation/native";
 import WebView from "react-native-webview";
@@ -2247,10 +2247,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
       }
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      // fun easter egg: donuts/doughnuts trigger the drill sergeant clip
+      // fun easter eggs: simple keyword checks
       const signal = `${title} \n ${ingredients.join("\n")}`.toLowerCase();
-      if (/\b(donut|doughnut|donut\s|doughnut\s)/i.test(signal)) {
+      if (/\b(donut|doughnut)\b/i.test(signal)) {
         playDonutEasterEgg().catch(() => {});
+      }
+      if (/\b(liver|fava\s*bean|fava\s*beans)\b/i.test(signal)) {
+        playLiverEasterEgg().catch(() => {});
+      }
+      if (/\b(rocky\s*mountain\s*oysters?)\b/i.test(signal)) {
+        playRockyMountainOystersEasterEgg().catch(() => {});
       }
       setOkModalVisible(true);
       router.replace("/(tabs)/home");

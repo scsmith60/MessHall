@@ -21,7 +21,7 @@ import { dataAPI } from '../../lib/data';
 import { supabase } from '@/lib/supabase';
 import RecipeComments from '../../components/RecipeComments';
 import { IngredientPicker } from '@/components/IngredientPicker';
-import { playDonutEasterEgg } from '@/lib/sounds';
+import { playDonutEasterEgg, playLambEasterEgg } from '@/lib/sounds';
 
 // Calories pill
 import { useRecipeCalories } from '@/lib/nutrition';
@@ -519,10 +519,13 @@ export default function RecipeDetail() {
   // fun easter egg on open: if title or ingredients mention donuts
   useEffect(() => {
     try {
-      const hay = `${model?.title || ''}\n${ingredients.join('\n')}`.toLowerCase();
-      if (/\b(donut|doughnut)\b/.test(hay)) {
+    const hay = `${model?.title || ''}\n${ingredients.join('\n')}`.toLowerCase();
+    if (/\b(donut|doughnut)\b/.test(hay)) {
         playDonutEasterEgg().catch(() => {});
       }
+    if (/\b(lamb)\b/.test(hay)) {
+      playLambEasterEgg().catch(() => {});
+    }
     } catch {}
   }, [model?.title, ingredients.join('|')]);
 

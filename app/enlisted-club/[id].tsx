@@ -171,19 +171,35 @@ export default function SessionDetailScreen() {
 
   // Load Agora App ID from environment or config
   useEffect(() => {
-    // Try process.env first (dev), then Constants.expoConfig.extra (production builds)
+    // Try process.env first (dev)
     let envAppId = process.env.EXPO_PUBLIC_AGORA_APP_ID;
     
-    // For production builds, read from Constants
+    // For production builds, try multiple Constants paths
     if (!envAppId) {
-      envAppId = Constants.expoConfig?.extra?.agoraAppId;
+      // Try Constants.expoConfig.extra (Expo SDK 49+)
+      envAppId = Constants.expoConfig?.extra?.agoraAppId as string | undefined;
+      
+      // Fallback to Constants.manifest.extra (older/managed workflow)
+      if (!envAppId) {
+        envAppId = (Constants as any).manifest?.extra?.agoraAppId as string | undefined;
+      }
+      
+      // Fallback to Constants.manifest2.extra (Expo SDK 50+)
+      if (!envAppId) {
+        envAppId = (Constants as any).manifest2?.extra?.expoConfig?.extra?.agoraAppId as string | undefined;
+      }
     }
     
     if (envAppId) {
       setAgoraAppId(envAppId);
-      logDebug("[Agora] App ID loaded");
+      logDebug("[Agora] App ID loaded:", envAppId.substring(0, 8) + "...");
     } else {
-      logWarn("[Agora] Agora App ID not found. Add EXPO_PUBLIC_AGORA_APP_ID to your .env file and rebuild.");
+      logWarn("[Agora] Agora App ID not found. Checking Constants...");
+      logDebug("[Agora] Constants.expoConfig exists:", !!Constants.expoConfig);
+      logDebug("[Agora] Constants.expoConfig.extra exists:", !!Constants.expoConfig?.extra);
+      logDebug("[Agora] Constants.expoConfig.extra.agoraAppId:", Constants.expoConfig?.extra?.agoraAppId);
+      logDebug("[Agora] Constants.manifest exists:", !!(Constants as any).manifest);
+      logWarn("[Agora] Please ensure EXPO_PUBLIC_AGORA_APP_ID is in your .env and rebuild with: eas build --profile production");
     }
   }, []);
 

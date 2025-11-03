@@ -46,7 +46,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL,
     supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
-    agoraAppId: process.env.EXPO_PUBLIC_AGORA_APP_ID,
+    agoraAppId: process.env.EXPO_PUBLIC_AGORA_APP_ID || process.env.AGORA_APP_ID,
     eas: { projectId: '521a656b-0e37-4ae1-aae2-f4fd552a48b7' },
   },
 
