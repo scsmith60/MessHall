@@ -35,7 +35,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Line, Circle } from "react-native-svg";
 import InstagramDomScraper from "@/components/InstagramDomScraper";
-import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata } from "@/lib/recipeSiteHelpers";
+import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata, discoverRecipeSiteIfNeeded } from "@/lib/recipeSiteHelpers";
 import { parseSocialCaption } from "@/lib/parsers/instagram";
 import { dedupeNormalized } from "@/lib/parsers/types";
 import { extractTikTokTitleFromState } from "@/lib/extractTitle";
@@ -1508,6 +1508,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
         const jsonLd = extractRecipeFromJsonLd(html);
         if (jsonLd) {
           dbg('[RECIPE] JSON-LD recipe found');
+          // Auto-discover this site if it's not in our list
+          await discoverRecipeSiteIfNeeded(url, html);
           const jsonApplied = await applyExtraction(jsonLd, 'jsonld', { includeMeta: true });
           const hasSteps = (jsonLd.steps?.length ?? 0) > 0;
           if (jsonApplied && (!isGordon || hasSteps)) {
@@ -1525,6 +1527,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
         const microdata = extractRecipeFromMicrodata(html);
         if (microdata) {
           dbg('[RECIPE] Microdata recipe found');
+          // Auto-discover this site if it's not in our list
+          await discoverRecipeSiteIfNeeded(url, html);
           const microApplied = await applyExtraction(microdata, 'microdata', { includeMeta: true });
           const hasMicroSteps = (microdata.steps?.length ?? 0) > 0;
           if (microApplied && (!isGordon || hasMicroSteps)) {
@@ -1630,7 +1634,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
     // STEP 0: try oEmbed title
     try {
-        const siteType = detectSiteType(url);
+        const siteType = await detectSiteType(url);
         dbg("≡ƒÄ» Site detected:", siteType);
 
         if (siteType === "instagram") {
@@ -1859,6 +1863,48 @@ function stitchBrokenSteps(lines: string[]): string[] {
             }
           } catch (e) {
             dbg("Γ¥î Recipe site handler failed:", safeErr(e));
+          }
+
+        } else if (siteType === "generic") {
+          // GENERIC SITE - Try to detect recipe data and auto-discover
+          dbg("≡ƒì│ Generic site - checking for recipe data");
+          try {
+            const html = await fetchWithUA(url, 12000, "text");
+            
+            // Check if this generic site has recipe data
+            const jsonLd = extractRecipeFromJsonLd(html);
+            const microdata = extractRecipeFromMicrodata(html);
+            
+            if (jsonLd || microdata) {
+              // Found recipe data! Auto-discover the site and process it
+              dbg("≡ƒì│ Recipe data found on generic site - auto-discovering");
+              await discoverRecipeSiteIfNeeded(url, html);
+              
+              // Now try to extract recipe (same as recipe-site path)
+              const handled = await handleRecipeSite(url, html);
+              
+              if (handled) {
+                success = true;
+                dbg("Γ£à Generic site recipe extraction successful (auto-discovered)");
+              } else {
+                // Fallback to OG if structured data extraction failed
+                const og = await fetchOgForUrl(url);
+                if (og?.title && isWeakTitle(title)) {
+                  safeSetTitle(og.title, url, title, dbg, "generic:og");
+                }
+                if (og?.image) await tryImageUrl(og.image, url);
+              }
+            } else {
+              // No recipe data - just try OG fallback
+              dbg("≡ƒì│ No recipe data found on generic site");
+              const og = await fetchOgForUrl(url);
+              if (og?.title && isWeakTitle(title)) {
+                safeSetTitle(og.title, url, title, dbg, "generic:og");
+              }
+              if (og?.image) await tryImageUrl(og.image, url);
+            }
+          } catch (e) {
+            dbg("Γ¥î Generic site handler failed:", safeErr(e));
           }
 
         } else if (siteType === "tiktok") {

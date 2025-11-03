@@ -1,7 +1,261 @@
 // lib/recipeSiteHelpers.ts
 // 🧑 ELI5: Detects which site we're on and knows how to read recipes from each one
 
-export function detectSiteType(url: string): "tiktok" | "instagram" | "facebook" | "recipe-site" | "generic" {
+import { supabase } from "./supabase";
+
+// Cache for discovered recipe sites (to avoid hitting DB on every call)
+let discoveredSitesCache: Set<string> | null = null;
+let cacheTimestamp: number = 0;
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Shared list of known recipe sites (used by both detectSiteType and discoverRecipeSiteIfNeeded)
+const KNOWN_RECIPE_SITES = [
+  // Large recipe platforms
+  "allrecipes.com",
+  "food.com",
+  "foodnetwork.com",
+  "epicurious.com",
+  "bonappetit.com",
+  "seriouseats.com",
+  "simplyrecipes.com",
+  "delish.com",
+  "tasty.co",
+  "tasteofhome.com",
+  "myrecipes.com",
+  "cookinglight.com",
+  "eatingwell.com",
+  "meatydelights.net",
+  "realsimple.com",
+  "southernliving.com",
+  "recipesize.com",
+  "bhg.com",
+  "marthastewart.com",
+  "jamieoliver.com",
+  "gordonramsay.com",
+  "bbcgoodfood.com",
+  "bettycrocker.com",
+  "pillsbury.com",
+  "kingarthurbaking.com",
+  "kosher.com",
+  "justapinch.com",
+  "meishichina.com",
+  "howtocookthat.com",
+  // Popular food blogs
+  "cookieandkate.com",
+  "budgetbytes.com",
+  "skinnytaste.com",
+  "thekitchn.com",
+  "minimalistbaker.com",
+  "minikitchenmagic.com",
+  "pinchofyum.com",
+  "recipetineats.com",
+  "sallysbakingaddiction.com",
+  "smittenkitchen.com",
+  "halfbakedharvest.com",
+  "gimmesomeoven.com",
+  "damndelicious.net",
+  "damndelicious.com",
+  "twopeasandtheirpod.com",
+  "lilluna.com",
+  "365daysofbakingandmore.com",
+  "spoonfulofflavor.com",
+  "loveandlemons.com",
+  "thepioneerwoman.com",
+  "tastesbetterfromscratch.com",
+  "onceuponachef.com",
+  "iwashyoudry.com",
+  "spendwithpennies.com",
+  "chef-in-training.com",
+  "the-girl-who-ate-everything.com",
+  "theslowroasteditalian.com",
+  "dinneratthezoo.com",
+  "dinnerthendessert.com",
+  "wellplated.com",
+  "ambitiouskitchen.com",
+  "averiecooks.com",
+  "cafe-delites.com",
+  "carrots-n-cake.com",
+  "chelseasmessyapron.com",
+  "cookingclassy.com",
+  "cravingsomecrunch.com",
+  "dairyfreeforbaby.com",
+  "eatingonadime.com",
+  "easychickenrecipes.com",
+  "foodiecrush.com",
+  "gonna-want-seconds.com",
+  "grandbaby-cakes.com",
+  "handletheheat.com",
+  "iambaker.net",
+  "iheartnaptime.net",
+  "lecremedelacrumb.com",
+  "lifeloveandsugar.com",
+  "lifemadesimplebakes.com",
+  "lifemadesweeter.com",
+  "littlebitsof.com",
+  "motherthyme.com",
+  "natashaskitchen.com",
+  "norecipes.com",
+  "number-2-pencil.com",
+  "ohsweetbasil.com",
+  "pickleeats.com",
+  "prettysimplesweet.com",
+  "shugarysweets.com",
+  "sweetpeaskitchen.com",
+  "thebestblogrecipes.com",
+  "thechunkychef.com",
+  "thediaryofarealhousewife.com",
+  "theredheadbaker.com",
+  "therecipecritic.com",
+  "thestayathomechef.com",
+  "today.com",
+  "vallahome.com",
+  "wineandglue.com",
+  "yellowblissroad.com",
+  "yummly.com",
+  "allthecooks.com",
+  "bigoven.com",
+  "chowhound.com",
+  "eatwell101.com",
+  "food52.com",
+  "greatbritishchefs.com",
+  "kitchme.com",
+  "mrfood.com",
+  "sugarspunrun.com",
+  "aroundmyfamilytable.com",
+  "copykat.com",
+  // International and specialty sites
+  "justonecookbook.com",
+  "rasamalaysia.com",
+  "maangchi.com",
+  "buzzfeed.com",
+  // Magazine sites
+  "people.com",
+  "goodhousekeeping.com",
+  "womansday.com",
+  "countryliving.com",
+  "redbookmag.com",
+];
+
+// Fetch discovered recipe sites from database
+async function getDiscoveredRecipeSites(): Promise<Set<string>> {
+  const now = Date.now();
+  
+  // Return cached result if still valid
+  if (discoveredSitesCache && (now - cacheTimestamp) < CACHE_TTL) {
+    return discoveredSitesCache;
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("discovered_recipe_sites")
+      .select("hostname");
+
+    if (error) {
+      console.warn("[recipeSiteHelpers] Failed to fetch discovered sites:", error);
+      return new Set();
+    }
+
+    const hostnames = (data || []).map(row => row.hostname);
+    discoveredSitesCache = new Set(hostnames);
+    cacheTimestamp = now;
+    
+    return discoveredSitesCache;
+  } catch (err) {
+    console.warn("[recipeSiteHelpers] Error fetching discovered sites:", err);
+    return new Set();
+  }
+}
+
+// Invalidate the cache (call this after discovering a new site)
+export function invalidateDiscoveredSitesCache() {
+  discoveredSitesCache = null;
+  cacheTimestamp = 0;
+}
+
+// Normalize hostname for storage
+function normalizeHostname(url: string): string | null {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    // Don't discover social media sites or known platforms
+    if (hostname.includes("tiktok.com") || 
+        hostname.includes("instagram.com") || 
+        hostname.includes("facebook.com") || 
+        hostname.includes("fb.com") ||
+        hostname.includes("pinterest.com") ||
+        hostname.includes("youtube.com")) {
+      return null;
+    }
+    return hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Auto-discover and save a recipe site if it contains recipe data but isn't in our list.
+ * Call this when you successfully extract recipe data from a "generic" site.
+ */
+export async function discoverRecipeSiteIfNeeded(
+  url: string,
+  html: string
+): Promise<void> {
+  try {
+    // Only discover if user is authenticated (silently skip if not)
+    const { data: session } = await supabase.auth.getSession();
+    if (!session?.session?.user) {
+      return; // Not authenticated, skip discovery
+    }
+
+    const hostname = normalizeHostname(url);
+    if (!hostname) return; // Skip social media and invalid URLs
+
+    // Check if it's already in our hardcoded list
+    if (KNOWN_RECIPE_SITES.some(site => hostname.includes(site))) {
+      return; // Already known
+    }
+
+    // Check if already discovered in DB
+    const discoveredSites = await getDiscoveredRecipeSites();
+    if (discoveredSites.has(hostname)) {
+      return; // Already discovered
+    }
+
+    // Try to detect recipe data in HTML
+    const hasJsonLd = extractRecipeFromJsonLd(html);
+    const hasMicrodata = extractRecipeFromMicrodata(html);
+
+    if (!hasJsonLd && !hasMicrodata) {
+      return; // No recipe data found, don't discover
+    }
+
+    // Determine detection method
+    const detectionMethod = hasJsonLd ? "jsonld" : "microdata";
+
+    // Save to database using the upsert function
+    const { error } = await supabase.rpc("upsert_discovered_recipe_site", {
+      p_hostname: hostname,
+      p_detection_method: detectionMethod,
+    });
+
+    if (error) {
+      console.warn("[recipeSiteHelpers] Failed to discover recipe site:", error);
+      return;
+    }
+
+    // Immediately update the cache so the current user's flow works right away
+    if (!discoveredSitesCache) {
+      discoveredSitesCache = new Set();
+    }
+    discoveredSitesCache.add(hostname);
+    cacheTimestamp = Date.now(); // Reset TTL since we just updated
+    
+    console.log(`[recipeSiteHelpers] ✅ Auto-discovered recipe site: ${hostname} (${detectionMethod})`);
+  } catch (err) {
+    console.warn("[recipeSiteHelpers] Error in discoverRecipeSiteIfNeeded:", err);
+  }
+}
+
+export async function detectSiteType(url: string): Promise<"tiktok" | "instagram" | "facebook" | "recipe-site" | "generic"> {
   try {
     const h = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
     
@@ -9,45 +263,14 @@ export function detectSiteType(url: string): "tiktok" | "instagram" | "facebook"
     if (h.includes("instagram.com")) return "instagram";
     if (h.includes("facebook.com") || h.includes("fb.com")) return "facebook";
     
-    // Major recipe sites
-    const recipeSites = [
-      "allrecipes.com",
-      "food.com",
-      "foodnetwork.com",
-      "epicurious.com",
-      "bonappetit.com",
-      "seriouseats.com",
-      "simplyrecipes.com",
-      "delish.com",
-      "tasty.co",
-      "cookieandkate.com",
-      "budgetbytes.com",
-      "skinnytaste.com",
-      "thekitchn.com",
-      "minimalistbaker.com",
-      "pinchofyum.com",
-      "recipetineats.com",
-      "sallysbakingaddiction.com",
-      "smittenkitchen.com",
-      "kingarthurbaking.com",
-      "bettycrocker.com",
-      "pillsbury.com",
-      "tasteofhome.com",
-      "myrecipes.com",
-      "cookinglight.com",
-      "eatingwell.com",
-      "realsimple.com",
-      "southernliving.com",
-      "bhg.com",
-      "marthastewart.com",
-      "jamieoliver.com",
-      "gordonramsay.com",
-      "bbcgoodfood.com",
-      "aroundmyfamilytable.com",
-      "copykat.com",
-    ];
+    // Check known recipe sites
+    if (KNOWN_RECIPE_SITES.some(site => h.includes(site))) return "recipe-site";
     
-    if (recipeSites.some(site => h.includes(site))) return "recipe-site";
+    // Check discovered sites from database
+    const discoveredSites = await getDiscoveredRecipeSites();
+    if (discoveredSites.has(h) || Array.from(discoveredSites).some(site => h.includes(site))) {
+      return "recipe-site";
+    }
     
     return "generic";
   } catch {
