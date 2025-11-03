@@ -48,7 +48,6 @@ export async function tiktokOEmbedThumbnail(rawUrl: string): Promise<string | nu
     const data: any = await res.json();
     const thumb =
       data?.thumbnail_url ||
-      data?.thumbnail_url_with_play_button ||
       data?.author?.avatar_url;
     return typeof thumb === "string" ? thumb : null;
   } catch {

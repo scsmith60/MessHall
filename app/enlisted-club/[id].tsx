@@ -23,7 +23,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
-import VideoStreamJitsiFixed from "../../components/VideoStreamJitsiFixed";
+import VideoStreamAgora from "../../components/VideoStreamAgora";
 import VideoStreamTwitch from "../../components/VideoStreamTwitch";
 import VideoStreamYouTube from "../../components/VideoStreamYouTube";
 import { COLORS, SPACING } from "../../lib/theme";
@@ -103,7 +103,9 @@ export default function SessionDetailScreen() {
   const [videoReady, setVideoReady] = useState(false);
   const [videoRoomId, setVideoRoomId] = useState<string | null>(null);
   const [videoToken, setVideoToken] = useState<string | null>(null);
-  const [streamProvider, setStreamProvider] = useState<"jitsi" | "twitch" | "youtube">("jitsi");
+  const [agoraChannelName, setAgoraChannelName] = useState<string | null>(null);
+  const [agoraAppId, setAgoraAppId] = useState<string | null>(null);
+  const [streamProvider, setStreamProvider] = useState<"agora" | "twitch" | "youtube">("agora");
   const [twitchChannel, setTwitchChannel] = useState<string | null>(null);
   const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
   const [startingVideo, setStartingVideo] = useState(false);
@@ -164,6 +166,16 @@ export default function SessionDetailScreen() {
       console.error("Failed to check admin status:", err);
     }
   }, [userId]);
+
+  // Load Agora App ID from environment
+  useEffect(() => {
+    const envAppId = process.env.EXPO_PUBLIC_AGORA_APP_ID;
+    if (envAppId) {
+      setAgoraAppId(envAppId);
+    } else {
+      console.warn("[Agora] EXPO_PUBLIC_AGORA_APP_ID not found. Add it to your .env file.");
+    }
+  }, []);
 
   // Load monthly usage info (optional - function may not exist if migration not run)
   const loadUsageInfo = useCallback(async () => {
@@ -244,8 +256,11 @@ export default function SessionDetailScreen() {
           setStreamProvider("youtube");
           const videoIdMatch = roomUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?/]+)/);
           if (videoIdMatch) setYoutubeVideoId(videoIdMatch[1]);
+        } else if (roomUrl.startsWith("agora://")) {
+          setStreamProvider("agora");
+          setAgoraChannelName(roomUrl.replace("agora://", ""));
         } else {
-          setStreamProvider("jitsi");
+          setStreamProvider("agora"); // Default to Agora now
         }
       }
 
@@ -819,8 +834,8 @@ export default function SessionDetailScreen() {
         return;
       }
 
-      // Create or get Jitsi room (try Jitsi first - it's free!)
-      const { data, error } = await supabase.functions.invoke("jitsi-create-room", {
+      // Create or get Agora channel (native SDK - no WebView issues!)
+      const { data, error } = await supabase.functions.invoke("agora-create-room", {
         body: {
           session_id: id,
           user_id: userId,
@@ -859,13 +874,16 @@ export default function SessionDetailScreen() {
 
       if (!data || !data.ok) {
         const errorMsg = data?.error || "Failed to create video room";
-        console.error("Jitsi room creation failed:", errorMsg, data);
+        console.error("Agora room creation failed:", errorMsg, data);
         throw new Error(errorMsg);
       }
 
-      setVideoRoomId(data.room_url || data.room_id);
-      setVideoToken(data.room_url || data.room_id);
-      setStreamProvider("jitsi");
+      // Agora returns channel_name instead of room_url
+      const channelName = data.channel_name || data.room_id;
+      setAgoraChannelName(channelName);
+      setVideoRoomId(channelName); // Keep for compatibility
+      setVideoToken(data.token || null);
+      setStreamProvider("agora");
       setVideoReady(true);
       await success();
 
@@ -911,8 +929,8 @@ export default function SessionDetailScreen() {
         return;
       }
 
-      // Get Jitsi room URL for participant via edge function
-      const { data, error } = await supabase.functions.invoke("jitsi-get-token", {
+      // Get Agora channel for participant via edge function
+      const { data, error } = await supabase.functions.invoke("agora-create-room", {
         body: {
           session_id: id,
           user_id: userId,
@@ -925,7 +943,7 @@ export default function SessionDetailScreen() {
         const errorMessage = (error as any)?.message || error.toString();
         const errorData = (error as any)?.context?.body || (error as any)?.body;
         
-        console.error("Jitsi get-token error:", {
+        console.error("Agora get-channel error:", {
           error,
           statusCode,
           errorMessage,
@@ -951,29 +969,18 @@ export default function SessionDetailScreen() {
 
       if (!data || !data.ok) {
         const errorMsg = data?.error || "Failed to get video room";
-        console.error("Jitsi get-token failed:", errorMsg, data);
+        console.error("Agora get-channel failed:", errorMsg, data);
         throw new Error(errorMsg);
       }
 
-      const roomUrl = data.room_url;
-      setVideoRoomId(roomUrl);
-      setVideoToken(roomUrl);
-      setStreamProvider("jitsi");
-      
-      // Check if it's Twitch or YouTube
-      if (roomUrl.includes("twitch.tv")) {
-        const channelMatch = roomUrl.match(/twitch\.tv\/([^/?]+)/);
-        if (channelMatch) {
-          setStreamProvider("twitch");
-          setTwitchChannel(channelMatch[1]);
-        }
-      } else if (roomUrl.includes("youtube.com") || roomUrl.includes("youtu.be")) {
-        const videoIdMatch = roomUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?/]+)/);
-        if (videoIdMatch) {
-          setStreamProvider("youtube");
-          setYoutubeVideoId(videoIdMatch[1]);
-        }
+      // Agora returns channel_name, not room_url
+      const channelName = data.channel_name || data.room_url?.replace("agora://", "");
+      if (channelName) {
+        setAgoraChannelName(channelName);
+        setVideoRoomId(channelName);
+        setVideoToken(data.token || null);
       }
+      setStreamProvider("agora");
 
       setVideoReady(true);
       await success();
@@ -1279,12 +1286,13 @@ export default function SessionDetailScreen() {
                   });
                 }}
               />
-            ) : (
-              <VideoStreamJitsiFixed
-                roomUrl={videoRoomId}
+            ) : agoraChannelName && agoraAppId ? (
+              <VideoStreamAgora
+                appId={agoraAppId}
+                channelName={agoraChannelName}
+                token={videoToken || undefined}
                 isHost={isHost}
                 displayName={userProfile?.username || undefined}
-                avatarUrl={userProfile?.avatar_url || null}
                 onError={(error: string) => {
                   setNotice({
                     visible: true,
@@ -1293,11 +1301,17 @@ export default function SessionDetailScreen() {
                   });
                 }}
                 onReady={() => {
-                  console.log("Jitsi video ready");
-                  setVideoReady(true); // This is critical - without this, UI stays on join screen
+                  console.log("Agora video ready");
+                  setVideoReady(true);
                 }}
               />
-            )}
+            ) : agoraChannelName ? (
+              <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: COLORS.card }}>
+                <Text style={{ color: COLORS.text, textAlign: "center", padding: 20 }}>
+                  Agora App ID not configured. Please add AGORA_APP_ID to your environment.
+                </Text>
+              </View>
+            ) : null}
           </View>
 
           {/* Floating Emoji Reactions Overlay */}
