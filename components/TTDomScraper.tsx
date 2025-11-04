@@ -105,8 +105,7 @@ export default function TTDomScraper({
           return false;
         }
         // try immediately, then retry a few times to let dynamic content load
-        // Reduced maxAttempts from 8 to 5 to fail faster (max ~2.5s instead of 4s)
-        var attempts = 0; var maxAttempts = 5;
+        var attempts = 0; var maxAttempts = 8;
         var iv = setInterval(function(){ attempts++; try{ if(grabOnce()){ clearInterval(iv); } else if(attempts>=maxAttempts){ // final post (may be empty)
             var fallback = { type: 'done', ok: true, caption: '', comments: [], bestComment: '', text: (document.body&& (document.body.innerText||document.body.textContent))? (document.body.innerText||document.body.textContent).slice(0,5000):'', debug: 'fallback', imageUrl: (document.querySelector('meta[property="og:image"]')||{}).getAttribute? (document.querySelector('meta[property="og:image"]').getAttribute('content')) : '', sigi: null, pageTitle: (document.title||"").trim(), isPhoto: !!document.querySelector('.photo-content, .post-photo, .img-wrap') };
             window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(fallback)); clearInterval(iv);
