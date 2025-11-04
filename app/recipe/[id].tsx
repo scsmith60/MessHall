@@ -6,7 +6,7 @@
 //    No more nested/overlapping buttons. No other features touched.
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Alert, Share, Text, View, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
+import { Alert, Share, Text, View, TouchableOpacity, FlatList, ActivityIndicator, Linking } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Image as ExpoImage } from 'expo-image';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
@@ -335,6 +335,7 @@ export default function RecipeDetail() {
 
   const [isPrivate, setIsPrivate] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [originalSourceUser, setOriginalSourceUser] = useState<string | null>(null);
   const [parentId, setParentId] = useState<string | null>(null);
 
   const [saved, setSaved] = useState(false);
@@ -394,6 +395,7 @@ export default function RecipeDetail() {
           });
           setIsPrivate(!!r.is_private);
           setSourceUrl(r.sourceUrl ?? null);
+          setOriginalSourceUser(r.originalSourceUser ?? null);
           if (Array.isArray(r.steps)) setSteps(r.steps);
           if (Array.isArray(r.ingredients)) setIngredients(r.ingredients);
         } else {
@@ -927,6 +929,23 @@ export default function RecipeDetail() {
           <View style={{ flex: 1 }} />
           <Text style={{ color: COLORS.subtext }}>{timeAgo(model.createdAt)}</Text>
         </View>
+
+        {/* Source attribution (for imported recipes) */}
+        {originalSourceUser && sourceUrl && (
+          <View style={{ marginBottom: 12, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#1e293b', borderRadius: 10, borderWidth: 1, borderColor: '#334155' }}>
+            <Text style={{ color: COLORS.subtext, fontSize: 11, fontWeight: '600', marginBottom: 4 }}>Original Recipe</Text>
+            <TouchableOpacity
+              onPress={() => {
+                Linking.openURL(sourceUrl).catch(() => {});
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={{ color: COLORS.accent, fontSize: 13, fontWeight: '700', textDecorationLine: 'underline' }}>
+                {originalSourceUser}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Context chips */}
         {(isPrivate || (sourceUrl && sourceUrl.trim() !== '') || parentId) && (

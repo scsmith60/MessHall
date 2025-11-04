@@ -349,6 +349,13 @@ export default function EditRecipe() {
         const finalSourceUrl =
           pastedUrl && pastedUrl.trim() !== '' ? pastedUrl.trim() : sourceUrlDb ?? null;
 
+        // Extract original source user from URL for copyright attribution
+        let originalSourceUser: string | null = null;
+        if (finalSourceUrl) {
+          const { extractSourceUserFromUrl } = await import("@/lib/extractSourceUser");
+          originalSourceUser = extractSourceUserFromUrl(finalSourceUrl);
+        }
+
         await dataAPI.updateRecipeFull({
           id: id!,
           title: cleanTitle,
@@ -358,6 +365,7 @@ export default function EditRecipe() {
           is_private: isPrivate,
           monetization_eligible: monetizationFlag,
           source_url: finalSourceUrl,
+          original_source_user: originalSourceUser,
         });
 
         setSaveStatus('saved');
@@ -399,6 +407,9 @@ export default function EditRecipe() {
       if (meta.title) setTitle(meta.title);
       if (meta.ingredients?.length) setIngredients(meta.ingredients as string[]);
       if (meta.steps?.length) setSteps((meta.steps as string[]).map((t: any) => ({ text: String(t), seconds: null })));
+
+      // Update source URL in database (this will trigger autosave to extract username)
+      setPastedUrl(url);
 
       // If the static extraction indicates a client-render is required, open the hidden WebView
       if (meta.needsClientRender) {

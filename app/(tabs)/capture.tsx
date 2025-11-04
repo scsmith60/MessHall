@@ -2326,10 +2326,23 @@ function stitchBrokenSteps(lines: string[]): string[] {
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       const cleanedSourceUrl = lastResolvedUrlRef.current ? canonicalizeUrl(lastResolvedUrlRef.current) : null;
+      
+      // Extract original source user from URL for copyright attribution
+      let originalSourceUser: string | null = null;
+      if (cleanedSourceUrl) {
+        const { extractSourceUserFromUrl } = await import("@/lib/extractSourceUser");
+        originalSourceUser = extractSourceUserFromUrl(cleanedSourceUrl);
+      }
 
       const { data: created, error: createErr } = await supabase
         .from("recipes")
-        .insert({ title: title.trim(), minutes: timeMinutes ? Number(timeMinutes) : null, servings: servings ? Number(servings) : null, source_url: cleanedSourceUrl })
+        .insert({ 
+          title: title.trim(), 
+          minutes: timeMinutes ? Number(timeMinutes) : null, 
+          servings: servings ? Number(servings) : null, 
+          source_url: cleanedSourceUrl,
+          original_source_user: originalSourceUser
+        })
         .select("id")
         .single();
 

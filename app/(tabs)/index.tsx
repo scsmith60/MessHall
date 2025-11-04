@@ -1399,6 +1399,8 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
         titleRightInset={96}
         ownerId={item.ownerId}
         isPrivate={isPrivateFlag(item.is_private)}
+        sourceUrl={item.sourceUrl ?? null}
+        originalSourceUser={item.originalSourceUser ?? null}
         onOpen={(id: string) => { persistScrollOffset(lastOffsetY.current); router.push(`/recipe/${id}`); }}
         onOpenCreator={handleOpenCreator}
         onEdit={(id: string) => router.push({ pathname: "/recipe/edit/[id]", params: { id } })}

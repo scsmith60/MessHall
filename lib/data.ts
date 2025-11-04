@@ -101,6 +101,7 @@ export interface DataAPI {
     is_private?: boolean;
     monetization_eligible?: boolean;
     source_url?: string | null;
+    original_source_user?: string | null;
     minutes?: number | null;
   }): Promise<void>;
 
@@ -230,6 +231,8 @@ export const dataAPI: DataAPI = {
         likes_count,
         comment_count,
         created_at,
+        source_url,
+        original_source_user,
         user_id,
         is_private,
         profiles!recipes_user_id_fkey (username, avatar_url, knives)
@@ -290,6 +293,8 @@ export const dataAPI: DataAPI = {
           createdAt: string;
           ownerId: string;
           is_private?: boolean;
+          sourceUrl?: string | null;
+          originalSourceUser?: string | null;
         }
       | {
           type: "sponsored";
@@ -337,6 +342,8 @@ export const dataAPI: DataAPI = {
         createdAt: r.created_at,
         ownerId: r.user_id,
         is_private: !!r.is_private,
+        sourceUrl: r.source_url ?? null,
+        originalSourceUser: r.original_source_user ?? null,
         // include diet tags so client can filter by viewer preferences
         dietTags: Array.isArray(r.diet_tags) ? r.diet_tags : [],
         categoryTags: Array.isArray(r.category_tags) ? r.category_tags : [],
@@ -362,6 +369,7 @@ export const dataAPI: DataAPI = {
         comment_count,
         created_at,
         source_url,
+        original_source_user,
         minutes,
         is_private,
         monetization_eligible,
@@ -399,6 +407,7 @@ export const dataAPI: DataAPI = {
       is_private: !!r.is_private,
       monetization_eligible: !!r.monetization_eligible,
       sourceUrl: r.source_url ?? null,
+      originalSourceUser: r.original_source_user ?? null,
       image_url: r.image_url ?? null,
       commentCount: Number(r.comment_count ?? 0),
     };
@@ -552,6 +561,7 @@ export const dataAPI: DataAPI = {
       is_private,
       monetization_eligible,
       source_url,
+      original_source_user,
       minutes,
     } = args;
 
@@ -563,6 +573,7 @@ export const dataAPI: DataAPI = {
         ...(is_private !== undefined ? { is_private } : {}),
         ...(monetization_eligible !== undefined ? { monetization_eligible } : {}),
         ...(source_url !== undefined ? { source_url } : {}),
+        ...(original_source_user !== undefined ? { original_source_user } : {}),
         ...(minutes !== undefined ? { minutes } : {}),
       })
       .eq("id", id);

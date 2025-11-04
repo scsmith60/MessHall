@@ -41,7 +41,7 @@ import { tap, success, warn } from "@/lib/haptics";
 import { dataAPI } from "@/lib/data";
 import { useUserId } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
-import { Share } from "react-native";
+import { Share, Linking } from "react-native";
 import { recipeUrl } from "@/lib/links";
 import { isBlocked, unblockUser } from "@/lib/blocking"; // 👈 NEW
 
@@ -76,6 +76,9 @@ type Props = {
   onToggleSave?: () => void;
   onSave?: (id: string) => void;
   titleRightInset?: number; // pixels of right-side gap for the calories pill
+  // Source attribution for imported recipes
+  sourceUrl?: string | null;
+  originalSourceUser?: string | null;
 };
 
 function RecipeCard(props: Props) {
@@ -472,6 +475,21 @@ function RecipeCard(props: Props) {
             <Text style={styles.dim}>{timeAgo(createdAt as any)}</Text>
           </View>
 
+          {/* ===== SOURCE ATTRIBUTION (for imported recipes) ===== */}
+          {props.originalSourceUser && props.sourceUrl && (
+            <View style={styles.sourceAttribution}>
+              <Text style={styles.sourceLabel}>Original: </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  Linking.openURL(props.sourceUrl!).catch(() => {});
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.sourceLink}>{props.originalSourceUser}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           <View style={styles.divider} />
 
           {/* ===== STATS ===== */}
@@ -843,6 +861,16 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
   },
   commentChipText: { color: COLORS.text, fontWeight: "700", fontSize: 12 },
+
+  // Source attribution styles
+  sourceAttribution: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  sourceLabel: { color: COLORS.subtext, fontSize: 11, fontWeight: "600" },
+  sourceLink: { color: COLORS.accent, fontSize: 11, fontWeight: "700", textDecorationLine: "underline" },
 
   commentsButton: {
     flexDirection: "row",
