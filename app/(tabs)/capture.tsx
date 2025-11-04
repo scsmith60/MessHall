@@ -1505,6 +1505,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
   const handleRecipeSite = useCallback(
     async (url: string, html: string) => {
+      dbg('[RECIPE] handleRecipeSite called for:', url);
+      dbg('[RECIPE] HTML provided, length:', html?.length || 0);
+      
       try {
         const host = (() => {
           try {
@@ -1513,6 +1516,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
             return "";
           }
         })();
+        dbg('[RECIPE] Host detected:', host);
+        
         const isGordon = host.includes("gordonramsay.com");
         const isAroundMyFamilyTable = host.includes("aroundmyfamilytable.com");
         const isCopyKat = host.includes("copykat.com");
@@ -1548,10 +1553,19 @@ function stitchBrokenSteps(lines: string[]): string[] {
         const jsonLd = extractRecipeFromJsonLd(html);
         if (jsonLd) {
           dbg('[RECIPE] JSON-LD recipe found');
+          dbg('[RECIPE] JSON-LD extracted:', {
+            title: jsonLd.title,
+            ingredientsCount: jsonLd.ingredients?.length ?? 0,
+            stepsCount: jsonLd.steps?.length ?? 0,
+            ingredients: jsonLd.ingredients?.slice(0, 3),
+            steps: jsonLd.steps?.slice(0, 2),
+            debugInfo: (jsonLd as any).__debugInfo,
+          });
           // Auto-discover this site if it's not in our list
           await discoverRecipeSiteIfNeeded(url, html);
           const jsonApplied = await applyExtraction(jsonLd, 'jsonld', { includeMeta: true });
           const hasSteps = (jsonLd.steps?.length ?? 0) > 0;
+          dbg('[RECIPE] JSON-LD extraction result:', { jsonApplied, hasSteps });
           if (jsonApplied && (!isGordon || hasSteps)) {
             return true;
           }
@@ -1562,15 +1576,25 @@ function stitchBrokenSteps(lines: string[]): string[] {
               return true;
             }
           }
+        } else {
+          dbg('[RECIPE] No JSON-LD recipe found in HTML');
         }
 
         const microdata = extractRecipeFromMicrodata(html);
         if (microdata) {
           dbg('[RECIPE] Microdata recipe found');
+          dbg('[RECIPE] Microdata extracted:', {
+            title: microdata.title,
+            ingredientsCount: microdata.ingredients?.length ?? 0,
+            stepsCount: microdata.steps?.length ?? 0,
+            ingredients: microdata.ingredients?.slice(0, 3),
+            steps: microdata.steps?.slice(0, 2),
+          });
           // Auto-discover this site if it's not in our list
           await discoverRecipeSiteIfNeeded(url, html);
           const microApplied = await applyExtraction(microdata, 'microdata', { includeMeta: true });
           const hasMicroSteps = (microdata.steps?.length ?? 0) > 0;
+          dbg('[RECIPE] Microdata extraction result:', { microApplied, hasMicroSteps });
           if (microApplied && (!isGordon || hasMicroSteps)) {
             return true;
           }
@@ -1600,9 +1624,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
           }
         }
 
+        dbg('[RECIPE] handleRecipeSite: All extraction methods exhausted, returning false');
         return false;
       } catch (e) {
-        dbg('[RECIPE] handler failed:', safeErr(e));
+        dbg('[RECIPE] handler failed with error:', safeErr(e));
+        dbg('[RECIPE] Error stack:', e instanceof Error ? e.stack : 'N/A');
         return false;
       }
     },
@@ -1956,12 +1982,21 @@ function stitchBrokenSteps(lines: string[]): string[] {
           
           try {
             const html = await fetchWithUA(url, 12000, "text");
+            dbg("[RECIPE] HTML fetched, length:", html?.length || 0);
+            
+            // Quick check: does HTML contain JSON-LD?
+            const hasJsonLd = /type=["']application\/ld\+json["']/i.test(html || "");
+            const hasRecipeJsonLd = /"@type"\s*:\s*["']Recipe["']/i.test(html || "");
+            dbg("[RECIPE] HTML check:", { hasJsonLd, hasRecipeJsonLd });
+            
             const handled = await handleRecipeSite(url, html);
+            dbg("[RECIPE] handleRecipeSite returned:", handled);
             
             if (handled) {
               success = true;
               dbg("Γ£à Recipe site extraction successful");
             } else {
+              dbg("[RECIPE] Extraction failed, falling back to OG metadata");
               // Fallback to OG if structured data failed
               const og = await fetchOgForUrl(url);
               if (og?.title && isWeakTitle(title)) {
