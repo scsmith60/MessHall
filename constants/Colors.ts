@@ -10,8 +10,8 @@ const palette = {
     muted: '#5E8583',
     background: '#071F1C', // root background
     surface: '#0A2A26',
-    card: '#0F3A33',
-    elevated: '#123C36',
+    card: '#153A32',
+    elevated: '#153A32',
     border: 'rgba(255,255,255,0.06)',
     overlay: 'rgba(7,31,28,0.6)',
     tint: tintColorDark,

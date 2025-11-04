@@ -47,7 +47,7 @@ import { logDebug } from "@/lib/logger";
 const CAPTURE_DELAY_MS = 700;
 const BETWEEN_SHOTS_MS = 120;
 const SNAP_ATTEMPTS = 2;
-const IMPORT_HARD_TIMEOUT_MS = 35000;
+const IMPORT_HARD_TIMEOUT_MS = 45000; // Increased from 35s to 45s to account for OCR
 const ATTEMPT_TIMEOUT_FIRST_MS = 8000;
 const ATTEMPT_TIMEOUT_SOFT_MS = 2200;
 const MIN_IMG_W = 600, MIN_IMG_H = 600;
@@ -719,16 +719,32 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
 
   /** Decide if a TikTok-ish title is junk */
+  function cleanTikTokText(text: string): string {
+    // Remove TikTok UI junk from the text field
+    let cleaned = String(text || "");
+    // Remove common TikTok UI elements
+    cleaned = cleaned
+      .replace(/^(?:global\s+video\s+community|open\s+app|unmute|mute|follow|like|share|comment|save)\b/gi, "")
+      .replace(/\b(global\s+video\s+community|open\s+app|unmute|mute)\b/gi, "")
+      .replace(/@\w+/g, "") // Remove @mentions
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    return cleaned;
+  }
+  
   function isTikTokJunkTitle(s?: string | null) {
     const t = (s || "").toLowerCase().trim();
     if (!t) return true;
     if (t === "tiktok") return true;
+    if (t === "unmute") return true;
+    if (t === "mute") return true;
     if (t === "make your day") return true;
     if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
     if (t.startsWith("tiktok -") || t.startsWith("tiktok |") || t.startsWith("tiktok –")) return true;
     if (t.includes("tiktok") && t.includes("make your day")) return true;
     if (/^original (sound|audio)\b/.test(t)) return true;
     if (/today'?s top videos?/.test(t)) return true;
+    if (/^(global\s+video\s+community|open\s+app|follow|like|share|comment|save)$/.test(t)) return true;
     return false;
   }
 
@@ -772,11 +788,11 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
   // ≡ƒºá Find "Ingredients" and "Steps" inside one long TikTok caption
   function sectionizeCaption(raw: string) {
-    const s = (raw || "").replace(/\r/g, "\n");
+    const s = (raw || "").replace(/\r/g, "\n").replace(/[\u200B\u200C\u200D\uFEFF]/g, " "); // Normalize zero-width spaces
     const low = s.toLowerCase();
-    // find anchors
+    // find anchors - include "how to make it" as a step header
     const iIdx = low.search(/\bingredients?\b/);
-    const sIdx = low.search(/\b(steps?|directions?|method|instructions?)\b/);
+    const sIdx = low.search(/\b(steps?|directions?|method|instructions?|how\s+to\s+make\s+it)\b/);
 
     let ing = "", steps = "", before = s.trim();
 
@@ -798,11 +814,32 @@ function findDishTitleFromText(source: string, url: string): string | null {
         const l = (lines[i] || '').trim();
         if (!l) { // blank line - check if next lines look like steps and cut
           const next = (lines.slice(i+1).find(x => x.trim().length>0) || '').trim();
-          if (/^(steps?|directions?|method|instructions?)\b/i.test(next) || /^(Melt|Add|Heat|Cook|Whisk|Stir|Bring|Simmer|Boil|Turn up|Combine|Once|Preheat|Mix)\b/i.test(next)) { cut = i+1; break; }
+          if (/^(steps?|directions?|method|instructions?|how\s+to\s+make\s+it)\b/i.test(next) || /^(Melt|Add|Heat|Cook|Whisk|Stir|Bring|Simmer|Boil|Turn up|Combine|Once|Preheat|Mix|Bake|Cake:|Cream:)\b/i.test(next)) { cut = i+1; break; }
+          continue;
+        }
+        // Allow subsection headers like "For the Cake:", "For the Chantilly Cream:" - these are part of ingredients
+        if (/^for\s+the\s+[^:]+:\s*$/i.test(l)) {
+          // Keep the header but don't break - continue collecting ingredients
           continue;
         }
         if (/^(?:[\-\*\u2022]\s+|\d+[\.)]\s+)/.test(l)) { ingLines.push(l); continue; }
-        if (/(cup|tsp|tbsp|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|salt|pepper)/i.test(l)) { ingLines.push(l); continue; }
+        // Check for ingredient patterns: starts with quantity (number, fraction) OR contains unit/ingredient words
+        const hasQuantity = /^\d+[\s¼½¾⅓⅔⅛⅜⅝⅞]/.test(l) || /^\d+\s*\/\s*\d+/.test(l) || /^[¼½¾⅓⅔⅛⅜⅝⅞]/.test(l);
+        const hasUnit = /(cup|cups|tsp|tbsp|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|box|block|package|packages)/i.test(l);
+        const hasIngredientWord = /(mascarpone|cream\s+cheese|whipping\s+cream|heavy\s+cream|powdered\s+sugar|vanilla|berries|strawberries|raspberries|blueberries|salt|pepper|cheese|sugar|flour|oil|butter|onion|garlic|carrot|celery|broth|pasta|sausage|chicken|beef|pork)/i.test(l);
+        if (hasQuantity || hasUnit || hasIngredientWord) {
+          ingLines.push(l);
+          continue;
+        }
+        // If we hit a clear step header or instruction, stop collecting ingredients
+        if (/^(steps?|directions?|method|instructions?|how\s+to\s+make\s+it|cake:\s*[Bb]ake|cream:\s*[Ii]n|assemble:|layer:|top:|chill:)/i.test(l)) {
+          cut = i; break;
+        }
+        // If line doesn't look like an ingredient or step, might be a subsection header - continue
+        if (l.endsWith(":") && l.length < 50) {
+          continue; // Likely a subsection header
+        }
+        // Otherwise, stop collecting
         cut = i; break;
       }
       ing = ingLines.join("\n");
@@ -821,30 +858,83 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     let txt = block
       .replace(/^\s*ingredients?:?/i, "")    // drop the heading
-      .replace(/[\u2022\u25CF\u25CB]/g, "\u2022") // normalize bullets
-      .replace(/\s{2,}/g, " ")
       .trim();
 
-    // rule A: split on explicit bullets
-    txt = txt.replace(/\s*\u2022\s*/g, "\n\u2022 ");
+    // First, normalize zero-width spaces and other invisible characters to regular spaces
+    txt = txt.replace(/[\u200B\u200C\u200D\uFEFF]/g, " ");
+    
+    // Split on subsection headers like "For the Cake:", "For the Chantilly Cream:"
+    // Replace with newlines BEFORE and AFTER so ingredients are on separate lines
+    // Use word boundary to ensure we don't split mid-word
+    txt = txt.replace(/(\s|^)(For\s+the\s+[^:]+:\s*)(\s|$)/gi, "\n$2\n");
+    
+    // Split on explicit bullets
+    txt = txt.replace(/\s*[-*•]\s*/g, "\n");
 
-    // rule B: split on ", " || "; " **when** there's a quantity/unit before it
+    // IMPORTANT: Split when we see a new quantity pattern, but DON'T split ranges like "3-4"
+    // First, protect ranges like "3-4 cups" by temporarily replacing them
+    const rangePlaceholders: string[] = [];
+    txt = txt.replace(/(\d+-\d+\s*(?:cup|cups|tsp|tbsp|oz|lb|g|kg|ml|l|box|block|package|packages|clove|cloves|egg|eggs|stick|sticks)\b)/gi, (match) => {
+      const placeholder = `__RANGE_${rangePlaceholders.length}__`;
+      rangePlaceholders.push(match);
+      return placeholder;
+    });
+    
+    // Now split on quantity patterns (ranges are protected)
+    // Match patterns like: "1 box", "1.5 cups", "2 cups", "1/2 cup", "¼ cup"
+    // Look for space followed by a quantity+unit pattern (this handles ingredients on same line)
+    txt = txt.replace(/(\s+)(?=(\d+(?:\.\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞])\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|box|block|package|packages|clove|cloves|egg|eggs|stick|sticks)\b)/gi, "\n");
+    
+    // Restore the protected ranges
+    rangePlaceholders.forEach((range, i) => {
+      txt = txt.replace(`__RANGE_${i}__`, range);
+    });
+
+    // Split on ", " || "; " **when** there's a quantity/unit before it
     txt = txt.replace(
       /(\d+(?:\.\d+)?|(?:¼|½|¾))\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b\s*[,;]\s*/gi,
       "$&\n"
     );
 
-    // rule C: split when a new quantity+unit appears without punctuation
-    txt = txt.replace(
-      /\s(?=(\d+(?:\/\d+)?(?:\.\d+)?|(?:¼|½|¾))\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b)/gi,
-      "\n"
-    );
+    // Clean up extra whitespace and zero-width characters
+    txt = txt.replace(/[\u200B\u200C\u200D\uFEFF]/g, " "); // Remove zero-width chars
+    txt = txt.replace(/\s{2,}/g, " ");
 
     const lines = txt
       .split(/\n+/)
       .map((l) => l.trim())
       .filter(Boolean)
-      .map((l) => (/^[-*\u2022]/.test(l) ? l : `\u2022 ${l}`));
+      // Remove subsection headers that might be attached to ingredient lines
+      .map((l) => {
+        // Remove "For the X:" from anywhere in the line (beginning, middle, or end)
+        // But preserve the ingredient text that comes before or after it
+        l = l.replace(/^(For\s+the\s+[^:]+:\s*)+/gi, ""); // Remove from start
+        l = l.replace(/(\s+For\s+the\s+[^:]+:\s*)+/gi, " "); // Remove from middle/end
+        l = l.replace(/(For\s+the\s+[^:]+:\s*)+$/gi, ""); // Remove from end
+        return l.trim();
+      })
+      .filter(Boolean)
+      // Skip subsection headers as standalone lines (they're not ingredients)
+      .filter((l) => !/^for\s+the\s+[^:]+:\s*$/i.test(l))
+      // Merge lines that were incorrectly split (e.g., if "1 box..." got split from "(or 1 prepared...)")
+      .reduce((acc: string[], l: string) => {
+        // If current line starts with "(" and previous line doesn't end with punctuation, merge them
+        if (l.startsWith("(") && acc.length > 0 && !/[.!?)]$/.test(acc[acc.length - 1])) {
+          acc[acc.length - 1] = acc[acc.length - 1] + " " + l;
+        } else {
+          acc.push(l);
+        }
+        return acc;
+      }, [])
+      // Add bullets if not present (but not for subsection headers)
+      .map((l) => {
+        // If line starts with a quantity or unit, it's an ingredient
+        // Also check for ranges like "3-4 cups"
+        if (/^(\d+-\d+|\d+[\s¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|\d+\.\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|cup|cups|tsp|tbsp|oz|lb|g|kg|ml|l|box|block|package)/i.test(l)) {
+          return /^[-*\u2022•]/.test(l) ? l : `• ${l}`;
+        }
+        return l;
+      });
 
     return ["Ingredients:", ...lines].join("\n");
   }
@@ -1152,10 +1242,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
       
       // Use the OCR helper with the preprocessed image
       const { text } = await recognizeImageText(prepped.uri);
-      return text?.trim() || null;
+      const result = text?.trim() || null;
+      if (result) {
+        dbg("[OCR] Successfully extracted text, length:", result.length);
+      } else {
+        dbg("[OCR] No text extracted from image");
+      }
+      return result;
     } catch (e) { 
-      return null; 
-      try { dbg('OCR failed:', safeErr(e)); } catch {} 
+      try { dbg('[OCR] Failed:', safeErr(e)); } catch {} 
+      return null;
     }
   }
 
@@ -1396,9 +1492,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
     const finalUrl = await resolveFinalUrl(ensureHttps(rawUrl.trim()));
     return new Promise((resolve) => {
       let resolved = false;
+      // Reduced timeout to 12 seconds - TikTok scraper should complete in 4-5 seconds max
       const timeout = setTimeout(() => {
         if (!resolved) { resolved = true; setDomScraperVisible(false); resolve(null); }
-      }, 16000);
+      }, 12000);
       // 2) open the full **desktop** page; TTDomScraper will handle viewports and "see more" clicks.
       setDomScraperUrl(finalUrl);
       setDomScraperVisible(true);
@@ -2053,9 +2150,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 const capTitle = normalizeDishTitle(cleanTitle(capTitleRaw, url));
                 if (capTitle && !isWeakTitle(capTitle)) ttTitleCandidates.push({ v: capTitle, src: "tiktok:caption" });
 
-                // also try to find a dish-like short title from the DOM text
+                // also try to find a dish-like short title from the DOM text (clean it first!)
                 try {
-                  const td = findDishTitleFromText(domPayload?.text || domPayload?.caption || "", url);
+                  const cleanedText = cleanTikTokText(domPayload?.text || "");
+                  const td = findDishTitleFromText(cleanedText || domPayload?.caption || "", url);
                   // Double-check it's not junk before adding to candidates
                   if (td && !isWeakTitle(td) && !isTikTokJunkTitle(td)) {
                     ttTitleCandidates.push({ v: td, src: "tiktok:dom-text" });
@@ -2069,6 +2167,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
           // STEP 2: PARSE - caption first (photos often hold full recipe here)
           try {
             const cap = (domPayload?.caption || "").trim();
+            const cleanedText = cleanTikTokText(domPayload?.text || "");
+            
+            // Debug: Log what we're parsing
+            dbg("[TT] Raw caption length:", cap.length);
+            dbg("[TT] Raw caption (first 500 chars):", cap.slice(0, 500));
+            dbg("[TT] Cleaned text length:", cleanedText.length);
+            dbg("[TT] Cleaned text (first 300 chars):", cleanedText.slice(0, 300));
+            
             const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
             const dishTitleFromCaption = findDishTitleFromText(cap, url);
             if (dishTitleFromCaption) {
@@ -2079,11 +2185,27 @@ function stitchBrokenSteps(lines: string[]): string[] {
               safeSetTitle(captionFallbackTitle, url, title, dbg, "tiktok:caption-fallback");
             }
 
-            // A) build clean recipe text from CAPTION
+            // A) build clean recipe text from CAPTION (not text - text has UI junk)
+            // Debug: Show what we're about to parse
+            dbg("[TT] About to parse caption (length):", cap.length);
             const capRecipe = captionToRecipeText(cap);
+            dbg("[TT] After captionToRecipeText length:", capRecipe.length);
+            dbg("[TT] Recipe text (first 500 chars):", capRecipe.slice(0, 500));
+            // Debug: Show the ingredients section specifically
+            const ingMatch = capRecipe.match(/Ingredients:[\s\S]*?(?=Steps:|$)/i);
+            if (ingMatch) {
+              dbg("[TT] Ingredients section (first 800 chars):", ingMatch[0].slice(0, 800));
+              const ingLines = ingMatch[0].split(/\n+/).filter(l => l.trim() && !/^Ingredients?:/i.test(l.trim()));
+              dbg("[TT] Ingredients section line count:", ingLines.length);
+              dbg("[TT] Ingredients section lines (first 10):", ingLines.slice(0, 10).map(l => l.trim()));
+            }
 
             // B) parse caption text
             let parsed = parseRecipeText(capRecipe);
+            dbg("[TT] Parsed ingredients count:", parsed.ingredients.length);
+            dbg("[TT] Parsed ingredients:", JSON.stringify(parsed.ingredients, null, 2));
+            dbg("[TT] Parsed steps count:", parsed.steps.length);
+            dbg("[TT] Parsed steps (first 3):", JSON.stringify(parsed.steps.slice(0, 3), null, 2));
             dbg("≡ƒôè STEP 2A parse(CAPTION) conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
 
             // C) if still weak, fuse top comments and reparse
@@ -2099,6 +2221,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const socialParsed = parseSocialCaption(cap, {
               fallbackTitle: normalizeDishTitle(cleanTitle(captionToNiceTitle(cap), url)),
             });
+            
+            // Debug: Log social parser results
+            dbg("[TT] Social parsed title:", socialParsed.title);
+            dbg("[TT] Social parsed ingredients count:", socialParsed.ingredients.length);
+            dbg("[TT] Social parsed ingredients:", JSON.stringify(socialParsed.ingredients, null, 2));
+            dbg("[TT] Social parsed steps count:", socialParsed.steps.length);
 
             if (socialParsed.title) {
               safeSetTitle(socialParsed.title, url, title, dbg, "tiktok:social-title");
@@ -2116,6 +2244,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
               ...parsed.steps,
               ...socialParsed.steps,
             ]);
+            
+            dbg("[TT] Final merged ingredients count:", mergedIngredients.length);
+            dbg("[TT] Final merged steps count:", mergedSteps.length);
 
             parsed.ingredients = mergedIngredients;
             parsed.steps = mergedSteps;
@@ -2154,26 +2285,78 @@ function stitchBrokenSteps(lines: string[]): string[] {
             dbg("Γ¥î STEP 2 (parse) failed:", safeErr(e));
           }
 
-          // STEP 3: OCR fallback
+          // STEP 3: OCR fallback AND image capture for preview
           try {
-            if (!success || (ingredients.every(v => !v.trim()))) {
+            // Always try to capture image for preview, even if we skip OCR
+            const hasGoodResults = (ingredients.filter(v => v.trim()).length >= 5) || (steps.filter(v => v.trim()).length >= 3);
+            
+            // Try to get image from DOM payload first
+            if (domPayload?.imageUrl && !gotSomethingForRunRef.current) {
+              try {
+                await tryImageUrl(domPayload.imageUrl, url);
+                dbg("[TT] Set image from DOM payload:", domPayload.imageUrl);
+                gotSomethingForRunRef.current = true;
+              } catch (e) {
+                dbg("[TT] Failed to set image from DOM payload:", safeErr(e));
+              }
+            }
+            
+            // OCR fallback (skip if we have good results to save time)
+            if ((!success || (ingredients.every(v => !v.trim()))) && !hasGoodResults) {
               bumpStage(2);
               dbg("≡ƒô╕ STEP 3 trying screenshot + OCR");
               const shot = await autoSnapTikTok(url, 2);
               if (shot) {
-                const ocrText = await ocrImageToText(shot);
+                dbg("[OCR] Screenshot captured, attempting OCR...");
+                // Add timeout to OCR (max 10 seconds)
+                const ocrText = await Promise.race([
+                  ocrImageToText(shot),
+                  new Promise<string | null>((resolve) => setTimeout(() => { dbg("[OCR] OCR timeout after 10s"); resolve(null); }, 10000))
+                ]);
                 dbg("≡ƒöì STEP 3 OCR text length:", ocrText ? ocrText.length : 0);
                 if (ocrText && ocrText.length > 50) {
+                  dbg("[OCR] OCR text (first 500 chars):", ocrText.slice(0, 500));
                   const parsed = parseRecipeText(ocrText);
                   dbg("≡ƒôè STEP 3 OCR parse conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
                   if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
-                    if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) setIngredients(parsed.ingredients);
-                    if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
+                    // Merge OCR results with existing results if they're better
+                    if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) {
+                      setIngredients(parsed.ingredients);
+                      dbg("[OCR] Set ingredients from OCR");
+                    } else if (parsed.ingredients.length > ingredients.filter(v => v.trim()).length) {
+                      // OCR found more ingredients, use them
+                      setIngredients(parsed.ingredients);
+                      dbg("[OCR] OCR found more ingredients, using OCR results");
+                    }
+                    if (steps.every(v => !v.trim()) && parsed.steps.length) {
+                      setSteps(parsed.steps);
+                      dbg("[OCR] Set steps from OCR");
+                    }
                     bumpStage(3);
                     dbg("Γ£à STEP 3 OCR gave usable content");
                     success = true;
+                  } else {
+                    dbg("[OCR] OCR parsed but didn't find enough ingredients/steps");
                   }
+                } else {
+                  dbg("[OCR] OCR text too short or empty");
                 }
+              } else if (!gotSomethingForRunRef.current) {
+                // If OCR didn't run but we still need an image, try to capture one
+                dbg("[TT] OCR skipped, but capturing image for preview");
+                const shot = await autoSnapTikTok(url, 1);
+                if (shot) {
+                  dbg("[TT] Captured image for preview");
+                } else {
+                  dbg("[OCR] Failed to capture screenshot");
+                }
+              }
+            } else if (!gotSomethingForRunRef.current) {
+              // We have good results but no image yet - capture one for preview
+              dbg("[TT] Good results, capturing image for preview");
+              const shot = await autoSnapTikTok(url, 1);
+              if (shot) {
+                dbg("[TT] Captured image for preview");
               }
             }
           } catch (e) {

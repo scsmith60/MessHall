@@ -115,7 +115,7 @@ export default function TikTokSnap({
   /* ------------------------ smart-centering scroll ------------------------- */
   // math we run INSIDE the page:
   //   t = H*focusY - V*focusCenter
-  //   then clamp HARD to [0, H-V] so “Top” can be truly the top.
+  //   then clamp HARD to [0, H-V] so "Top" can be truly the top.
   const scrollToFocus = useCallback((focus: number, center: number) => {
     const js = `
       try {
@@ -128,6 +128,7 @@ export default function TikTokSnap({
         var max = Math.max(0, H - V);
         if (t > max) t = max;          // HARD bottom clamp
         window.scrollTo(0, t);
+        
       } catch (e) {}
       true;
     `;
@@ -153,19 +154,102 @@ export default function TikTokSnap({
     return `
       (function () {
         function post(type, payload){ try{ window.ReactNativeWebView.postMessage(JSON.stringify({type, payload})); }catch(e){} }
+        
+        // Hide play buttons immediately when DOM is ready
+        function hidePlayButtons() {
+          try {
+            // Add CSS style
+            var styleId = 'hide-play-buttons-style';
+            if (!document.getElementById(styleId)) {
+              var style = document.createElement('style');
+              style.id = styleId;
+              style.textContent = '[data-e2e="browse-play-button"], [data-e2e="video-play-button"], .play-button, .video-play-button, button[aria-label*="Play" i], button[aria-label*="play" i], [class*="PlayButton"], [class*="play-button"], svg[class*="play"], svg path[d*="M8"], svg path[d*="m8"], [class*="icon"][class*="play"], div[style*="triangle"] { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; width: 0 !important; height: 0 !important; }';
+              if (document.head) document.head.appendChild(style);
+              else document.documentElement.appendChild(style);
+            }
+            
+            // Also directly hide elements
+            var selectors = [
+              '[data-e2e="browse-play-button"]',
+              '[data-e2e="video-play-button"]',
+              '.play-button',
+              '.video-play-button',
+              'button[aria-label*="Play" i]',
+              'button[aria-label*="play" i]',
+              '[class*="PlayButton"]',
+              '[class*="play-button"]',
+              'svg[class*="play"]',
+              'svg path[d*="M8"]',
+              'svg path[d*="m8"]'
+            ];
+            selectors.forEach(function(sel) {
+              try {
+                var els = document.querySelectorAll(sel);
+                for (var i = 0; i < els.length; i++) {
+                  var el = els[i];
+                  el.style.setProperty('display', 'none', 'important');
+                  el.style.setProperty('visibility', 'hidden', 'important');
+                  el.style.setProperty('opacity', '0', 'important');
+                  el.style.setProperty('width', '0', 'important');
+                  el.style.setProperty('height', '0', 'important');
+                  // Also hide parent if it's a container
+                  if (el.parentElement) {
+                    var parent = el.parentElement;
+                    var parentClasses = (parent.className || '').toLowerCase();
+                    if (parentClasses.includes('play') || parentClasses.includes('button')) {
+                      parent.style.setProperty('display', 'none', 'important');
+                    }
+                  }
+                }
+              } catch(e) {}
+            });
+          } catch(e) {}
+        }
+        
         function twoFramesThenDelay(){
           requestAnimationFrame(function(){
             requestAnimationFrame(function(){
               post('raf2');
               try{ var v=document.querySelector('video'); if(v && !v.paused) v.pause(); }catch(e){}
+              // Aggressively hide play buttons before screenshot
+              hidePlayButtons();
+              // Also hide by direct selector matching
+              try {
+                var allButtons = document.querySelectorAll('button, [role="button"], svg, div[class*="play"], div[class*="Play"]');
+                for (var i = 0; i < allButtons.length; i++) {
+                  var el = allButtons[i];
+                  var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
+                  var classes = (el.className || '').toLowerCase();
+                  if (text.includes('play') || classes.includes('play') || classes.includes('button')) {
+                    var style = window.getComputedStyle(el);
+                    if (style.cursor === 'pointer' || el.tagName === 'BUTTON' || el.tagName === 'SVG') {
+                      el.style.setProperty('display', 'none', 'important');
+                      el.style.setProperty('visibility', 'hidden', 'important');
+                      el.style.setProperty('opacity', '0', 'important');
+                    }
+                  }
+                }
+              } catch(e) {}
               setTimeout(function(){ post('waitDone'); }, ${safeDelay});
             });
           });
         }
-        if (document.readyState === 'interactive' || document.readyState === 'complete') { post('dom'); }
-        else { document.addEventListener('DOMContentLoaded', function(){ post('dom'); }, {once:true}); }
+        if (document.readyState === 'interactive' || document.readyState === 'complete') { 
+          post('dom'); 
+          hidePlayButtons();
+        }
+        else { 
+          document.addEventListener('DOMContentLoaded', function(){ 
+            post('dom'); 
+            hidePlayButtons();
+          }, {once:true}); 
+        }
         if (document.readyState === 'complete') { post('load'); twoFramesThenDelay(); }
         else { window.addEventListener('load', function(){ post('load'); twoFramesThenDelay(); }, {once:true}); }
+        
+        // Hide play buttons periodically in case they re-appear (but stop after 5 seconds)
+        var hideInterval = setInterval(hidePlayButtons, 200);
+        setTimeout(function() { clearInterval(hideInterval); }, 5000);
 
         // initial scroll (with hard clamps)
         try {
@@ -217,13 +301,41 @@ export default function TikTokSnap({
 
     const thisAttempt = attemptIdRef.current;
     setIsCapturing(true);
+    // Hide play button right before capture
+    try {
+      if (webRef.current) {
+        webRef.current.injectJavaScript(`
+          (function() {
+            try {
+              var selectors = ['[data-e2e="browse-play-button"]', '[data-e2e="video-play-button"]', '.play-button', '.video-play-button', 'button', 'svg', '[class*="play"]', '[class*="Play"]'];
+              selectors.forEach(function(sel) {
+                try {
+                  var els = document.querySelectorAll(sel);
+                  for (var i = 0; i < els.length; i++) {
+                    var el = els[i];
+                    var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
+                    var classes = (el.className || '').toLowerCase();
+                    if (text.includes('play') || classes.includes('play') || (el.tagName === 'SVG' && el.parentElement && el.parentElement.className && el.parentElement.className.toLowerCase().includes('play'))) {
+                      el.style.setProperty('display', 'none', 'important');
+                      el.style.setProperty('visibility', 'hidden', 'important');
+                      el.style.setProperty('opacity', '0', 'important');
+                    }
+                  }
+                } catch(e) {}
+              });
+            } catch(e) {}
+          })();
+          true;
+        `);
+      }
+    } catch(e) {}
     const t = setTimeout(async () => {
       if (attemptIdRef.current !== thisAttempt) { setIsCapturing(false); return; }
       try {
         const uri = await captureRef(shotRef, { format: "jpg", quality: 0.92, result: "tmpfile" });
         if (!sentForAttemptRef.current) { sentForAttemptRef.current = true; onFound(uri); }
       } catch {} finally { setIsCapturing(false); }
-    }, 0); // tiny yield
+    }, 100); // Small delay to let hide script execute
     return () => clearTimeout(t);
   }, [visible, readyDom, readyLoad, readyRaf2, readyDelay, isCapturing, onFound]);
 
@@ -240,13 +352,41 @@ export default function TikTokSnap({
 
     const thisAttempt = attemptIdRef.current;
     setIsCapturing(true);
+    // Hide play button right before capture
+    try {
+      if (webRef.current) {
+        webRef.current.injectJavaScript(`
+          (function() {
+            try {
+              var selectors = ['[data-e2e="browse-play-button"]', '[data-e2e="video-play-button"]', '.play-button', '.video-play-button', 'button', 'svg', '[class*="play"]', '[class*="Play"]'];
+              selectors.forEach(function(sel) {
+                try {
+                  var els = document.querySelectorAll(sel);
+                  for (var i = 0; i < els.length; i++) {
+                    var el = els[i];
+                    var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
+                    var classes = (el.className || '').toLowerCase();
+                    if (text.includes('play') || classes.includes('play') || (el.tagName === 'SVG' && el.parentElement && el.parentElement.className && el.parentElement.className.toLowerCase().includes('play'))) {
+                      el.style.setProperty('display', 'none', 'important');
+                      el.style.setProperty('visibility', 'hidden', 'important');
+                      el.style.setProperty('opacity', '0', 'important');
+                    }
+                  }
+                } catch(e) {}
+              });
+            } catch(e) {}
+          })();
+          true;
+        `);
+      }
+    } catch(e) {}
     const t = setTimeout(async () => {
       if (attemptIdRef.current !== thisAttempt) { setIsCapturing(false); return; }
       try {
         const uri = await captureRef(shotRef, { format: "jpg", quality: 0.92, result: "tmpfile" });
         if (!sentForAttemptRef.current) { sentForAttemptRef.current = true; onFound(uri); }
       } catch {} finally { setIsCapturing(false); }
-    }, Math.max(0, Math.floor(captureDelayMs)));
+    }, Math.max(100, Math.floor(captureDelayMs))); // Small delay to let hide script execute
     return () => clearTimeout(t);
   }, [resnapKey, visible, captureDelayMs, fy, fc, scrollToFocus, onFound]);
 
@@ -312,6 +452,15 @@ export default function TikTokSnap({
               style={styles.webView}
               onMessage={onMessage}
               injectedJavaScript={injectedJavaScript}
+              injectedJavaScriptBeforeContentLoaded={`
+                // Inject CSS early to hide play buttons
+                (function() {
+                  var style = document.createElement('style');
+                  style.textContent = '[data-e2e="browse-play-button"], [data-e2e="video-play-button"], .play-button, .video-play-button, button[aria-label*="Play" i], button[aria-label*="play" i], [class*="PlayButton"], [class*="play-button"], svg[class*="play"] { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }';
+                  if (document.head) document.head.appendChild(style);
+                  else if (document.documentElement) document.documentElement.appendChild(style);
+                })();
+              `}
               javaScriptEnabled
               domStorageEnabled
               cacheEnabled

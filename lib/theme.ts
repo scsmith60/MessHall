@@ -6,9 +6,9 @@
 export const COLORS = {
   // base layers
   bg: '#071F1C', // very dark green-gray / near-black (root background)
-  surface: '#0A2A26', // main panels / screen containers
-  card: '#0F3A33', // card surfaces that sit above surface
-  elevated: '#123C36', // stronger elevated panels
+  surface: '#0A2A26', // main panels / screen containers (input fields)
+  card: '#153A32', // card surfaces that sit above surface
+  elevated: '#153A32', // stronger elevated panels
 
   // overlays & scrims
   overlay: 'rgba(7,31,28,0.6)',

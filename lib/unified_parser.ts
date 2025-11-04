@@ -69,8 +69,8 @@ function fixWrappedPanSizes(text: string): string {
 }
 
 // ---------- section slicer (find "Ingredients" and "Steps" areas) ----------
-const ING_RE = /\b(ingredients?|what you need|you(?:'|’)ll need)\b[:\-–—]?\s*/i;
-const STEP_HDR_RE = /\b(instructions?|directions?|steps?|method)\b[:\-–—]?\s*/i;
+const ING_RE = /\b(ingredients?|what you need|you(?:'|')ll need)\b[:\-–—]?\s*/i;
+const STEP_HDR_RE = /\b(instructions?|directions?|steps?|method|how\s+to\s+make\s+it)\b[:\-–—]?\s*/i;
 
 function sliceSectionsSmart(raw: string) {
   const lower = raw.toLowerCase();
