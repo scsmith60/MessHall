@@ -154,7 +154,7 @@ function glueSplitMixedNumbersAcrossNewlines(text: string): string {
 }
 
 // ---------- detectors for ingredients/steps ----------
-const UNIT_WORD = /(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|ml|l|g|gram|kg|lb|lbs|pound|pounds|stick|clove|cloves|pinch|dash|bunch|can|cans|package|packages|head|heads)\b/i;
+const UNIT_WORD = /(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|ml|l|g|gram|kg|lb|lbs|pound|pounds|stick|clove|cloves|pinch|pinches|dash|dashes|bunch|can|cans|package|packages|head|heads)\b/i;
 const FRACTIONS = /[¼½¾⅓⅔⅛⅜⅝⅞]/;
 const QTY_START = /\d+(?![.)])(?:\s*[-–]\s*\d+)?/;
 
@@ -168,6 +168,15 @@ function looksLikeIngredient(line: string): boolean {
   const t = line.trim(); if (!t) return false;
   if (LEAD_NUM_RE.test(t)) return false;
   const qty = new RegExp(`^(${QTY_START.source}|\\d+\\s*\\/\\s*\\d+|[¼½¾⅓⅔⅛⅜⅝⅞])`).test(t);
+  // Special case: "to taste" ingredients (e.g., "Salt and pepper to taste", "Salt to taste")
+  if (/\bto taste\b/i.test(t) || /\b(salt|pepper)\s+(and|&)\s+(pepper|salt)\b/i.test(t)) {
+    return true;
+  }
+  // Special case: "pinch" or "dash" ingredients (with or without "of")
+  // Matches: "pinch of salt", "dash of cayenne", "pinch salt", "dash pepper", "A pinch of salt"
+  if (/\b(pinch|pinches|dash|dashes)(\s+of)?\s+[a-z]/i.test(t)) {
+    return true;
+  }
   return qty || UNIT_WORD.test(t) || FRACTIONS.test(t);
 }
 function looksLikeStep(line: string): boolean {
@@ -422,6 +431,19 @@ export function parseRecipeText(input: string): ParseResult {
   // unique + final orphan-number glue
   const ingredientsPrepped = finalFixOrphanNumberIngredients(uniqueNonEmpty(ingredientsBuilt));
   let ingredients = dropJunkIngredientLines(ingredientsPrepped).slice(0, 60);
+  
+  // Ensure "Salt and pepper to taste" is included if it appeared in the original text
+  // Check if we have salt/pepper separately but missing the combined version
+  const hasSalt = ingredients.some(ing => /^salt(\s+to\s+taste)?$/i.test(ing.trim()));
+  const hasPepper = ingredients.some(ing => /^pepper(\s+to\s+taste)?$/i.test(ing.trim()));
+  const hasSaltAndPepper = ingredients.some(ing => /salt\s+(and|&)\s+pepper/i.test(ing));
+  // If original text had "Salt and pepper to taste" but we don't have it, add it
+  const originalHasSaltAndPepper = /\bsalt\s+(and|&)\s+pepper\s+to\s+taste\b/i.test(input);
+  if (originalHasSaltAndPepper && !hasSaltAndPepper && (hasSalt || hasPepper)) {
+    // Remove individual salt/pepper entries and add combined
+    ingredients = ingredients.filter(ing => !/^(salt|pepper)(\s+to\s+taste)?$/i.test(ing.trim()));
+    ingredients.push("Salt and pepper to taste");
+  }
 
   // ---------- STEPS ----------
   // get raw step lines (after strong inline splitting)

@@ -174,3 +174,5 @@ CREATE POLICY "Authenticated users can send tips" ON enlisted_club_tips
 CREATE POLICY "Service role can update tips" ON enlisted_club_tips
   FOR UPDATE USING (true);
 
+
+

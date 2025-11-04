@@ -12,7 +12,7 @@ import {
 import { router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import ThemedNotice from "../../components/ui/ThemedNotice";
-import { playDonutEasterEgg, playLiverEasterEgg, playRockyMountainOystersEasterEgg } from "@/lib/sounds";
+import { playDonutEasterEgg } from "@/lib/sounds";
 import { Swipeable, RectButton } from "react-native-gesture-handler";
 import { useFocusEffect } from "@react-navigation/native";
 import WebView from "react-native-webview";
@@ -515,7 +515,9 @@ export default function CaptureScreen() {
     if (!words.length) return false;
     const hasLetters = /[A-Za-z]/.test(s);
     if (!hasLetters) return false;
-    if (/\b(see more|open app|global|video|community|watch now)\b/i.test(s)) return false;
+    if (/\b(see more|open app|global|video|community|watch now|follow us|follow me|follow for)\b/i.test(s)) return false;
+    // Reject "Follow us for" explicitly
+    if (/^follow\s+us\s+for/i.test(s)) return false;
     const hasUnits = TITLE_ING_TOKEN.test(s);
     const hasQty = /\d/.test(s);
     if (hasUnits && hasQty) return false;
@@ -546,6 +548,9 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (/^for\b/i.test(s)) return true;
     if (s.length > 120) return true;
     if (/\b(see more|open app|global video community|watch now|watch video)\b/i.test(s)) return true;
+    // Reject ingredient phrases - these are ingredients, not titles
+    if (/\b(to taste|pinch|dash|salt and pepper|salt & pepper)\b/i.test(s.toLowerCase())) return true;
+    if (/^(salt|pepper|garlic|onion)/i.test(s) && /(and|&|to taste)/i.test(s.toLowerCase())) return true;
     return false;
   }
   function scoreTitleCandidate(line: string): number {
@@ -759,6 +764,9 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (/^\d{6,}$/.test(s)) return true;
     // If it starts directly with "Ingredients:" it's not a real title
     if (/^\s*ingredients?:/i.test(s)) return true;
+    // Reject ingredient phrases - "Salt and pepper to taste" is ALWAYS an ingredient, never a title
+    if (/\b(to taste|pinch|dash|salt and pepper|salt & pepper)\b/i.test(lower)) return true;
+    if (/^(salt|pepper|garlic|onion)/i.test(s) && /(and|&|to taste)/i.test(lower)) return true;
     return false;
   }
 
@@ -855,10 +863,16 @@ function normalizeUnicodeFractions(s: string): string {
 }
 
 function preCleanIgCaptionForParsing(s: string): string {
-  // 1) make fractions friendly
-  let out = normalizeUnicodeFractions(s);
+  // 1) Remove Instagram metadata prefix: "898 likes, 11 comments - username on date:"
+  let out = String(s || "");
+  out = out.replace(/^\s*\d+[\d,.\s]*\s+likes?,?\s*\d+[\d,.\s]*\s+comments?\s*-\s*[^:]+(?:\s+on\s+[^:]+)?:\s*/i, "");
+  // Also handle quoted title pattern: "metadata: "Recipe Title" -> Recipe Title
+  out = out.replace(/^[^"]*["'\u201c\u201d]\s*([^"'\u201d\u201c]+)["'\u201d\u201c]/i, "$1");
+  
+  // 2) make fractions friendly
+  out = normalizeUnicodeFractions(out);
 
-  // 2) add a space between quantity (with optional mixed fraction) and unit
+  // 3) add a space between quantity (with optional mixed fraction) and unit
   //    examples: "1lb" -> "1 lb", "1 1/2lb" -> "1 1/2 lb", "12oz" -> "12 oz"
   //    units we care about here; extend if you like
   out = out.replace(
@@ -866,14 +880,14 @@ function preCleanIgCaptionForParsing(s: string): string {
     "$1 "
   );
 
-  // 3) tame ellipses so they do not leak as garbled characters
+  // 4) tame ellipses so they do not leak as garbled characters
   out = out.replace(/\u2026/g, "...");
 
-  // 4) drop naked likes/comments counters
-  out = out.replace(/^\s*\d[\d,.\s]*\s+likes?.*$/gim, "");
-  out = out.replace(/^\s*\d[\d,.\s]*\s+comments?.*$/gim, "");
+  // 5) drop naked likes/comments counters (standalone lines)
+  out = out.replace(/^\s*\d+[\d,.\s]*\s+likes?.*$/gim, "");
+  out = out.replace(/^\s*\d+[\d,.\s]*\s+comments?.*$/gim, "");
 
-  return out;
+  return out.trim();
 }
 
 const TEXT_NUMBER_PATTERN = /\b(one|two|three|four|five|six|seven|eight|nine|ten|half|quarter|third|couple|few|handful)\b/i;
@@ -1407,9 +1421,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
     async function runOnce(): Promise<any> {
       return new Promise((resolve) => {
       let resolved = false;
+      // Reduced timeout to 10 seconds (fast path should complete in < 1s, full scrape in 3-5s)
       const timeout = setTimeout(() => {
         if (!resolved) { resolved = true; setInstagramScraperVisible(false); resolve(null); }
-      }, 22000);
+      }, 10000);
       
       setInstagramScraperUrl(finalUrl);
       setInstagramScraperVisible(true);
@@ -1420,7 +1435,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
           resolved = true;
           clearTimeout(timeout);
           setInstagramScraperVisible(false);
-          resolve(payload || null);
+          // If payload indicates error, don't retry
+          if (payload && (payload.debug?.includes("error:") || payload.debug?.includes("load-error") || payload.debug?.includes("http-error"))) {
+            resolve(payload); // Return error payload immediately
+          } else {
+            resolve(payload || null);
+          }
         }
       };
       });
@@ -1428,11 +1448,21 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
     // First attempt
     let payload: any = await runOnce();
+    // Don't retry if we got an error response (including deep link redirects)
+    if (payload && (payload.debug?.includes("error:") || payload.debug?.includes("load-error") || 
+        payload.debug?.includes("http-error") || payload.debug?.includes("deep-link-redirect"))) {
+      return payload; // Return error immediately, don't retry
+    }
     const weak = !payload || (!payload.caption && !payload.text);
-    // If the first run yielded nothing, retry once after a short delay (first load often needs cookies/expander clicks)
+    // If the first run yielded nothing (but wasn't an error), retry once after a short delay
     if (weak) {
-      try { await new Promise(r => setTimeout(r, 600)); } catch {}
+      try { await new Promise(r => setTimeout(r, 400)); } catch {}
       payload = await runOnce();
+      // Don't retry again if the second attempt also failed with an error
+      if (payload && (payload.debug?.includes("error:") || payload.debug?.includes("load-error") || 
+          payload.debug?.includes("http-error") || payload.debug?.includes("deep-link-redirect"))) {
+        return payload;
+      }
     }
     return payload;
   }, [bringHudToFront]);
@@ -1644,8 +1674,30 @@ function stitchBrokenSteps(lines: string[]): string[] {
           try {
             bumpStage(1);
             igDom = await scrapeInstagramDom(url);
+            
+            // Log full Instagram payload structure
+            dbg("[IG] Instagram payload keys:", Object.keys(igDom || {}));
+            dbg("[IG] Instagram payload full:", JSON.stringify({
+              ok: igDom?.ok,
+              captionLength: (igDom?.caption || "").length,
+              textLength: (igDom?.text || "").length,
+              imageUrl: igDom?.imageUrl || igDom?.image_url,
+              cleanTitle: igDom?.cleanTitle,
+              pageTitle: igDom?.pageTitle,
+              commentsCount: Array.isArray(igDom?.comments) ? igDom.comments.length : 0,
+              bestComment: igDom?.bestComment,
+              debug: igDom?.debug,
+              hasSigi: !!(igDom as any)?.sigi,
+            }, null, 2));
+            
             const rawCaption = (igDom?.caption || "").trim();
             dbg("[IG] Instagram payload length:", rawCaption.length);
+            dbg("[IG] Raw caption (first 500 chars):", rawCaption.slice(0, 500));
+            dbg("[IG] Raw caption (last 500 chars):", rawCaption.length > 500 ? rawCaption.slice(-500) : "(full content shown above)");
+            dbg("[IG] Raw text (first 500 chars):", (igDom?.text || "").slice(0, 500));
+            dbg("[IG] Raw text (last 500 chars):", (igDom?.text || "").length > 500 ? (igDom?.text || "").slice(-500) : "(full content shown above)");
+            dbg("[IG] Full caption length:", rawCaption.length, "Full text length:", (igDom?.text || "").length);
+            
             // collect title candidates but don't set title yet (avoid overwriting while parsing)
             const igTitleCandidates: Array<{ v: string; src: string }> = [];
 
@@ -1654,21 +1706,29 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const cleanedCaption = preCleanIgCaptionForParsing(rawCaption);
             const cleanedArticle = preCleanIgCaptionForParsing(articleTextRaw);
             const combinedBody = [cleanedCaption, cleanedArticle].filter(Boolean).join("\n\n");
+            
+            // Debug: Show cleaned caption
+            dbg("[IG] Cleaned caption (first 300 chars):", cleanedCaption.slice(0, 300));
+            dbg("[IG] Combined body length:", combinedBody.length);
+            
             const captionDishTitle = findDishTitleFromText(combinedBody, url);
             const fallbackDishTitle = captionDishTitle || normalizeDishTitle(cleanTitle(captionToNiceTitle(combinedBody), url));
             const parsedInstagram = parseSocialCaption(combinedBody, {
               fallbackTitle: fallbackDishTitle,
               heroImage: heroFromDom ?? null,
             });
-            const unifiedParse = parseRecipeText(combinedBody);
-            const mergedIngredients = dedupeNormalized([
-              ...parsedInstagram.ingredients,
-              ...unifiedParse.ingredients,
-            ]);
-            const mergedSteps = dedupeNormalized([
-              ...parsedInstagram.steps,
-              ...unifiedParse.steps,
-            ]);
+            
+            // Debug: Log what was actually parsed
+            dbg("[IG] Parsed title:", parsedInstagram.title);
+            dbg("[IG] Parsed ingredients count:", parsedInstagram.ingredients.length);
+            dbg("[IG] Parsed ingredients:", JSON.stringify(parsedInstagram.ingredients, null, 2));
+            dbg("[IG] Parsed steps count:", parsedInstagram.steps.length);
+            dbg("[IG] Parsed steps (first 3):", JSON.stringify(parsedInstagram.steps.slice(0, 3), null, 2));
+            
+            // For Instagram, ONLY use parsedInstagram results - it follows strict section order
+            // The unified parser is too generic and mixes things up
+            const mergedIngredients = parsedInstagram.ingredients;
+            const mergedSteps = parsedInstagram.steps;
 
             // Prefer DOM-provided cleaned titles (scraper heuristics) before using long captions
             try {
@@ -1681,15 +1741,41 @@ function stitchBrokenSteps(lines: string[]): string[] {
               }
             } catch {}
 
-            if (parsedInstagram.title) igTitleCandidates.push({ v: normalizeDishTitle(cleanTitle(parsedInstagram.title, url)), src: "instagram:caption-title" });
-            if (captionDishTitle) igTitleCandidates.push({ v: captionDishTitle, src: "instagram:caption-fallback" });
+            // Prioritize parsedInstagram.title - it's from the section-aware parser and should be food-related
+            if (parsedInstagram.title && !isWeakTitle(parsedInstagram.title)) {
+              igTitleCandidates.push({ v: normalizeDishTitle(cleanTitle(parsedInstagram.title, url)), src: "instagram:caption-title" });
+            }
+            // Only use fallback if it's not junk like "Follow us for" or ingredient phrases - be very strict
+            if (captionDishTitle && !isWeakTitle(captionDishTitle) && !/^follow\s+us\s+for/i.test(captionDishTitle.toLowerCase())) {
+              const cleaned = normalizeDishTitle(cleanTitle(captionDishTitle, url));
+              // Double-check it's not junk or ingredient phrase before adding
+              const lower = cleaned.toLowerCase();
+              if (cleaned && !isWeakTitle(cleaned) && !/^follow\s+us\s+for/i.test(lower)) {
+                // Reject ingredient phrases like "Salt and pepper to taste"
+                if (/\b(to taste|pinch|dash|salt and pepper|salt & pepper)\b/i.test(lower)) {
+                  // Skip - this is an ingredient, not a title
+                } else if (/^(salt|pepper|garlic|onion)/i.test(cleaned) && /(and|&|to taste)/i.test(lower)) {
+                  // Skip - ingredient phrase
+                } else {
+                  igTitleCandidates.push({ v: cleaned, src: "instagram:caption-fallback" });
+                }
+              }
+            }
             // last attempt: try to find a short dish-like title in the scraped page text
             try {
               const txtCandidate = findDishTitleFromText(igDom?.text || rawCaption || "", url);
-              if (txtCandidate) igTitleCandidates.push({ v: txtCandidate, src: "instagram:dom-text" });
+              if (txtCandidate && !isWeakTitle(txtCandidate) && !/^follow\s+us\s+for/i.test(txtCandidate.toLowerCase())) {
+                const lower = txtCandidate.toLowerCase();
+                // Reject ingredient phrases
+                if (!/\b(to taste|pinch|dash|salt and pepper|salt & pepper)\b/i.test(lower) && !(/^(salt|pepper|garlic|onion)/i.test(txtCandidate) && /(and|&|to taste)/i.test(lower))) {
+                  igTitleCandidates.push({ v: txtCandidate, src: "instagram:dom-text" });
+                }
+              }
             } catch {}
 
-            const partitioned = partitionIngredientRows(mergedIngredients, mergedSteps);
+            // For Instagram, we already have clean ingredients and steps from parsedInstagram
+            // Don't use partitionIngredientRows - it might move ingredients to steps incorrectly
+            const partitioned = { ingredients: mergedIngredients, steps: mergedSteps };
             const normalizedSteps = mergeStepFragments(partitioned.steps);
 
             // Instagram-only: aggressively clean ingredient noise (attribution and title echoes)
@@ -1750,10 +1836,22 @@ function stitchBrokenSteps(lines: string[]): string[] {
             // choose best title candidate now that we parsed content (prefer short dish-like titles)
             try {
               if (igTitleCandidates && igTitleCandidates.length) {
-                igTitleCandidates.sort((a, b) => scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v));
+                // Sort by score, but prioritize parsedInstagram.title over fallbacks
+                igTitleCandidates.sort((a, b) => {
+                  // Prioritize caption-title over fallback
+                  if (a.src === "instagram:caption-title" && b.src === "instagram:caption-fallback") return -1;
+                  if (b.src === "instagram:caption-title" && a.src === "instagram:caption-fallback") return 1;
+                  return scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v);
+                });
                 for (const cand of igTitleCandidates) {
                   if (!cand.v) continue;
                   const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
+                  const cleanedLower = cleaned.toLowerCase();
+                  // Reject "Follow us for" explicitly
+                  if (/^follow\s+us\s+for/i.test(cleanedLower)) continue;
+                  // Reject ingredient phrases - "Salt and pepper to taste" is ALWAYS an ingredient, never a title
+                  if (/\b(to taste|pinch|dash|salt and pepper|salt & pepper)\b/i.test(cleanedLower)) continue;
+                  if (/^(salt|pepper|garlic|onion)/i.test(cleaned) && /(and|&|to taste)/i.test(cleanedLower)) continue;
                   if (!isWeakTitle(cleaned)) {
                     // Set a strong title for Instagram
                     safeSetTitle(cleaned, url, title, dbg, cand.src);
@@ -2247,16 +2345,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
       }
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      // fun easter eggs: simple keyword checks
+      // fun easter egg: donuts/doughnuts trigger the drill sergeant clip
       const signal = `${title} \n ${ingredients.join("\n")}`.toLowerCase();
-      if (/\b(donut|doughnut)\b/i.test(signal)) {
+      if (/\b(donut|doughnut|donut\s|doughnut\s)/i.test(signal)) {
         playDonutEasterEgg().catch(() => {});
-      }
-      if (/\b(liver|fava\s*bean|fava\s*beans)\b/i.test(signal)) {
-        playLiverEasterEgg().catch(() => {});
-      }
-      if (/\b(rocky\s*mountain\s*oysters?)\b/i.test(signal)) {
-        playRockyMountainOystersEasterEgg().catch(() => {});
       }
       setOkModalVisible(true);
       router.replace("/(tabs)/home");

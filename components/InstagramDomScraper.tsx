@@ -56,7 +56,12 @@ export default function InstagramDomScraper({
 
   const onShouldStart = (nav: WebViewNavigation) => {
     const u = nav.url;
-    if (isDeepLink(u)) return false;
+    // Block deep links silently (no warning needed - this is expected behavior)
+    if (isDeepLink(u)) {
+      // Don't allow navigation to deep link, but don't log a warning
+      // The WebView will show its own warning, but we'll detect this in the scraper and fail fast
+      return false;
+    }
     if (isForeignHost(u)) return false;
     return true;
   };
@@ -102,9 +107,9 @@ export default function InstagramDomScraper({
       let finished = false;
       function finish(payload){ if (finished) return; finished = true; send("done", payload); }
 
-      setTimeout(() => { if (!finished) finish({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"timeout" }); }, 12000);
+      setTimeout(() => { if (!finished) finish({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"timeout" }); }, 8000);
 
-      async function smoothScroll(){ for (const y of [150, 500, 900, 0]) { window.scrollTo({ top: y, behavior: 'instant' }); await sleep(150); } }
+      async function smoothScroll(){ for (const y of [200, 0]) { window.scrollTo({ top: y, behavior: 'instant' }); await sleep(30); } }
 
       function getPostRoot(){ return document.querySelector('article') || document.querySelector('main') || document.body; }
 
@@ -112,7 +117,7 @@ export default function InstagramDomScraper({
         const root = getPostRoot(); if (!root) return 0;
         let total = 0; const seen = new Set();
         function visible(el){ const r = el.getBoundingClientRect(); return r.width>0 && r.height>0; }
-        for (let round=0; round<3; round++){
+        for (let round=0; round<1; round++){
           let clicks=0;
           for (const el of qsa('button,[role="button"],span,div').filter(el => root.contains(el))){
             const t=(el.innerText||el.textContent||"").trim().toLowerCase();
@@ -120,11 +125,11 @@ export default function InstagramDomScraper({
             if (!visible(el)) continue;
             if (seen.has(el)) continue;
             try{ el.click(); seen.add(el); clicks++; total++; }catch{}
-            if (total>=6) break;
+            if (total>=2) break;
           }
           send("log", { msg:"expanders:clicked", extra:{ clicks, round: round+1 }});
-          if (clicks===0||total>=6) break;
-          await sleep(220);
+          if (clicks===0||total>=2) break;
+          await sleep(30);
         }
         return total;
       }
@@ -168,32 +173,50 @@ export default function InstagramDomScraper({
       function stripIGBoilerplate(s){
         if (!s) return s;
         let out = String(s);
-        out = out.replace(/^\s*\d[\d,.\s]*\s+likes?,?\s*\d[\d,.\s]*\s+comments?\s*-\s*[^:]+:\s*/i, "");
-        out = out.replace(/^\s*\d[\d,.\s]*\s+likes?.*$/gim, "");
-        out = out.replace(/^\s*\d[\d,.\s]*\s+comments?.*$/gim, "");
+        // Remove "898 likes, 11 comments - username on date:" pattern
+        // Pattern must handle: "898 likes, 11 comments - jessicaholland_morethanamom on November 1, 2024:"
+        // Match: digits + "likes," + digits + "comments -" + username + optional " on date" + ":"
+        const metaPattern = /^\s*\d+[\d,.\s]*\s+likes?,?\s*\d+[\d,.\s]*\s+comments?\s*-\s*[^:]+(?:\s+on\s+[^:]+)?:\s*/i;
+        out = out.replace(metaPattern, "");
+        // Also handle quoted title pattern: remove prefix before quotes if still present
+        // "898 likes...": "Recipe Title" -> "Recipe Title"
+        out = out.replace(/^[^"]*["'\u201c\u201d]\s*([^"'\u201d\u201c]+)["'\u201d\u201c]/i, "$1");
+        // Remove standalone like/comment lines
+        out = out.replace(/^\s*\d+[\d,.\s]*\s+likes?.*$/gim, "");
+        out = out.replace(/^\s*\d+[\d,.\s]*\s+comments?.*$/gim, "");
         out = out.replace(/^\s*instagram\s+video\s*$/gim, "");
         return out.trim();
       }
       function makeCleanTitle(caption){
         let c = stripIGBoilerplate(String(caption||""));
         // 1) quoted phrase is best
-        const q = c.match(/[“"']([^“"']{3,80})[”"']/);
+        const q = c.match(/[""']([^""']{3,80})[""']/);
         if (q && q[1]) c = q[1];
-        // 2) then split before ~ or newline
-        c = c.split(/\\s*~\\s*|\\r?\\n/)[0].trim();
+        // 2) split before ~ or newline (but keep first line if it looks like a title)
+        const lines = c.split(/\\s*~\\s*|\\r?\\n/);
+        const firstLine = lines[0]?.trim() || "";
+        // If first line looks like a recipe title (has food words, not too long, not a list item), use it
+        if (firstLine && firstLine.length > 10 && firstLine.length < 100 && 
+            !/^\\d+[.)]\\s/.test(firstLine) && 
+            !/^(ingredients?|steps?|directions?|instructions?|method)/i.test(firstLine) &&
+            /\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){1,6})\\b/.test(firstLine)) {
+          c = firstLine;
+        } else {
+          c = firstLine;
+        }
         // 3) drop leading handles/hashtags (with or without trailing space)
         c = c.replace(/^(?:[#@][\\w._-]+\\b[\\s,:-]*){1,4}/, "").trim();
         // 4) if still looks like a handle, nuke it
         if (/^[@#][\\w._-]+$/.test(c)) c = "";
-        // 5) try to pull two-to-five capitalized words as a dish (e.g. Shrimp Scampi)
-        if (!c) {
-          const m = String(caption||"").match(/\\b([A-Z][a-z]+\\s+(?:[A-Z][a-z]+\\s+){0,3}[A-Z][a-z]+)\\b/);
+        // 5) try to pull two-to-seven capitalized words as a dish (e.g. "Creamy Parmesan Italian Sausage Ditalini Soup")
+        if (!c || c.length < 10) {
+          const m = String(caption||"").match(/\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){1,6})\\b/);
           if (m) c = m[1];
-      }
-      // 6) final tidy
-      c = c.replace(/[“”‘’"<>]/g,"").trim();
-      if (c.length>72) c = c.slice(0,72).trim();
-      return c || "";
+        }
+        // 6) final tidy
+        c = c.replace(/[""''"<>]/g,"").trim();
+        if (c.length>72) c = c.slice(0,72).trim();
+        return c || "";
       }
       function getImageUrl(){
         try{
@@ -226,17 +249,60 @@ export default function InstagramDomScraper({
         return sc;
       }
 
-      async function waitForStable(ms=1200){
+      async function waitForStable(ms=150){
         let last=document.body.innerText.length, stable=0;
-        for (let i=0;i<12;i++){ await sleep(140); const now=document.body.innerText.length; stable = Math.abs(now-last)<20 ? (stable+140) : 0; last=now; if (stable>=ms) break; }
+        for (let i=0;i<3;i++){ await sleep(40); const now=document.body.innerText.length; stable = Math.abs(now-last)<20 ? (stable+40) : 0; last=now; if (stable>=ms) break; }
       }
 
       async function run(){
         send("log",{msg:"page:loading", extra:{url:location.href}});
-        for (let i=0;i<25;i++){ if (document.body && document.body.childElementCount>1) break; await sleep(100); }
+        
+        // Check if we got redirected to a deep link (this means Instagram blocked us)
+        const currentUrl = location.href.toLowerCase();
+        if (currentUrl.startsWith("instagram://") || currentUrl.includes("instagram://")) {
+          send("log",{msg:"error:deep-link-redirect", extra:{url:currentUrl}});
+          finish({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"error:deep-link-redirect" });
+          return;
+        }
+        
+        // Check for error pages or blocked access
+        const bodyText = (document.body?.innerText || "").toLowerCase();
+        if (bodyText.includes("can't open url") || bodyText.includes("cannot open url") || 
+            bodyText.includes("page not found") || bodyText.includes("sorry, this page isn't available") ||
+            bodyText.includes("content isn't available") || bodyText.includes("login to continue")) {
+          send("log",{msg:"error:blocked", extra:{reason:"page blocked or unavailable"}});
+          finish({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"error:blocked" });
+          return;
+        }
+        
+        // Try to get data immediately first (fast path)
+        const quickMeta = readFromMeta();
+        const quickLd = readFromJsonLd();
+        const quickData = quickLd && quickLd.length > quickMeta.length ? quickLd : quickMeta;
+        if (quickData && quickData.length > 100) {
+          send("log",{msg:"fast:data", extra:{len:quickData.length}});
+          const score = scoreRecipeText(quickData);
+          if (score > 200) {
+            // Good enough data found quickly, return early
+            const cleaned = stripIGBoilerplate(quickData);
+            finish({
+              ok: true,
+              caption: cleaned.slice(0, 4000),
+              comments: [], bestComment: "",
+              text: cleaned.slice(0, 4000),
+              imageUrl: getImageUrl(),
+              cleanTitle: makeCleanTitle(cleaned), // Use cleaned version for title extraction
+              debug: "fast:data"
+            });
+            return;
+          }
+        }
+        
+        // Otherwise do full scraping
+        for (let i=0;i<8;i++){ if (document.body && document.body.childElementCount>1) break; await sleep(40); }
         await smoothScroll();
         await clickExpanders();
-        await waitForStable(1200);
+        await waitForStable(150);
 
         const metaCap=readFromMeta(), ldCap=readFromJsonLd(), domCap=readFromDOM();
         send("log",{msg:"sources", extra:{ domLen:domCap.length, ldLen:ldCap.length, metaLen:metaCap.length }});
@@ -249,7 +315,7 @@ export default function InstagramDomScraper({
         const MAX_CAPTION=4000;
         const cleanedCaption = stripIGBoilerplate(best||"");
         const safe = cleanedCaption.slice(0, MAX_CAPTION);
-        const cleanTitle = makeCleanTitle(best||"");
+        const cleanTitle = makeCleanTitle(cleanedCaption || best || ""); // Use cleaned version for title
         const imageUrl = getImageUrl();
         const articleText = stripIGBoilerplate((getPostRoot()?.innerText || "").slice(0, MAX_CAPTION));
 
@@ -311,7 +377,19 @@ export default function InstagramDomScraper({
                 injectedJavaScriptForMainFrameOnly
                 onMessage={onMessage}
                 onLoadEnd={() => setLoading(false)}
-                onError={() => { onResult({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"load-error" }); onClose(); }}
+                onError={(syntheticEvent) => {
+                  const { nativeEvent } = syntheticEvent;
+                  const errorMsg = nativeEvent?.description || "Failed to load URL";
+                  logDebug("[INSTAGRAM]", "WebView error:", errorMsg);
+                  onResult({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"load-error:" + errorMsg });
+                  onClose();
+                }}
+                onHttpError={(syntheticEvent) => {
+                  const { nativeEvent } = syntheticEvent;
+                  logDebug("[INSTAGRAM]", "WebView HTTP error:", nativeEvent?.statusCode);
+                  onResult({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"http-error:" + (nativeEvent?.statusCode || "unknown") });
+                  onClose();
+                }}
               />
             )}
             {loading && (<View style={S.loading}><ActivityIndicator /><Text style={S.loadingText}>Opening page…</Text></View>)}

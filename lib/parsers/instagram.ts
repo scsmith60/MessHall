@@ -1,4 +1,5 @@
 import { ParsedRecipe } from "./types";
+import { parseRecipeText } from "../unified_parser";
 
 const SERVING_PATTERN = /(serves?|servings?|serving size|makes|feeds|enough\s+for|yield|yields|portion|portions?)/i;
 const PROMO_PATTERN = /(^|\s)([#@][\w._-]+)\b|follow\s+|recipes?\b.*(bio|below)|tag\s+us|link\s+in\s+bio|more\s+recipes|messhall\s+app/i;
@@ -169,10 +170,13 @@ export function parseSocialCaption(caption: string, options: InstagramParseOptio
   const title = tidyTitle(titleCandidate, fallbackCandidate, options.fallbackTitle);
   const servings = cleanServings(servingsCandidate);
 
+  // Use unified parser to extract ingredients and steps from the full caption
+  const parsed = parseRecipeText(caption);
+  
   return {
     title,
-    ingredients: [],
-    steps: [],
+    ingredients: parsed.ingredients || [],
+    steps: parsed.steps || [],
     servings,
     heroImage: options.heroImage ?? null,
     source: "instagram",

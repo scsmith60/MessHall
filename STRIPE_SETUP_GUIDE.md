@@ -255,3 +255,5 @@ A: Yes, edit the `application_fee_amount` calculation in `supabase/functions/enl
 4. **Compliance:** Make sure you understand Stripe's terms and local payment regulations
 5. **Monitoring:** Check Stripe Dashboard regularly for failed payments, disputes, etc.
 
+
+
