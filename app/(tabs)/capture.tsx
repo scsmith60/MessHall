@@ -2074,11 +2074,20 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 if (capTitle && !isWeakTitle(capTitle)) ttTitleCandidates.push({ v: capTitle, src: "tiktok:caption" });
 
                 // also try to find a dish-like short title from the DOM text
+                // Only add if we don't already have a good title from higher-priority sources
                 try {
-                  const td = findDishTitleFromText(domPayload?.text || domPayload?.caption || "", url);
-                  // Double-check it's not junk before adding to candidates
-                  if (td && !isWeakTitle(td) && !isTikTokJunkTitle(td)) {
-                    ttTitleCandidates.push({ v: td, src: "tiktok:dom-text" });
+                  const hasGoodDomTitle = ttTitleCandidates.some(c => 
+                    c.src === "tiktok:dom:cleanTitle" && 
+                    c.v && 
+                    !isWeakTitle(c.v) && 
+                    !isTikTokJunkTitle(c.v)
+                  );
+                  if (!hasGoodDomTitle) {
+                    const td = findDishTitleFromText(domPayload?.text || domPayload?.caption || "", url);
+                    // Double-check it's not junk before adding to candidates
+                    if (td && !isWeakTitle(td) && !isTikTokJunkTitle(td)) {
+                      ttTitleCandidates.push({ v: td, src: "tiktok:dom-text" });
+                    }
                   }
                 } catch {}
             } catch {}
@@ -2091,7 +2100,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const cap = (domPayload?.caption || "").trim();
             const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
             const dishTitleFromCaption = findDishTitleFromText(cap, url);
-            if (dishTitleFromCaption) {
+            // Only set title from caption if it's not junk and we don't already have a good title
+            if (dishTitleFromCaption && !isTikTokJunkTitle(dishTitleFromCaption)) {
               safeSetTitle(dishTitleFromCaption, url, title, dbg, "tiktok:caption-dish");
             }
             const captionFallbackTitle = normalizeDishTitle(cleanTitle(captionToNiceTitle(cap), url));
@@ -2154,6 +2164,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             }
 
             // Choose best title candidate for TikTok now that parsing is done
+            // Only do this if we don't already have a strong title set
             try {
                 if (ttTitleCandidates && ttTitleCandidates.length) {
                 // Filter out junk titles before sorting
@@ -2162,11 +2173,25 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
                   return !isWeakTitle(cleaned) && !isTikTokJunkTitle(cleaned);
                 });
-                filtered.sort((a: {v:string,src:string}, b: {v:string,src:string}) => scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v));
-                for (const cand of filtered) {
+                // Sort by source priority: prefer dom:cleanTitle > caption > dom-text
+                const sourcePriority: Record<string, number> = {
+                  "tiktok:dom:cleanTitle": 3,
+                  "tiktok:caption": 2,
+                  "tiktok:dom-text": 1,
+                };
+                filtered.sort((a: {v:string,src:string}, b: {v:string,src:string}) => {
+                  const aPriority = sourcePriority[a.src] || 0;
+                  const bPriority = sourcePriority[b.src] || 0;
+                  if (aPriority !== bPriority) return bPriority - aPriority;
+                  return scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v);
+                });
+                // Only set if we don't already have a good title
+                const currentTitle = title.trim();
+                const hasGoodTitle = currentTitle && !isWeakTitle(currentTitle) && !isTikTokJunkTitle(currentTitle);
+                if (!hasGoodTitle && filtered.length > 0) {
+                  const cand = filtered[0];
                   const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
                   safeSetTitle(cleaned, url, title, dbg, cand.src);
-                  break; // Only use the best one
                 }
               }
             } catch {}

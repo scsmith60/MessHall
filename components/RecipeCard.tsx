@@ -866,8 +866,9 @@ const styles = StyleSheet.create({
   sourceAttribution: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 4,
-    marginBottom: 4,
+    marginTop: 2,
+    marginBottom: 2,
+    marginLeft: 32, // Align with creator text (avatar is ~24px + 8px margin)
   },
   sourceLabel: { color: COLORS.subtext, fontSize: 11, fontWeight: "600" },
   sourceLink: { color: COLORS.accent, fontSize: 11, fontWeight: "700", textDecorationLine: "underline" },
