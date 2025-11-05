@@ -48,7 +48,13 @@ type Chip =
   | "Beef"
   | "Pork"
   | "Seafood"
-  | "Pasta";
+  | "Pasta"
+  | "Drinks"
+  | "Desserts"
+  | "Breakfast"
+  | "Salad"
+  | "Soup"
+  | "Vegetarian";
 
 const ALL_CHIPS: Chip[] = [
   "Vegan",
@@ -56,25 +62,37 @@ const ALL_CHIPS: Chip[] = [
   "Dairy-Free",
   "BBQ",
   "Appetizers",
+  "Breakfast",
   "Chicken",
   "Beef",
   "Pork",
   "Seafood",
   "Pasta",
+  "Salad",
+  "Soup",
+  "Vegetarian",
+  "Drinks",
+  "Desserts",
 ];
 
-// Some chips fight each other (Vegan vs meats)
+// Some chips fight each other (Vegan vs meats, Vegetarian vs meats)
 const CONFLICTS: Record<Chip, Chip[]> = {
   Vegan: ["Chicken", "Beef", "Pork", "Seafood"],
-  Chicken: ["Vegan"],
-  Beef: ["Vegan"],
-  Pork: ["Vegan"],
-  Seafood: ["Vegan"],
+  "Vegetarian": ["Chicken", "Beef", "Pork", "Seafood"],
+  Chicken: ["Vegan", "Vegetarian"],
+  Beef: ["Vegan", "Vegetarian"],
+  Pork: ["Vegan", "Vegetarian"],
+  Seafood: ["Vegan", "Vegetarian"],
   "Gluten-Free": [],
   "Dairy-Free": [],
   BBQ: [],
   Appetizers: [],
   Pasta: [],
+  Breakfast: [],
+  Salad: [],
+  Soup: [],
+  Drinks: [],
+  Desserts: [],
 };
 
 /* ───────────────────────────────────────
@@ -92,11 +110,17 @@ function filtersFromState(q: string, sel: Record<string, boolean>) {
   const cats: string[] = [];
   if (sel["BBQ"]) cats.push("bbq");
   if (sel["Appetizers"]) cats.push("appetizers");
+  if (sel["Breakfast"]) cats.push("breakfast");
   if (sel["Chicken"]) cats.push("chicken");
   if (sel["Beef"]) cats.push("beef");
   if (sel["Pork"]) cats.push("pork");
   if (sel["Seafood"]) cats.push("seafood");
   if (sel["Pasta"]) cats.push("pasta");
+  if (sel["Salad"]) cats.push("salad");
+  if (sel["Soup"]) cats.push("soup");
+  if (sel["Vegetarian"]) cats.push("vegetarian");
+  if (sel["Drinks"]) cats.push("drinks");
+  if (sel["Desserts"]) cats.push("desserts");
 
   return {
     text: q.trim(), // free text for title search
@@ -668,17 +692,17 @@ const styles = StyleSheet.create({
   chip: {
     paddingHorizontal: 12,
     height: 36,
-    backgroundColor: "#0f172a",
+    backgroundColor: COLORS.surface,
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "#1e293b",
+    borderColor: COLORS.border,
   },
   chipActive: {
-    backgroundColor: "rgba(56,189,248,0.15)",
-    borderColor: "rgba(56,189,248,0.55)",
+    backgroundColor: COLORS.accent,
+    borderColor: COLORS.accent,
   },
-  chipText: { color: "#cbd5e1", fontWeight: "600" },
-  chipTextActive: { color: "#e2f4ff" },
+  chipText: { color: COLORS.subtext, fontWeight: "600" },
+  chipTextActive: { color: COLORS.onAccent },
 });

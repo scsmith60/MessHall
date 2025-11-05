@@ -1933,6 +1933,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             dbg("[IG] Instagram scraper failed:", safeErr(err));
           }
 
+          // STEP 4: OG metadata fallback
           if (!gotSomethingForRunRef.current) {
             try {
               const og = await fetchOgForUrl(url);
@@ -1946,6 +1947,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
               dbg("[IG] Instagram image fallback failed:", safeErr(err));
             }
           }
+
 
         } else if (siteType === "facebook") {
           // FACEBOOK PATH (similar to Instagram)

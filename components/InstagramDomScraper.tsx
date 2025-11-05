@@ -9,6 +9,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from "react-native";
 import WebView, { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
 import { logDebug } from "../lib/logger";
+import { captureRef } from "react-native-view-shot";
 
 type ResultPayload = {
   ok: boolean;
@@ -35,6 +36,9 @@ export default function InstagramDomScraper({
   const [loading, setLoading] = useState(true);
   const [runKey, setRunKey] = useState(0);
   const webRef = useRef<WebView>(null);
+  const shotRef = useRef<View>(null);
+  const [pageReady, setPageReady] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
 
   const startUrl = useMemo(() => url, [url]);
 
@@ -265,9 +269,9 @@ export default function InstagramDomScraper({
           return;
         }
         
-        // Check for error pages or blocked access
+         // Check for error pages or blocked access
         const bodyText = (document.body?.innerText || "").toLowerCase();
-        if (bodyText.includes("can't open url") || bodyText.includes("cannot open url") || 
+         if (bodyText.includes("can't open url") || bodyText.includes("cannot open url") || 
             bodyText.includes("page not found") || bodyText.includes("sorry, this page isn't available") ||
             bodyText.includes("content isn't available") || bodyText.includes("login to continue")) {
           send("log",{msg:"error:blocked", extra:{reason:"page blocked or unavailable"}});
@@ -351,7 +355,32 @@ export default function InstagramDomScraper({
     }
   };
 
-  useEffect(() => { if (visible) { setLoading(true); setRunKey(k => k + 1); } }, [visible, url]);
+  // Minimal screenshot helper (used elsewhere as needed)
+  const captureScreenshot = async () => {
+    if (!shotRef.current || isCapturing) return;
+    try {
+      setIsCapturing(true);
+      await new Promise(r => setTimeout(r, 100));
+      await captureRef(shotRef, { format: "jpg", quality: 0.92, result: "tmpfile" });
+    } catch {}
+    finally { setIsCapturing(false); }
+  };
+
+  // When opened, reset and prep
+  useEffect(() => {
+    if (visible) {
+      setLoading(true);
+      setPageReady(false);
+      setRunKey(k => k + 1);
+    }
+  }, [visible, url]);
+
+  // Allow hooks that depend on capture state to run safely
+  useEffect(() => {
+    if (!visible || !pageReady || isCapturing) return;
+    const t = setTimeout(() => { /* ready to capture if needed */ }, 0);
+    return () => clearTimeout(t);
+  }, [visible, pageReady, isCapturing]);
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
@@ -361,7 +390,7 @@ export default function InstagramDomScraper({
             <Text style={S.title}>Reading Instagram…</Text>
             <TouchableOpacity onPress={onClose} style={S.closeBtn}><Text style={S.closeTxt}>✕</Text></TouchableOpacity>
           </View>
-          <View style={S.webWrap}>
+          <View style={S.webWrap} ref={shotRef}>
             {visible && !!url && (
               <WebView
                 ref={webRef}
@@ -376,7 +405,7 @@ export default function InstagramDomScraper({
                 injectedJavaScript={injected}
                 injectedJavaScriptForMainFrameOnly
                 onMessage={onMessage}
-                onLoadEnd={() => setLoading(false)}
+                onLoadEnd={() => { setLoading(false); setPageReady(true); }}
                 onError={(syntheticEvent) => {
                   const { nativeEvent } = syntheticEvent;
                   const errorMsg = nativeEvent?.description || "Failed to load URL";

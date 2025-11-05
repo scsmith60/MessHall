@@ -432,8 +432,34 @@ export function extractRecipeFromJsonLd(html: string): {
                   steps.push(step);
                 } else if (step?.text) {
                   steps.push(String(step.text));
-                } else if (step?.["@type"] === "HowToStep" && step?.itemListElement) {
-                  steps.push(String(step.itemListElement));
+                } else if (step?.itemListElement) {
+                  // Handle HowToStep or HowToSection with itemListElement (contains array of actual steps)
+                  const elements = Array.isArray(step.itemListElement) 
+                    ? step.itemListElement 
+                    : [step.itemListElement];
+                  for (const elem of elements) {
+                    if (typeof elem === "string") {
+                      steps.push(elem);
+                    } else if (elem?.text) {
+                      steps.push(String(elem.text));
+                    } else if (elem?.name) {
+                      steps.push(String(elem.name));
+                    } else if (elem?.itemListElement) {
+                      // Nested itemListElement (uncommon but possible)
+                      const nested = Array.isArray(elem.itemListElement) 
+                        ? elem.itemListElement 
+                        : [elem.itemListElement];
+                      for (const nestedElem of nested) {
+                        if (typeof nestedElem === "string") {
+                          steps.push(nestedElem);
+                        } else if (nestedElem?.text) {
+                          steps.push(String(nestedElem.text));
+                        } else if (nestedElem?.name) {
+                          steps.push(String(nestedElem.name));
+                        }
+                      }
+                    }
+                  }
                 } else if (step?.["@type"] === "HowToStep" && step?.name) {
                   // Some sites use name instead of text
                   steps.push(String(step.name));
