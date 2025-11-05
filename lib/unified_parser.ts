@@ -69,8 +69,8 @@ function fixWrappedPanSizes(text: string): string {
 }
 
 // ---------- section slicer (find "Ingredients" and "Steps" areas) ----------
-const ING_RE = /\b(ingredients?|what you need|you(?:'|')ll need)\b[:\-–—]?\s*/i;
-const STEP_HDR_RE = /\b(instructions?|directions?|steps?|method|how\s+to\s+make\s+it)\b[:\-–—]?\s*/i;
+const ING_RE = /\b(ingredients?|what you need|you(?:'|’)ll need)\b[:\-–—]?\s*/i;
+const STEP_HDR_RE = /\b(instructions?|directions?|steps?|method)\b[:\-–—]?\s*/i;
 
 function sliceSectionsSmart(raw: string) {
   const lower = raw.toLowerCase();
@@ -536,6 +536,9 @@ function isLikelyPromoLine(line: string): boolean {
   if (/\b\d+\s*\+\s*(?:more\s+)?recipes\b/i.test(t)) return true;
   if (/\bmore\b.*\brecipes\b/i.test(t)) return true;
   if (PROMO_CLUE_RE.test(t)) return true;
+  // Filter out SEO keyword lines (e.g., "Keywords: recipe, ingredients, how to make...")
+  if (/^keywords?\s*:?\s*/i.test(t) && /,/.test(t)) return true;
+  if (/\bkeywords?\s*:?\s*[a-z]+(?:\s*,\s*[a-z]+){3,}/i.test(t)) return true;
   return false;
 }
 

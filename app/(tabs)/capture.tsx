@@ -1505,9 +1505,6 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
   const handleRecipeSite = useCallback(
     async (url: string, html: string) => {
-      dbg('[RECIPE] handleRecipeSite called for:', url);
-      dbg('[RECIPE] HTML provided, length:', html?.length || 0);
-      
       try {
         const host = (() => {
           try {
@@ -1516,8 +1513,6 @@ function stitchBrokenSteps(lines: string[]): string[] {
             return "";
           }
         })();
-        dbg('[RECIPE] Host detected:', host);
-        
         const isGordon = host.includes("gordonramsay.com");
         const isAroundMyFamilyTable = host.includes("aroundmyfamilytable.com");
         const isCopyKat = host.includes("copykat.com");
@@ -1553,19 +1548,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
         const jsonLd = extractRecipeFromJsonLd(html);
         if (jsonLd) {
           dbg('[RECIPE] JSON-LD recipe found');
-          dbg('[RECIPE] JSON-LD extracted:', {
-            title: jsonLd.title,
-            ingredientsCount: jsonLd.ingredients?.length ?? 0,
-            stepsCount: jsonLd.steps?.length ?? 0,
-            ingredients: jsonLd.ingredients?.slice(0, 3),
-            steps: jsonLd.steps?.slice(0, 2),
-            debugInfo: (jsonLd as any).__debugInfo,
-          });
           // Auto-discover this site if it's not in our list
           await discoverRecipeSiteIfNeeded(url, html);
           const jsonApplied = await applyExtraction(jsonLd, 'jsonld', { includeMeta: true });
           const hasSteps = (jsonLd.steps?.length ?? 0) > 0;
-          dbg('[RECIPE] JSON-LD extraction result:', { jsonApplied, hasSteps });
           if (jsonApplied && (!isGordon || hasSteps)) {
             return true;
           }
@@ -1576,25 +1562,15 @@ function stitchBrokenSteps(lines: string[]): string[] {
               return true;
             }
           }
-        } else {
-          dbg('[RECIPE] No JSON-LD recipe found in HTML');
         }
 
         const microdata = extractRecipeFromMicrodata(html);
         if (microdata) {
           dbg('[RECIPE] Microdata recipe found');
-          dbg('[RECIPE] Microdata extracted:', {
-            title: microdata.title,
-            ingredientsCount: microdata.ingredients?.length ?? 0,
-            stepsCount: microdata.steps?.length ?? 0,
-            ingredients: microdata.ingredients?.slice(0, 3),
-            steps: microdata.steps?.slice(0, 2),
-          });
           // Auto-discover this site if it's not in our list
           await discoverRecipeSiteIfNeeded(url, html);
           const microApplied = await applyExtraction(microdata, 'microdata', { includeMeta: true });
           const hasMicroSteps = (microdata.steps?.length ?? 0) > 0;
-          dbg('[RECIPE] Microdata extraction result:', { microApplied, hasMicroSteps });
           if (microApplied && (!isGordon || hasMicroSteps)) {
             return true;
           }
@@ -1624,11 +1600,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
           }
         }
 
-        dbg('[RECIPE] handleRecipeSite: All extraction methods exhausted, returning false');
         return false;
       } catch (e) {
-        dbg('[RECIPE] handler failed with error:', safeErr(e));
-        dbg('[RECIPE] Error stack:', e instanceof Error ? e.stack : 'N/A');
+        dbg('[RECIPE] handler failed:', safeErr(e));
         return false;
       }
     },
@@ -1982,21 +1956,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
           
           try {
             const html = await fetchWithUA(url, 12000, "text");
-            dbg("[RECIPE] HTML fetched, length:", html?.length || 0);
-            
-            // Quick check: does HTML contain JSON-LD?
-            const hasJsonLd = /type=["']application\/ld\+json["']/i.test(html || "");
-            const hasRecipeJsonLd = /"@type"\s*:\s*["']Recipe["']/i.test(html || "");
-            dbg("[RECIPE] HTML check:", { hasJsonLd, hasRecipeJsonLd });
-            
             const handled = await handleRecipeSite(url, html);
-            dbg("[RECIPE] handleRecipeSite returned:", handled);
             
             if (handled) {
               success = true;
               dbg("Γ£à Recipe site extraction successful");
             } else {
-              dbg("[RECIPE] Extraction failed, falling back to OG metadata");
               // Fallback to OG if structured data failed
               const og = await fetchOgForUrl(url);
               if (og?.title && isWeakTitle(title)) {
@@ -2109,20 +2074,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 if (capTitle && !isWeakTitle(capTitle)) ttTitleCandidates.push({ v: capTitle, src: "tiktok:caption" });
 
                 // also try to find a dish-like short title from the DOM text
-                // Only add if we don't already have a good title from higher-priority sources
                 try {
-                  const hasGoodDomTitle = ttTitleCandidates.some(c => 
-                    c.src === "tiktok:dom:cleanTitle" && 
-                    c.v && 
-                    !isWeakTitle(c.v) && 
-                    !isTikTokJunkTitle(c.v)
-                  );
-                  if (!hasGoodDomTitle) {
-                    const td = findDishTitleFromText(domPayload?.text || domPayload?.caption || "", url);
-                    // Double-check it's not junk before adding to candidates
-                    if (td && !isWeakTitle(td) && !isTikTokJunkTitle(td)) {
-                      ttTitleCandidates.push({ v: td, src: "tiktok:dom-text" });
-                    }
+                  const td = findDishTitleFromText(domPayload?.text || domPayload?.caption || "", url);
+                  // Double-check it's not junk before adding to candidates
+                  if (td && !isWeakTitle(td) && !isTikTokJunkTitle(td)) {
+                    ttTitleCandidates.push({ v: td, src: "tiktok:dom-text" });
                   }
                 } catch {}
             } catch {}
@@ -2135,8 +2091,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const cap = (domPayload?.caption || "").trim();
             const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
             const dishTitleFromCaption = findDishTitleFromText(cap, url);
-            // Only set title from caption if it's not junk and we don't already have a good title
-            if (dishTitleFromCaption && !isTikTokJunkTitle(dishTitleFromCaption)) {
+            if (dishTitleFromCaption) {
               safeSetTitle(dishTitleFromCaption, url, title, dbg, "tiktok:caption-dish");
             }
             const captionFallbackTitle = normalizeDishTitle(cleanTitle(captionToNiceTitle(cap), url));
@@ -2199,7 +2154,6 @@ function stitchBrokenSteps(lines: string[]): string[] {
             }
 
             // Choose best title candidate for TikTok now that parsing is done
-            // Only do this if we don't already have a strong title set
             try {
                 if (ttTitleCandidates && ttTitleCandidates.length) {
                 // Filter out junk titles before sorting
@@ -2208,25 +2162,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
                   return !isWeakTitle(cleaned) && !isTikTokJunkTitle(cleaned);
                 });
-                // Sort by source priority: prefer dom:cleanTitle > caption > dom-text
-                const sourcePriority: Record<string, number> = {
-                  "tiktok:dom:cleanTitle": 3,
-                  "tiktok:caption": 2,
-                  "tiktok:dom-text": 1,
-                };
-                filtered.sort((a: {v:string,src:string}, b: {v:string,src:string}) => {
-                  const aPriority = sourcePriority[a.src] || 0;
-                  const bPriority = sourcePriority[b.src] || 0;
-                  if (aPriority !== bPriority) return bPriority - aPriority;
-                  return scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v);
-                });
-                // Only set if we don't already have a good title
-                const currentTitle = title.trim();
-                const hasGoodTitle = currentTitle && !isWeakTitle(currentTitle) && !isTikTokJunkTitle(currentTitle);
-                if (!hasGoodTitle && filtered.length > 0) {
-                  const cand = filtered[0];
+                filtered.sort((a: {v:string,src:string}, b: {v:string,src:string}) => scoreTitleCandidate(b.v) - scoreTitleCandidate(a.v));
+                for (const cand of filtered) {
                   const cleaned = normalizeDishTitle(cleanTitle(cand.v, url));
                   safeSetTitle(cleaned, url, title, dbg, cand.src);
+                  break; // Only use the best one
                 }
               }
             } catch {}

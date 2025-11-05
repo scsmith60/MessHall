@@ -37,7 +37,7 @@ import Comments from "../../components/Comments";
    ─────────────────────────── */
 // We keep the chips you asked for.
 // Diet chips come from diet_tags.
-// Category chips (BBQ/Appetizers/Chicken/Beef/Pork/Seafood/Pasta) come from category_tags.
+// Category chips come from category_tags.
 type Chip =
   | "Vegan"
   | "Gluten-Free"
@@ -48,7 +48,13 @@ type Chip =
   | "Beef"
   | "Pork"
   | "Seafood"
-  | "Pasta";
+  | "Pasta"
+  | "Drinks"
+  | "Desserts"
+  | "Breakfast"
+  | "Salad"
+  | "Soup"
+  | "Vegetarian";
 
 const ALL_CHIPS: Chip[] = [
   "Vegan",
@@ -56,25 +62,37 @@ const ALL_CHIPS: Chip[] = [
   "Dairy-Free",
   "BBQ",
   "Appetizers",
+  "Breakfast",
   "Chicken",
   "Beef",
   "Pork",
   "Seafood",
   "Pasta",
+  "Salad",
+  "Soup",
+  "Vegetarian",
+  "Drinks",
+  "Desserts",
 ];
 
-// Some chips fight each other (Vegan vs meats)
+// Some chips fight each other (Vegan vs meats, Vegetarian vs meats)
 const CONFLICTS: Record<Chip, Chip[]> = {
   Vegan: ["Chicken", "Beef", "Pork", "Seafood"],
-  Chicken: ["Vegan"],
-  Beef: ["Vegan"],
-  Pork: ["Vegan"],
-  Seafood: ["Vegan"],
+  "Vegetarian": ["Chicken", "Beef", "Pork", "Seafood"],
+  Chicken: ["Vegan", "Vegetarian"],
+  Beef: ["Vegan", "Vegetarian"],
+  Pork: ["Vegan", "Vegetarian"],
+  Seafood: ["Vegan", "Vegetarian"],
   "Gluten-Free": [],
   "Dairy-Free": [],
   BBQ: [],
   Appetizers: [],
   Pasta: [],
+  Breakfast: [],
+  Salad: [],
+  Soup: [],
+  Drinks: [],
+  Desserts: [],
 };
 
 /* ───────────────────────────────────────
@@ -92,11 +110,17 @@ function filtersFromState(q: string, sel: Record<string, boolean>) {
   const cats: string[] = [];
   if (sel["BBQ"]) cats.push("bbq");
   if (sel["Appetizers"]) cats.push("appetizers");
+  if (sel["Breakfast"]) cats.push("breakfast");
   if (sel["Chicken"]) cats.push("chicken");
   if (sel["Beef"]) cats.push("beef");
   if (sel["Pork"]) cats.push("pork");
   if (sel["Seafood"]) cats.push("seafood");
   if (sel["Pasta"]) cats.push("pasta");
+  if (sel["Salad"]) cats.push("salad");
+  if (sel["Soup"]) cats.push("soup");
+  if (sel["Vegetarian"]) cats.push("vegetarian");
+  if (sel["Drinks"]) cats.push("drinks");
+  if (sel["Desserts"]) cats.push("desserts");
 
   return {
     text: q.trim(), // free text for title search
@@ -104,6 +128,63 @@ function filtersFromState(q: string, sel: Record<string, boolean>) {
     cats,           // filter on category_tags
   };
 }
+
+/* ───────────────────────────────────────
+   Keyword lists for Drinks and Desserts classification
+   ─────────────────────────────────────── */
+// These keywords should be used to classify recipes as "drinks" or "desserts"
+// when assigning category_tags to recipes. A recipe should get the "drinks" tag
+// if its title or main ingredients contain any of these keywords.
+
+export const DRINKS_KEYWORDS = [
+  // Beverages
+  "drink", "drinks", "beverage", "beverages", "cocktail", "cocktails",
+  "smoothie", "smoothies", "juice", "juices", "shake", "shakes", "milkshake",
+  "lemonade", "iced tea", "iced coffee", "coffee", "tea", "latte", "cappuccino",
+  "espresso", "mocha", "frappe", "frappuccino", "macchiato", "americano",
+  // Alcoholic
+  "margarita", "margaritas", "mojito", "mojitos", "sangria", "mimosa", "mimosas",
+  "martini", "martinis", "daiquiri", "daiquiris", "pina colada", "cosmopolitan",
+  "old fashioned", "whiskey sour", "manhattan", "negroni", "aperol spritz",
+  // Non-alcoholic
+  "mocktail", "mocktails", "punch", "punch", "soda", "pop", "cola", "sprite",
+  "ginger ale", "tonic", "seltzer", "sparkling water", "seltzer water",
+  // Hot drinks
+  "hot chocolate", "cocoa", "cider", "hot toddy", "mulled wine", "eggnog",
+  // Special
+  "horchata", "agua fresca", "boba", "bubble tea", "chai", "matcha", "turmeric latte",
+  "golden milk", "kombucha", "kefir", "prosecco", "champagne", "wine", "beer"
+];
+
+export const DESSERTS_KEYWORDS = [
+  // General
+  "dessert", "desserts", "sweet", "treat", "treats", "cake", "cakes", "cupcake", "cupcakes",
+  "cookie", "cookies", "brownie", "brownies", "pie", "pies", "tart", "tarts",
+  "pudding", "puddings", "custard", "custards", "mousse", "mousses",
+  // Ice cream & frozen
+  "ice cream", "gelato", "sorbet", "sherbet", "frozen yogurt", "froyo", "popsicle",
+  "ice pop", "frozen treat", "milkshake", "shake",
+  // Pastries
+  "pastry", "pastries", "croissant", "croissants", "donut", "donuts", "doughnut", "doughnuts",
+  "muffin", "muffins", "scone", "scones", "biscuit", "biscuits", "cinnamon roll",
+  "sticky bun", "bun", "buns", "danish", "eclair", "eclairs", "cannoli", "cannolis",
+  // Chocolate
+  "chocolate", "fudge", "truffle", "truffles", "ganache", "chocolate bar",
+  // Specialty
+  "cheesecake", "cheesecakes", "tiramisu", "creme brulee", "flan", "panna cotta",
+  "pavlov", "pavlova", "macaron", "macarons", "macaroon", "macaroons",
+  // Fruit desserts
+  "cobbler", "cobblers", "crisp", "crisps", "crumble", "crumbles", "crumble",
+  "fruit salad", "fruit tart", "fruit pie",
+  // Breads & breakfast sweets
+  "bread pudding", "french toast", "pancake", "pancakes", "waffle", "waffles",
+  // Candy & confections
+  "candy", "candies", "caramel", "toffee", "nougat", "marshmallow", "marshmallows",
+  "lollipop", "lollipops", "gummy", "gummies", "jelly", "jellies",
+  // International
+  "baklava", "knafeh", "halva", "halvah", "gulab jamun", "jalebi", "donut",
+  "churro", "churros", "tres leches", "tres leches cake", "flan", "crema catalana"
+];
 
 /* ─────────────────────────────
    2) Helper types + count fetch
@@ -491,16 +572,16 @@ export default function SearchScreen() {
       {/* ── header with search box ── */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} accessibilityLabel="Go back">
-          <Ionicons name="chevron-back" size={24} color="#fff" />
+          <Ionicons name="chevron-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
 
         <View style={styles.searchWrap}>
-          <Ionicons name="search" size={18} color="#94a3b8" style={{ marginHorizontal: 8 }} />
+          <Ionicons name="search" size={18} color={COLORS.muted} style={{ marginHorizontal: 8 }} />
           <TextInput
             ref={inputRef}
             style={styles.input}
             placeholder="Search recipes"
-            placeholderTextColor="#94a3b8"
+            placeholderTextColor={COLORS.muted}
             value={q}
             onChangeText={setQ}
             onSubmitEditing={runSearch}
@@ -508,13 +589,13 @@ export default function SearchScreen() {
           />
           {(q.length > 0 || Object.values(sel).some(Boolean)) && (
             <TouchableOpacity onPress={onClear} accessibilityLabel="Clear search">
-              <Ionicons name="close" size={18} color="#94a3b8" style={{ marginHorizontal: 8 }} />
+              <Ionicons name="close" size={18} color={COLORS.muted} style={{ marginHorizontal: 8 }} />
             </TouchableOpacity>
           )}
         </View>
 
         <TouchableOpacity onPress={runSearch} style={styles.iconBtn} accessibilityLabel="Search now">
-          <Ionicons name="arrow-forward" size={22} color="#fff" />
+          <Ionicons name="arrow-forward" size={22} color={COLORS.text} />
         </TouchableOpacity>
       </View>
 
@@ -560,7 +641,7 @@ export default function SearchScreen() {
           loading
             ? undefined
             : (
-                <Text style={{ color: "#94a3b8", textAlign: "center", marginTop: 32 }}>
+                <Text style={{ color: COLORS.muted, textAlign: "center", marginTop: 32 }}>
                   No recipes yet. Try different chips or words.
                 </Text>
               )
@@ -651,34 +732,34 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#0b1221",
+    backgroundColor: COLORS.bg,
   },
   iconBtn: { padding: 6 },
   searchWrap: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#0f172a",
+    backgroundColor: COLORS.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#1f2a3b",
+    borderColor: COLORS.border,
     overflow: "hidden",
   },
-  input: { flex: 1, color: "#fff", height: 40 },
+  input: { flex: 1, color: COLORS.text, height: 40 },
   chip: {
     paddingHorizontal: 12,
     height: 36,
-    backgroundColor: "#0f172a",
+    backgroundColor: COLORS.surface,
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "#1e293b",
+    borderColor: COLORS.border,
   },
   chipActive: {
-    backgroundColor: "rgba(56,189,248,0.15)",
-    borderColor: "rgba(56,189,248,0.55)",
+    backgroundColor: COLORS.accent,
+    borderColor: COLORS.accent,
   },
-  chipText: { color: "#cbd5e1", fontWeight: "600" },
-  chipTextActive: { color: "#e2f4ff" },
+  chipText: { color: COLORS.subtext, fontWeight: "600" },
+  chipTextActive: { color: COLORS.onAccent },
 });

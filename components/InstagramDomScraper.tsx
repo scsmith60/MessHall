@@ -18,6 +18,7 @@ type ResultPayload = {
   text: string;
   imageUrl?: string;
   cleanTitle?: string;
+  username?: string; // Instagram username extracted from DOM
   debug: string;
 };
 
@@ -170,6 +171,28 @@ export default function InstagramDomScraper({
         return best;
       }
 
+      function extractUsername(s){
+        // Extract username from "898 likes, 11 comments - username on date:" pattern
+        // Pattern: "898 likes, 11 comments - jessicaholland_morethanamom on November 1, 2024:"
+        const metaPattern = /^\s*\d+[\d,.\s]*\s+likes?,?\s*\d+[\d,.\s]*\s+comments?\s*-\s*([^:\s]+)(?:\s+on\s+[^:]+)?:\s*/i;
+        const match = s.match(metaPattern);
+        if (match && match[1]) {
+          const username = match[1].trim();
+          // Validate it looks like a username (not a date, not too short/long)
+          if (username.length >= 1 && username.length <= 30 && !/^\d+$/.test(username)) {
+            return username;
+          }
+        }
+        // Also try to extract from URL path if available
+        try {
+          const pathMatch = location.pathname.match(/^\/([^/]+)\/(?:p|reel|tv)\//);
+          if (pathMatch && pathMatch[1] && !pathMatch[1].match(/^\d+$/)) {
+            return pathMatch[1];
+          }
+        } catch {}
+        return null;
+      }
+
       function stripIGBoilerplate(s){
         if (!s) return s;
         let out = String(s);
@@ -285,6 +308,9 @@ export default function InstagramDomScraper({
           if (score > 200) {
             // Good enough data found quickly, return early
             const cleaned = stripIGBoilerplate(quickData);
+            // Extract username from quick data too
+            const quickUsername = extractUsername(quickData || "");
+            
             finish({
               ok: true,
               caption: cleaned.slice(0, 4000),
@@ -292,6 +318,7 @@ export default function InstagramDomScraper({
               text: cleaned.slice(0, 4000),
               imageUrl: getImageUrl(),
               cleanTitle: makeCleanTitle(cleaned), // Use cleaned version for title extraction
+              username: quickUsername || undefined,
               debug: "fast:data"
             });
             return;
@@ -312,6 +339,9 @@ export default function InstagramDomScraper({
         const best=candidates[0]?.t || "";
         send("log",{msg:"result", extra:{ capLen:best.length, score:candidates[0]?.s || 0 }});
 
+        // Extract username before stripping boilerplate
+        const extractedUsername = extractUsername(best || domCap || "");
+
         const MAX_CAPTION=4000;
         const cleanedCaption = stripIGBoilerplate(best||"");
         const safe = cleanedCaption.slice(0, MAX_CAPTION);
@@ -325,6 +355,7 @@ export default function InstagramDomScraper({
           comments: [], bestComment: "",
           text: articleText || safe,
           imageUrl, cleanTitle,
+          username: extractedUsername || undefined,
           debug: \`meta:\${metaCap.length} ld:\${ldCap.length} dom:\${domCap.length}\`
         });
       }
