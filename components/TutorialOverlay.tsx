@@ -8,7 +8,8 @@
 // 4) If you want to see it later, there's a helper you can call from Settings to reset the note.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Modal, View, Text, Pressable, StyleSheet, Dimensions, SafeAreaView } from 'react-native'
+import { Modal, View, Text, Pressable, StyleSheet, Dimensions } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import LottieView from 'lottie-react-native'
 

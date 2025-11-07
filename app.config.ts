@@ -39,7 +39,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   splash: {
     image: './assets/splash.png',
     resizeMode: 'contain',
-    backgroundColor: '#0D1F16',
+    backgroundColor: '#071F1C', // Match theme background color
   },
 
   // 🔐 Env + EAS link

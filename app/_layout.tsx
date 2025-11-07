@@ -10,7 +10,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 // Polyfills needed by Supabase auth (URL, random values, WebCrypto)
 import "../lib/polyfills";
 import * as Linking from "expo-linking";
-import { View, ActivityIndicator, Platform, Text, TouchableOpacity } from "react-native";
+import { View, ActivityIndicator, Platform, Text, TouchableOpacity, Animated, Image } from "react-native";
 import { AppState } from "react-native";
 import { Slot, usePathname, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -289,6 +289,172 @@ function InnerApp() {
 }
 
 /* -----------------------------------------------------------
+   🎨 Enhanced Splash Screen Component
+----------------------------------------------------------- */
+function SplashScreen() {
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(0.8)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    // Fade in and scale up animation
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 600,
+        useNativeDriver: true,
+      }),
+      Animated.spring(scaleAnim, {
+        toValue: 1,
+        tension: 50,
+        friction: 7,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    // Pulse animation for the loading indicator
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, []);
+
+  return (
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
+      <StatusBar style="light" translucent backgroundColor="transparent" />
+      <AuthProvider>
+        <View
+          style={{
+            flex: 1,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: COLORS.bg,
+            // Subtle gradient effect using overlay
+            position: "relative",
+          }}
+        >
+          {/* Subtle gradient overlay for depth */}
+          <View
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: COLORS.bg,
+              opacity: 0.95,
+            }}
+          />
+          
+          <Animated.View
+            style={{
+              alignItems: "center",
+              justifyContent: "center",
+              opacity: fadeAnim,
+              transform: [{ scale: scaleAnim }],
+            }}
+          >
+            {/* Brand Logo */}
+            <View
+              style={{
+                marginBottom: 32,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Animated.View
+                style={{
+                  transform: [{ scale: pulseAnim }],
+                }}
+              >
+                <View
+                  style={{
+                    width: 80,
+                    height: 80,
+                    borderRadius: 20,
+                    backgroundColor: COLORS.accent,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    shadowColor: COLORS.accent,
+                    shadowOffset: { width: 0, height: 0 },
+                    shadowOpacity: 0.3,
+                    shadowRadius: 20,
+                    elevation: 8,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 36,
+                      fontWeight: "800",
+                      color: COLORS.onAccent,
+                      letterSpacing: -1,
+                    }}
+                  >
+                    M
+                  </Text>
+                </View>
+              </Animated.View>
+            </View>
+
+            {/* App Name */}
+            <Text
+              style={{
+                color: COLORS.text,
+                fontSize: 28,
+                fontWeight: "700",
+                letterSpacing: 0.5,
+                marginBottom: 8,
+              }}
+            >
+              MessHall
+            </Text>
+
+            {/* Loading Indicator */}
+            <View style={{ marginTop: 24, alignItems: "center" }}>
+              <ActivityIndicator size="small" color={COLORS.accent} />
+              <Text
+                style={{
+                  color: COLORS.subtext,
+                  fontSize: 14,
+                  marginTop: 16,
+                  letterSpacing: 0.3,
+                }}
+              >
+                Warming up MessHall…
+              </Text>
+            </View>
+          </Animated.View>
+
+          {/* Subtle accent line at bottom */}
+          <View
+            style={{
+              position: "absolute",
+              bottom: 60,
+              left: "20%",
+              right: "20%",
+              height: 2,
+              backgroundColor: COLORS.accent,
+              opacity: 0.3,
+              borderRadius: 1,
+            }}
+          />
+        </View>
+      </AuthProvider>
+    </GestureHandlerRootView>
+  );
+}
+
+/* -----------------------------------------------------------
    RootLayout: first-boot guard + watchdog
 ----------------------------------------------------------- */
 export default function RootLayout() {
@@ -330,7 +496,7 @@ export default function RootLayout() {
           if (!hasSession) {
             if (!inAuthGroup) router.replace("/login");
           } else {
-            if (inAuthGroup) router.replace("/(tabs)/index");
+            if (inAuthGroup) router.replace("/");
           }
         };
 
@@ -406,7 +572,7 @@ export default function RootLayout() {
         if (event === "SIGNED_OUT") {
           if (!inAuthGroup) router.replace("/login");
         } else if (event === "SIGNED_IN") {
-          if (inAuthGroup) router.replace("/(tabs)/index");
+          if (inAuthGroup) router.replace("/");
         }
       };
 
@@ -420,27 +586,9 @@ export default function RootLayout() {
     return () => data.subscription?.unsubscribe();
   }, [router, segments]);
 
-  // ⛑️ First render while checking: show a spinner with a real background.
+  // ⛑️ First render while checking: show a polished splash screen with branding
   if (!checkedOnce) {
-    return (
-      <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.bg }}>
-        <AuthProvider>
-          <View
-            style={{
-              flex: 1,
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: COLORS.bg,
-            }}
-          >
-            <ActivityIndicator />
-            <Text style={{ color: COLORS.subtext, marginTop: 12 }}>
-              Warming up MessHall…
-            </Text>
-          </View>
-        </AuthProvider>
-      </GestureHandlerRootView>
-    );
+    return <SplashScreen />;
   }
 
   // ✅ Normal app once first check is done
