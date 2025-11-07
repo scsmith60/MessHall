@@ -379,29 +379,25 @@ function SplashScreen() {
               >
                 <View
                   style={{
-                    width: 80,
-                    height: 80,
-                    borderRadius: 20,
-                    backgroundColor: COLORS.accent,
+                    width: 100,
+                    height: 100,
                     alignItems: "center",
                     justifyContent: "center",
                     shadowColor: COLORS.accent,
                     shadowOffset: { width: 0, height: 0 },
-                    shadowOpacity: 0.3,
-                    shadowRadius: 20,
+                    shadowOpacity: 0.2,
+                    shadowRadius: 15,
                     elevation: 8,
                   }}
                 >
-                  <Text
+                  <Image
+                    source={require("../assets/brand/messhall-m.png")}
                     style={{
-                      fontSize: 36,
-                      fontWeight: "800",
-                      color: COLORS.onAccent,
-                      letterSpacing: -1,
+                      width: 100,
+                      height: 100,
+                      resizeMode: "contain",
                     }}
-                  >
-                    M
-                  </Text>
+                  />
                 </View>
               </Animated.View>
             </View>
