@@ -664,7 +664,9 @@ function findDishTitleFromText(source: string, url: string): string | null {
     s = s.replace(/\uFE0F/g, " ");
 
     // Cut off common promo/lead-in phrases that come after the dish name
-    s = s.replace(/\s*(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|The best|Incredible|Amazing)\b.*$/i, "");
+    // Only match when these phrases appear AFTER a substantial dish name (at least 10 chars)
+    // This prevents removing "The best" when it's part of the actual title at the start
+    s = s.replace(/(.{10,}?)\s+(?:Dive into|Try|Make|Learn|Watch|How to|This|These|Perfect for|Great for|So easy|Super easy|You'?ll love|You will love|Crave|Craving|Best ever|Incredible|Amazing)\b.*$/i, "$1");
 
     // Remove anything after exclamation || question marks
     s = s.replace(/\s*[!?].*$/, "");
@@ -2505,7 +2507,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           <Text style={{ color: COLORS.text, fontSize: 22, fontWeight: "900", marginBottom: 16 }}>Add Recipe</Text>
 
           <Text style={{ color: COLORS.text, marginBottom: 6 }}>Title</Text>
-          <TextInput value={title} onChangeText={setTitle} placeholder="My Tasty Pizza" placeholderTextColor={COLORS.subtext} style={{ color: COLORS.text, backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, marginBottom: 12 }} />
+          <TextInput value={title} onChangeText={setTitle} placeholder="My Tasty Pizza" placeholderTextColor={COLORS.subtext} style={{ color: COLORS.text, backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, marginBottom: 12, fontSize: 16 }} />
 
           <View style={{ backgroundColor: COLORS.card, borderRadius: 14, borderColor: COLORS.border, borderWidth: 1, padding: 12, marginBottom: 12 }}>
             <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Import from a link (YouTube/TikTok/blog)...</Text>
