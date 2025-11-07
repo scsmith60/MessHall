@@ -326,6 +326,7 @@ export default function HomeScreen() {
     if (setDefaultToggle) setFilterByDiet(prefs.length > 0);
   }
 
+  // Load diet prefs in parallel with other startup tasks (non-blocking)
   useEffect(() => { loadDietPrefsOnce(true).catch(() => {}); }, []);
   useFocusEffect(React.useCallback(() => { loadDietPrefsOnce(false).catch(() => {}); return () => {}; }, []));
 
@@ -628,20 +629,26 @@ export default function HomeScreen() {
     }
   }, []);
 
-  /* run rail + optional overlay when fallback */
+  /* run rail + optional overlay when fallback (non-blocking, loads in parallel with feed) */
   useEffect(() => {
+    // Don't block - let feed load immediately while rail loads in background
     (async () => {
-      const res = await loadRail();
-      if (res.priority === "fallback") {
-        const { title, items } = await loadRecommendations();
-        if (items.length) {
-          setRailTitle(title);
-          setRailItems(items);
-          setRailIsSponsored(false);
-          setRailIsHouse(false);
-          setRailSponsorLogo(null);
-          setRailShelfId(null);
+      try {
+        const res = await loadRail();
+        if (res.priority === "fallback") {
+          const { title, items } = await loadRecommendations();
+          if (items.length) {
+            setRailTitle(title);
+            setRailItems(items);
+            setRailIsSponsored(false);
+            setRailIsHouse(false);
+            setRailSponsorLogo(null);
+            setRailShelfId(null);
+          }
         }
+      } catch (err) {
+        // Rail loading failure shouldn't block the app
+        console.warn("[HomeScreen] Rail loading failed:", err);
       }
     })();
   }, [loadRail, loadRecommendations]);
@@ -1150,7 +1157,9 @@ export default function HomeScreen() {
   const loadingPagesRef = useRef(false);
   
   // initial load only (don't reload when mode changes - we sort existing data instead)
+  // Load feed immediately on mount - don't wait for dietary prefs (can filter client-side)
   useEffect(() => {
+    // Load feed immediately, dietary prefs will be applied when they arrive
     loadPage(0, true);
   }, [filterByDiet, JSON.stringify(dietaryPrefs)]); // eslint-disable-line react-hooks/exhaustive-deps
   

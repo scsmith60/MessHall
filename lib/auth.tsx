@@ -137,12 +137,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
       setSession(freshest);
 
-      await d.log("[auth-hook]", `onAuthStateChange: ${event}`, {
-        fromEvent: !!nextFromEvent,
-        hasSession: !!freshest,
-        userId: freshest?.user?.id ?? null,
-        email: freshest?.user?.email ?? null,
-      });
+      // Only log non-routine events (skip TOKEN_REFRESHED to reduce log noise)
+      // TOKEN_REFRESHED happens automatically every ~1 hour and is expected behavior
+      if (event !== "TOKEN_REFRESHED") {
+        await d.log("[auth-hook]", `onAuthStateChange: ${event}`, {
+          fromEvent: !!nextFromEvent,
+          hasSession: !!freshest,
+          userId: freshest?.user?.id ?? null,
+          email: freshest?.user?.email ?? null,
+        });
+      }
 
       // 🧘 small micro-wait lets React commit state before guards read it
       await new Promise((r) => setTimeout(r, 0));

@@ -1475,14 +1475,13 @@ export async function getUnreadNotificationCount(): Promise<number> {
  * listNotifications(limit, unreadOnly)
  * - shape matches what your Profile screen expects:
  *   { id, type, recipeId, commentId, title, body, actorUsername, actorAvatar, createdAt, isRead }
- * - joins actor via user_id -> profiles
- * - if PostgREST says “use fknames”, replace the embed line with your exact FK:
- *   actor:profiles!notifications_user_id_fkey ( id, username, avatar_url )
+ * - manually fetches actor profiles since foreign key relationship may not be set up
  */
 export async function listNotifications(limit = 50, unreadOnly = true) {
   const me = (await supabase.auth.getUser()).data.user?.id;
   if (!me) return [];
 
+  // First, fetch notifications without the join
   let q = supabase
     .from("notifications")
     .select(`
@@ -1493,12 +1492,7 @@ export async function listNotifications(limit = 50, unreadOnly = true) {
       title,
       body,
       is_read,
-      created_at,
-      actor:user_id (
-        id,
-        username,
-        avatar_url
-      )
+      created_at
     `)
     .eq("recipient_id", me)
     .order("created_at", { ascending: false })
@@ -1506,23 +1500,54 @@ export async function listNotifications(limit = 50, unreadOnly = true) {
 
   if (unreadOnly) q = q.eq("is_read", false);
 
-  const { data, error } = await q;
+  const { data: notifications, error } = await q;
   if (error) throw error;
+  if (!notifications || notifications.length === 0) return [];
 
-  return (data ?? []).map((r: any) => ({
-    id: r.id as string,
-    type: (r.notif_type ?? "comment") as string,
-    recipeId: r.recipe_id ?? null,   // ok if your table doesn't store it yet
-    commentId: r.comment_id ?? null, // same ^
-    title: r.title ?? null,
-    body: r.body ?? null,
-    actorId: r.user_id ?? r.actor?.id ?? null,
-    actorUsername: r.actor?.username ?? null,
-    actorAvatar: r.actor?.avatar_url ?? null,
-    recipeTitle: r.recipe_title ?? null, // stays null unless you add it
-    createdAt: r.created_at as string,
-    isRead: !!r.is_read,
-  }));
+  // Get unique user IDs from notifications
+  const userIds = Array.from(new Set(
+    (notifications as any[])
+      .map((n) => n.user_id)
+      .filter(Boolean)
+  ));
+
+  // Fetch profiles for all actors in parallel
+  let profilesMap = new Map<string, { id: string; username: string | null; avatar_url: string | null }>();
+  if (userIds.length > 0) {
+    const { data: profiles, error: profilesError } = await supabase
+      .from("profiles")
+      .select("id, username, avatar_url")
+      .in("id", userIds);
+
+    if (!profilesError && profiles) {
+      profiles.forEach((p: any) => {
+        profilesMap.set(p.id, {
+          id: p.id,
+          username: p.username ?? null,
+          avatar_url: p.avatar_url ?? null,
+        });
+      });
+    }
+  }
+
+  // Combine notifications with profile data
+  return (notifications ?? []).map((r: any) => {
+    const profile = r.user_id ? profilesMap.get(r.user_id) : null;
+    return {
+      id: r.id as string,
+      type: (r.notif_type ?? "comment") as string,
+      recipeId: r.recipe_id ?? null,   // ok if your table doesn't store it yet
+      commentId: r.comment_id ?? null, // same ^
+      title: r.title ?? null,
+      body: r.body ?? null,
+      actorId: r.user_id ?? null,
+      actorUsername: profile?.username ?? null,
+      actorAvatar: profile?.avatar_url ?? null,
+      recipeTitle: r.recipe_title ?? null, // stays null unless you add it
+      createdAt: r.created_at as string,
+      isRead: !!r.is_read,
+    };
+  });
 }
 
 /**
