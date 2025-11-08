@@ -1,7 +1,7 @@
 // app/enlisted-club/create.tsx
 // Create a new Enlisted Club cooking session
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -12,6 +12,9 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Modal,
+  FlatList,
+  Image,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -39,6 +42,21 @@ export default function CreateSessionScreen() {
   const [scheduledStartAt, setScheduledStartAt] = useState<string | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDate, setTempDate] = useState(new Date());
+  
+  // Cleanup: ensure picker is closed on unmount to prevent Android errors
+  useEffect(() => {
+    return () => {
+      if (Platform.OS === "android" && showDatePicker) {
+        setShowDatePicker(false);
+      }
+    };
+  }, [showDatePicker]);
+  
+  // Recipe picker state
+  const [showRecipePicker, setShowRecipePicker] = useState(false);
+  const [recipeSearchQuery, setRecipeSearchQuery] = useState("");
+  const [recipeSearchResults, setRecipeSearchResults] = useState<any[]>([]);
+  const [recipeSearchLoading, setRecipeSearchLoading] = useState(false);
 
   const onCreate = async () => {
     if (!userId) {
@@ -52,6 +70,12 @@ export default function CreateSessionScreen() {
       return;
     }
 
+    if (!scheduledStartAt) {
+      await warn();
+      setNotice({ visible: true, title: "Start Time Required", message: "Please select a start time for your session." });
+      return;
+    }
+
     const max = parseInt(maxParticipants, 10);
     if (isNaN(max) || max < 1 || max > 1000) {
       await warn();
@@ -61,8 +85,8 @@ export default function CreateSessionScreen() {
 
     setLoading(true);
     try {
-      const status = scheduledStartAt ? "scheduled" : "active";
-      const startedAt = scheduledStartAt ? null : new Date().toISOString();
+      const status = "scheduled"; // Always scheduled since start time is required
+      const startedAt = null; // Will be set when session actually starts
 
       const { data, error } = await supabase
         .from("enlisted_club_sessions")
@@ -72,7 +96,7 @@ export default function CreateSessionScreen() {
           description: description.trim() || null,
           recipe_id: recipeId || null,
           max_participants: max,
-          scheduled_start_at: scheduledStartAt || null,
+          scheduled_start_at: scheduledStartAt,
           started_at: startedAt,
           status: status,
         })
@@ -99,6 +123,48 @@ export default function CreateSessionScreen() {
   const onCancel = () => {
     router.back();
   };
+
+  // Recipe search function
+  const searchRecipes = async () => {
+    try {
+      setRecipeSearchLoading(true);
+      const query = recipeSearchQuery.trim();
+      let dbQuery = supabase
+        .from("recipes")
+        .select("id, title, image_url, minutes, servings")
+        .eq("is_private", false)
+        .limit(50);
+      
+      if (query) {
+        dbQuery = dbQuery.ilike("title", `%${query}%`);
+      }
+      
+      const { data, error } = await dbQuery;
+      if (error) throw error;
+      setRecipeSearchResults(data ?? []);
+    } catch (err: any) {
+      setNotice({ visible: true, title: "Search Error", message: err?.message || "Failed to search recipes." });
+    } finally {
+      setRecipeSearchLoading(false);
+    }
+  };
+
+  // Search recipes when query changes (debounced)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (showRecipePicker) {
+        searchRecipes();
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [recipeSearchQuery, showRecipePicker]);
+
+  // Load initial recipes when picker opens
+  useEffect(() => {
+    if (showRecipePicker) {
+      searchRecipes();
+    }
+  }, [showRecipePicker]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top"]}>
@@ -197,8 +263,7 @@ export default function CreateSessionScreen() {
             <TouchableOpacity
               onPress={async () => {
                 await tap();
-                // TODO: Open recipe picker/search
-                setNotice({ visible: true, title: "Coming Soon", message: "Recipe linking will be available soon." });
+                setShowRecipePicker(true);
               }}
               style={{
                 backgroundColor: COLORS.card,
@@ -216,7 +281,8 @@ export default function CreateSessionScreen() {
               </Text>
               {recipeTitle && (
                 <TouchableOpacity
-                  onPress={() => {
+                  onPress={(e) => {
+                    e.stopPropagation();
                     setRecipeId(null);
                     setRecipeTitle("");
                   }}
@@ -254,10 +320,10 @@ export default function CreateSessionScreen() {
             </Text>
           </View>
 
-          {/* Scheduled Start (Optional) */}
+          {/* Scheduled Start (Required) */}
           <View style={{ marginBottom: SPACING.xl }}>
             <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 16, marginBottom: 8 }}>
-              Start Time (Optional)
+              Start Time *
             </Text>
             <View style={{ flexDirection: "row", gap: 8 }}>
               <TouchableOpacity
@@ -284,7 +350,7 @@ export default function CreateSessionScreen() {
                         hour: "numeric",
                         minute: "2-digit",
                       })
-                    : "Schedule for later"}
+                    : "Select start time"}
                 </Text>
               </TouchableOpacity>
               {scheduledStartAt && (
@@ -316,12 +382,21 @@ export default function CreateSessionScreen() {
           {/* Date/Time Picker */}
           {showDatePicker && (
             <DateTimePicker
+              key={Platform.OS === "android" ? `android-${showDatePicker}` : "ios"}
               value={tempDate}
               mode="datetime"
               is24Hour={false}
               minimumDate={new Date()}
+              display={Platform.OS === "ios" ? "spinner" : "default"}
               onChange={(event, selectedDate) => {
-                setShowDatePicker(false);
+                // On Android, the native modal handles dismissal automatically
+                // On iOS, we need to close it manually
+                // Always close the picker state immediately to prevent unmount errors
+                if (Platform.OS === "android" || event.type === "set" || event.type === "dismissed") {
+                  setShowDatePicker(false);
+                }
+                
+                // Only update the date if user actually selected one (not cancelled)
                 if (event.type === "set" && selectedDate) {
                   setScheduledStartAt(selectedDate.toISOString());
                 }
@@ -355,6 +430,117 @@ export default function CreateSessionScreen() {
           </Text>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Recipe Picker Modal */}
+      <Modal
+        visible={showRecipePicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowRecipePicker(false)}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top"]}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              paddingHorizontal: SPACING.lg,
+              paddingVertical: SPACING.md,
+              borderBottomWidth: 1,
+              borderBottomColor: COLORS.border,
+            }}
+          >
+            <Text style={{ color: COLORS.text, fontWeight: "900", fontSize: 18 }}>
+              Select Recipe
+            </Text>
+            <TouchableOpacity onPress={() => setShowRecipePicker(false)}>
+              <Ionicons name="close" size={28} color={COLORS.text} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Search Input */}
+          <View style={{ padding: SPACING.lg, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+            <TextInput
+              value={recipeSearchQuery}
+              onChangeText={setRecipeSearchQuery}
+              placeholder="Search recipes..."
+              placeholderTextColor={COLORS.subtext}
+              style={{
+                backgroundColor: COLORS.card,
+                color: COLORS.text,
+                padding: SPACING.md,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: COLORS.border,
+                fontSize: 16,
+              }}
+              autoFocus
+            />
+          </View>
+
+          {/* Recipe List */}
+          {recipeSearchLoading ? (
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+              <ActivityIndicator size="large" color={COLORS.accent} />
+            </View>
+          ) : (
+            <FlatList
+              data={recipeSearchResults}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={{ padding: SPACING.lg }}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  onPress={async () => {
+                    await tap();
+                    setRecipeId(item.id);
+                    setRecipeTitle(item.title);
+                    setShowRecipePicker(false);
+                    setRecipeSearchQuery("");
+                  }}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    backgroundColor: COLORS.card,
+                    padding: SPACING.md,
+                    borderRadius: 12,
+                    marginBottom: SPACING.md,
+                    borderWidth: 1,
+                    borderColor: COLORS.border,
+                  }}
+                >
+                  {item.image_url && (
+                    <Image
+                      source={{ uri: item.image_url }}
+                      style={{ width: 60, height: 60, borderRadius: 8, marginRight: SPACING.md }}
+                      resizeMode="cover"
+                    />
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: COLORS.text, fontWeight: "700", fontSize: 16 }}>
+                      {item.title}
+                    </Text>
+                    {(item.minutes || item.servings) && (
+                      <Text style={{ color: COLORS.subtext, fontSize: 12, marginTop: 4 }}>
+                        {item.minutes ? `${item.minutes} min` : ""}
+                        {item.minutes && item.servings ? " • " : ""}
+                        {item.servings ? `${item.servings} servings` : ""}
+                      </Text>
+                    )}
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={COLORS.subtext} />
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <View style={{ padding: SPACING.xl, alignItems: "center" }}>
+                  <Text style={{ color: COLORS.subtext, fontSize: 16 }}>
+                    {recipeSearchQuery ? "No recipes found" : "Search for recipes to link"}
+                  </Text>
+                </View>
+              }
+            />
+          )}
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }

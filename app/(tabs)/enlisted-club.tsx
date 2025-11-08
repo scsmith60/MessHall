@@ -26,6 +26,8 @@ import ThemedNotice from "../../components/ui/ThemedNotice";
 import VideoStreamTwitch from "../../components/VideoStreamTwitch";
 import VideoStreamYouTube from "../../components/VideoStreamYouTube";
 import VideoStreamCloudflare from "../../components/VideoStreamCloudflare";
+import VideoStreamAgora from "../../components/VideoStreamAgora";
+import Constants from "expo-constants";
 
 type Session = {
   id: string;
@@ -67,15 +69,34 @@ export default function EnlistedClubScreen() {
     title: "",
     message: "",
   });
+  const [agoraAppId, setAgoraAppId] = useState<string | null>(null);
+  const [countdowns, setCountdowns] = useState<Map<string, string>>(new Map()); // Session ID -> countdown string
+
+  // Load Agora App ID
+  useEffect(() => {
+    let envAppId = process.env.EXPO_PUBLIC_AGORA_APP_ID;
+    if (!envAppId) {
+      envAppId = Constants.expoConfig?.extra?.agoraAppId as string | undefined;
+      if (!envAppId) {
+        envAppId = (Constants as any).manifest?.extra?.agoraAppId as string | undefined;
+      }
+    }
+    if (envAppId) {
+      setAgoraAppId(envAppId);
+    }
+  }, []);
 
   const loadSessions = useCallback(async () => {
     try {
-      // Load active and scheduled sessions (include video_url for previews)
+      // Load active and scheduled sessions (include video_url and room_id for previews)
+      // Sort: active first, then by scheduled_start_at (soonest first), then by created_at
       const { data: sessionsData, error } = await supabase
         .from("enlisted_club_sessions")
-        .select("*, video_url")
+        .select("*, video_url, room_id")
         .in("status", ["scheduled", "active"])
-        .order("created_at", { ascending: false })
+        .order("status", { ascending: true }) // active comes before scheduled alphabetically
+        .order("scheduled_start_at", { ascending: true, nullsFirst: false }) // Soonest first
+        .order("created_at", { ascending: false }) // Newest first as tiebreaker
         .limit(50);
 
       if (error) throw error;
@@ -128,7 +149,33 @@ export default function EnlistedClubScreen() {
         })
       );
 
-      setSessions(transformed);
+      // Sort on client side for better control:
+      // 1. Active sessions first (by started_at, most recent first)
+      // 2. Then scheduled sessions (by scheduled_start_at, soonest first)
+      const sorted = [...transformed].sort((a, b) => {
+        // Active sessions come first
+        if (a.status === "active" && b.status !== "active") return -1;
+        if (a.status !== "active" && b.status === "active") return 1;
+        
+        // Within active: sort by started_at (most recent first)
+        if (a.status === "active" && b.status === "active") {
+          const aStarted = a.started_at ? new Date(a.started_at).getTime() : 0;
+          const bStarted = b.started_at ? new Date(b.started_at).getTime() : 0;
+          return bStarted - aStarted; // Most recent first
+        }
+        
+        // Within scheduled: sort by scheduled_start_at (soonest first)
+        if (a.status === "scheduled" && b.status === "scheduled") {
+          const aScheduled = a.scheduled_start_at ? new Date(a.scheduled_start_at).getTime() : Infinity;
+          const bScheduled = b.scheduled_start_at ? new Date(b.scheduled_start_at).getTime() : Infinity;
+          return aScheduled - bScheduled; // Soonest first
+        }
+        
+        // Fallback: newest first
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+      
+      setSessions(sorted);
     } catch (err: any) {
       setLoading(false);
       setRefreshing(false);
@@ -148,6 +195,44 @@ export default function EnlistedClubScreen() {
       loadSessions();
     }, [loadSessions])
   );
+
+  // Countdown timer for scheduled sessions in feed
+  useEffect(() => {
+    const updateCountdowns = () => {
+      const now = new Date().getTime();
+      const newCountdowns = new Map<string, string>();
+      
+      sessions.forEach((session) => {
+        if (session.status === "scheduled" && session.scheduled_start_at) {
+          const scheduled = new Date(session.scheduled_start_at).getTime();
+          const diff = scheduled - now;
+          
+          if (diff <= 0) {
+            newCountdowns.set(session.id, "Starting now...");
+          } else {
+            const hours = Math.floor(diff / (1000 * 60 * 60));
+            const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+            
+            if (hours > 0) {
+              newCountdowns.set(session.id, `${hours}h ${minutes}m`);
+            } else if (minutes > 0) {
+              newCountdowns.set(session.id, `${minutes}m ${seconds}s`);
+            } else {
+              newCountdowns.set(session.id, `${seconds}s`);
+            }
+          }
+        }
+      });
+      
+      setCountdowns(newCountdowns);
+    };
+    
+    updateCountdowns();
+    const interval = setInterval(updateCountdowns, 1000);
+    
+    return () => clearInterval(interval);
+  }, [sessions]);
 
   // Real-time subscription for new sessions
   useEffect(() => {
@@ -218,22 +303,38 @@ export default function EnlistedClubScreen() {
   };
 
   const renderSession = ({ item, index }: ListRenderItemInfo<Session>) => {
+    // Ensure we only show LIVE for truly active sessions (not scheduled)
     const isActive = item.status === "active";
     const isScheduled = item.status === "scheduled";
     const hostAvatar = item.host_profile?.avatar_url;
     const hostUsername = item.host_profile?.username || "Chef";
     const recipeImage = item.recipe?.image_url;
     const recipeTitle = item.recipe?.title;
+    // Only consider it "has video" if session is active AND there's actually a video stream
     const hasVideo = isActive && (item.video_url || item.room_id);
     const isVisible = Math.abs(currentIndex - index) <= 1; // Only play video if within 1 item of current
     
-    // Detect video provider type
-    let videoProvider: "twitch" | "youtube" | "cloudflare" | "jitsi" | null = null;
+    // Detect video provider type first (needed for isActuallyLive check)
+    let videoProvider: "twitch" | "youtube" | "cloudflare" | "jitsi" | "agora" | null = null;
     let videoSource: string | null = null;
+    let agoraChannelName: string | null = null;
     
     if (hasVideo) {
-      const videoUrl = item.video_url || (item.room_id?.startsWith("http") ? item.room_id : null);
-      if (videoUrl) {
+      const videoUrl = item.video_url;
+      const roomId = item.room_id;
+      
+      // Check for Agora first (agora:// prefix or room_id that looks like Agora channel)
+      if (videoUrl?.startsWith("agora://")) {
+        videoProvider = "agora";
+        agoraChannelName = videoUrl.replace("agora://", "");
+        videoSource = agoraChannelName;
+      } else if (roomId && !roomId.startsWith("http") && !roomId.includes(".") && !roomId.includes("jit.si")) {
+        // room_id is likely an Agora channel name (not a URL, no dots, not Jitsi)
+        videoProvider = "agora";
+        agoraChannelName = roomId;
+        videoSource = roomId;
+      } else if (videoUrl) {
+        // Check other providers
         if (videoUrl.includes("twitch.tv")) {
           videoProvider = "twitch";
           const channelMatch = videoUrl.match(/twitch\.tv\/([^/?]+)/);
@@ -251,6 +352,14 @@ export default function EnlistedClubScreen() {
         }
       }
     }
+    
+    // Only show LIVE if video has actually started streaming
+    // For external providers (Twitch, YouTube, etc.), video_url means it's live
+    // For Agora, room_id exists when room is created, but video might not be streaming yet
+    // We'll be conservative: only show LIVE for external streams (video_url exists)
+    // For Agora sessions, we'll show "STARTING" until video is actually streaming
+    // (We can't easily detect if Agora video is streaming in the feed without rendering it)
+    const isActuallyLive = isActive && !!item.video_url; // Only external streams are definitely live
 
     return (
       <Pressable
@@ -301,6 +410,20 @@ export default function EnlistedClubScreen() {
                   source={{ uri: recipeImage }}
                   style={{ width: "100%", height: "100%" }}
                   resizeMode="cover"
+                />
+              )}
+              {/* Agora video preview */}
+              {videoProvider === "agora" && agoraChannelName && agoraAppId && (
+                <VideoStreamAgora
+                  key={`agora-${item.id}-${agoraChannelName}`}
+                  appId={agoraAppId}
+                  channelName={agoraChannelName}
+                  isHost={false}
+                  showControls={false}
+                  muteAudio={true}
+                  onError={() => {
+                    // Fallback to recipe image on error
+                  }}
                 />
               )}
             </View>
@@ -354,23 +477,23 @@ export default function EnlistedClubScreen() {
             >
               <View
                 style={{
-                  backgroundColor: isActive ? COLORS.accent : "rgba(0,0,0,0.7)",
+                  backgroundColor: isActuallyLive ? COLORS.accent : "rgba(0,0,0,0.7)",
                   paddingHorizontal: 14,
                   paddingVertical: 7,
                   borderRadius: 20,
-                  borderWidth: isActive ? 0 : 1,
+                  borderWidth: isActuallyLive ? 0 : 1,
                   borderColor: "rgba(255,255,255,0.3)",
                 }}
               >
                 <Text
                   style={{
-                    color: isActive ? "#000" : "#fff",
+                    color: isActuallyLive ? "#000" : "#fff",
                     fontWeight: "900",
                     fontSize: 11,
                     letterSpacing: 0.5,
                   }}
                 >
-                  {isActive ? "🔴 LIVE" : isScheduled ? "⏰ SOON" : "ENDED"}
+                  {isActuallyLive ? "🔴 LIVE" : item.status === "scheduled" ? "⏰ SOON" : item.status === "active" ? "⏳ STARTING" : "ENDED"}
                 </Text>
               </View>
               <TouchableOpacity
@@ -566,20 +689,32 @@ export default function EnlistedClubScreen() {
               {item.scheduled_start_at && (
                 <View
                   style={{
-                    backgroundColor: "rgba(0,0,0,0.4)",
-                    paddingHorizontal: 10,
-                    paddingVertical: 6,
+                    backgroundColor: "rgba(0,0,0,0.6)",
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
                     borderRadius: 16,
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.2)",
                   }}
                 >
                   <Text
                     style={{
                       color: "#fff",
-                      fontSize: 13,
-                      fontWeight: "800",
+                      fontSize: 12,
+                      fontWeight: "700",
+                      marginBottom: 2,
                     }}
                   >
-                    {formatTime(item.scheduled_start_at)}
+                    Starts in:
+                  </Text>
+                  <Text
+                    style={{
+                      color: COLORS.accent,
+                      fontSize: 16,
+                      fontWeight: "900",
+                    }}
+                  >
+                    {countdowns.get(item.id) || formatTime(item.scheduled_start_at)}
                   </Text>
                 </View>
               )}

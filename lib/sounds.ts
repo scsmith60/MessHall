@@ -1,8 +1,6 @@
 // lib/sounds.ts
 // Tiny helper to play fun sound bites without crashing if the asset/env is missing.
-// Prefers a local bundled asset if present, otherwise tries an env URL, and finally falls back to TTS.
-
-import { speak } from "./speak";
+// Prefers a local bundled asset if present, otherwise tries an env URL.
 
 // lazy import to avoid adding a hard dependency at startup
 async function tryPlayWithExpoAV(source: any): Promise<boolean> {
@@ -21,13 +19,35 @@ async function tryPlayWithExpoAV(source: any): Promise<boolean> {
       } as any);
     } catch {}
     const sound = new Audio.Sound();
-    await sound.loadAsync(source, { shouldPlay: true, volume: 1.0 });
+    await sound.loadAsync(source, { shouldPlay: false, volume: 1.0 });
+    
+    // Wait for the sound to be loaded before playing
+    const status = await sound.getStatusAsync();
+    if (!status.isLoaded) {
+      await sound.unloadAsync().catch(() => {});
+      return false;
+    }
+    
+    // Play the sound and wait a moment to confirm it started
+    await sound.playAsync();
+    
+    // Set up cleanup when playback finishes
     sound.setOnPlaybackStatusUpdate((st: any) => {
       if (st?.didJustFinish || st?.isLoaded === false) {
         sound.unloadAsync().catch(() => {});
       }
     });
-    return true;
+    
+    // Wait a brief moment to verify playback started successfully
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const playStatus = await sound.getStatusAsync();
+    
+    if (playStatus.isLoaded && playStatus.isPlaying) {
+      return true;
+    } else {
+      await sound.unloadAsync().catch(() => {});
+      return false;
+    }
   } catch {
     return false;
   }
@@ -50,15 +70,12 @@ export async function playDonutEasterEgg(): Promise<void> {
     const ok = await tryPlayWithExpoAV({ uri: url });
     if (ok) return;
   }
-
-  // 3) fallback: say the line via TTS so the moment still lands
-  try { speak("What have we got here?"); } catch {}
 }
 
 
 // New easter eggs
 export async function playLiverEasterEgg(): Promise<void> {
-  // Try local asset → env URL → TTS
+  // Try local asset → env URL
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const local = require("../assets/sounds/ate-his-liver.mp3");
@@ -70,7 +87,6 @@ export async function playLiverEasterEgg(): Promise<void> {
     const ok = await tryPlayWithExpoAV({ uri: url });
     if (ok) return;
   }
-  try { speak("Ate his liver"); } catch {}
 }
 
 export async function playRockyMountainOystersEasterEgg(): Promise<void> {
@@ -85,7 +101,6 @@ export async function playRockyMountainOystersEasterEgg(): Promise<void> {
     const ok = await tryPlayWithExpoAV({ uri: url });
     if (ok) return;
   }
-  try { speak("Do you suck dicks"); } catch {}
 }
 
 export async function playLambEasterEgg(): Promise<void> {
@@ -100,7 +115,6 @@ export async function playLambEasterEgg(): Promise<void> {
     const ok = await tryPlayWithExpoAV({ uri: url });
     if (ok) return;
   }
-  try { speak("What became of your lamb"); } catch {}
 }
 
 

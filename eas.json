@@ -3,6 +3,22 @@
     "version": ">= 6.0.0"
   },
   "build": {
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "simulator": false
+      }
+    },
+    "preview": {
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "simulator": false
+      }
+    },
     "android-apk": {
       "android": {
         "buildType": "apk"

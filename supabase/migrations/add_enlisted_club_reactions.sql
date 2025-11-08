@@ -14,6 +14,9 @@ CREATE INDEX IF NOT EXISTS idx_enlisted_reactions_user ON enlisted_club_reaction
 -- Enable RLS
 ALTER TABLE enlisted_club_reactions ENABLE ROW LEVEL SECURITY;
 
+-- Enable Realtime for reactions table
+ALTER PUBLICATION supabase_realtime ADD TABLE enlisted_club_reactions;
+
 -- RLS Policies for reactions
 -- Anyone in the session can view reactions
 DROP POLICY IF EXISTS "Participants can view reactions" ON enlisted_club_reactions;
@@ -36,26 +39,15 @@ CREATE POLICY "Participants can view reactions" ON enlisted_club_reactions
     )
   );
 
--- Participants and hosts can send reactions to active/scheduled sessions
+-- Anyone viewing active/scheduled sessions can send reactions
 DROP POLICY IF EXISTS "Participants can send reactions" ON enlisted_club_reactions;
-CREATE POLICY "Participants can send reactions" ON enlisted_club_reactions
+CREATE POLICY "Anyone can send reactions to active sessions" ON enlisted_club_reactions
   FOR INSERT WITH CHECK (
     auth.uid() = user_id
     AND EXISTS (
       SELECT 1 FROM enlisted_club_sessions
       WHERE id = enlisted_club_reactions.session_id
       AND status IN ('scheduled', 'active')
-      AND (
-        -- User is a participant
-        EXISTS (
-          SELECT 1 FROM enlisted_club_participants
-          WHERE session_id = enlisted_club_reactions.session_id
-          AND user_id = auth.uid()
-          AND left_at IS NULL
-        )
-        -- OR user is the host
-        OR host_id = auth.uid()
-      )
     )
   );
 

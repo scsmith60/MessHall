@@ -51,7 +51,7 @@ async function ensureNotificationPermissions(): Promise<boolean> {
       name: "Meal Reminders",
       description: "Reminders for when to start cooking meals",
       importance: Notifications.AndroidImportance.HIGH,
-      sound: true,
+      sound: "default",
       vibrationPattern: [0, 250, 250, 250],
       enableVibrate: true,
     });
@@ -119,6 +119,19 @@ const PlannerSlots: React.FC<Props> = ({
 
   // Time picker state
   const [pickerState, setPickerState] = useState<{ openForId?: string; current?: Date }>({});
+  const isMountedRef = useRef(true);
+  
+  // Track mount status to prevent state updates during unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      // Close picker immediately on unmount to prevent Android dismiss error
+      if (Platform.OS === "android" && pickerState.openForId) {
+        setPickerState({});
+      }
+    };
+  }, [pickerState.openForId]);
 
       // Ask for notification permission once and set up Android channel
   useEffect(() => {
@@ -141,9 +154,15 @@ const PlannerSlots: React.FC<Props> = ({
   };
 
   // When a time is picked, save it and reschedule notification if needed
-  const onTimePicked = async (_e: any, selected?: Date) => {
-    if (!pickerState.openForId) return;
-    if (Platform.OS === "android") setPickerState({});
+  const onTimePicked = async (event: any, selected?: Date) => {
+    if (!pickerState.openForId || !isMountedRef.current) return;
+    // On Android, always close immediately to prevent unmount errors
+    if (Platform.OS === "android") {
+      setPickerState({});
+    } else if (event.type === "set" || event.type === "dismissed") {
+      // On iOS, close on set or dismiss
+      setPickerState({});
+    }
     if (!selected) return;
 
     const hh = selected.getHours().toString().padStart(2, "0");
@@ -233,7 +252,7 @@ const PlannerSlots: React.FC<Props> = ({
           data: { slotId: slot.id, slotName, readyAt: readyAt.toISOString(), dateISO: date.toISOString() },
           sound: true,
         },
-        trigger: { date: startAt },
+        trigger: { date: startAt } as Notifications.NotificationTriggerInput,
       });
 
       // Store the notification ID so we can cancel it later
@@ -425,6 +444,7 @@ const PlannerSlots: React.FC<Props> = ({
 
       {pickerState.openForId && pickerState.current && (
         <DateTimePicker
+          key={Platform.OS === "android" ? `android-time-${pickerState.openForId}` : "ios-time"}
           value={pickerState.current}
           mode="time"
           is24Hour={false}

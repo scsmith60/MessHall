@@ -1,13 +1,14 @@
 // app/(tabs)/_layout.tsx
 // We hide the top header (less empty space) and overlay a small floating bell.
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { View, ActivityIndicator } from "react-native";
 import { Tabs, Redirect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth";
 import FloatingBell from "@/components/FloatingBell";
 import { COLORS } from "../../lib/theme";
+import { supabase } from "../../lib/supabase";
 
 const makeIcon =
   (name: React.ComponentProps<typeof Ionicons>["name"]) =>
@@ -15,7 +16,45 @@ const makeIcon =
     <Ionicons name={name} color={color} size={size} />;
 
 export default function TabsLayout() {
-  const { loading, isLoggedIn } = useAuth();
+  const { loading, isLoggedIn, user } = useAuth();
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // Check if user is admin
+  useEffect(() => {
+    if (!isLoggedIn || !user?.id) {
+      setIsAdmin(false);
+      return;
+    }
+
+    let alive = true;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("is_admin")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (!alive) return;
+
+        if (error || !data) {
+          setIsAdmin(false);
+          return;
+        }
+
+        const isAdminFlag = Boolean(
+          data.is_admin === true || data.is_admin === "true" || data.is_admin === "TRUE"
+        );
+        setIsAdmin(isAdminFlag);
+      } catch (err) {
+        if (alive) setIsAdmin(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [isLoggedIn, user?.id]);
 
   if (loading) {
     return (
@@ -52,7 +91,9 @@ export default function TabsLayout() {
         <Tabs.Screen name="shop"    options={{ title: "Commissary",  tabBarIcon: makeIcon("cart") }} />
         <Tabs.Screen name="enlisted-club" options={{ title: "Enlisted", tabBarIcon: makeIcon("videocam") }} />
         <Tabs.Screen name="profile" options={{ title: "Profile",     tabBarIcon: makeIcon("person") }} />
-        <Tabs.Screen name="owner"   options={{ title: "Owner",       tabBarIcon: makeIcon("stats-chart") }} />
+        {isAdmin && (
+          <Tabs.Screen name="owner"   options={{ title: "Owner",       tabBarIcon: makeIcon("stats-chart") }} />
+        )}
         <Tabs.Screen name="public-profile" options={{ href: null }} />
       </Tabs>
 

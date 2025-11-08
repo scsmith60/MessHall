@@ -8,6 +8,8 @@ import {
   Animated,
   Dimensions,
   Image,
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
   ScrollView,
@@ -105,6 +107,7 @@ export default function SessionDetailScreen() {
   const [videoReady, setVideoReady] = useState(false);
   const [videoRoomId, setVideoRoomId] = useState<string | null>(null);
   const [videoToken, setVideoToken] = useState<string | null>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [agoraChannelName, setAgoraChannelName] = useState<string | null>(null);
   const [agoraAppId, setAgoraAppId] = useState<string | null>(null);
   const [streamProvider, setStreamProvider] = useState<"agora" | "twitch" | "youtube">("agora");
@@ -244,6 +247,7 @@ export default function SessionDetailScreen() {
 
       if (error) throw error;
       if (!data) {
+        setLoading(false); // Set loading to false before showing error
         setNotice({ visible: true, title: "Session Not Found", message: "This session doesn't exist." });
         setTimeout(() => router.back(), 2000);
         return;
@@ -267,26 +271,55 @@ export default function SessionDetailScreen() {
 
       // Check if video room exists
       if (data.video_url || data.room_id) {
-        const roomUrl = data.video_url || (data.room_id?.startsWith("http") 
-          ? data.room_id 
-          : `https://meet.jit.si/${data.room_id}`);
-        setVideoRoomId(roomUrl);
-        setVideoToken(roomUrl);
-        
-        // Detect provider type
-        if (roomUrl.includes("twitch.tv")) {
-          setStreamProvider("twitch");
-          const channelMatch = roomUrl.match(/twitch\.tv\/([^/?]+)/);
-          if (channelMatch) setTwitchChannel(channelMatch[1]);
-        } else if (roomUrl.includes("youtube.com") || roomUrl.includes("youtu.be")) {
-          setStreamProvider("youtube");
-          const videoIdMatch = roomUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?/]+)/);
-          if (videoIdMatch) setYoutubeVideoId(videoIdMatch[1]);
-        } else if (roomUrl.startsWith("agora://")) {
+        // Check if it's an Agora channel (video_url starts with "agora://" or room_id is a plain channel name)
+        if (data.video_url?.startsWith("agora://")) {
+          // Agora channel from video_url
+          const channelName = data.video_url.replace("agora://", "");
+          setAgoraChannelName(channelName);
+          setVideoRoomId(channelName);
           setStreamProvider("agora");
-          setAgoraChannelName(roomUrl.replace("agora://", ""));
+          logDebug("[Session] Loaded Agora channel from video_url:", channelName);
+          // Auto-enable video for active sessions (attendees can watch immediately)
+          if (data.status === "active" && data.host_id !== userId) {
+            logDebug("[Session] Auto-enabling video for attendee viewing active session");
+            setVideoReady(true);
+            // NOTE: We no longer auto-add attendees just for viewing
+            // They must actually join video to be counted
+          }
+        } else if (data.room_id && !data.room_id.startsWith("http") && !data.room_id.includes(".")) {
+          // room_id is likely an Agora channel name (not a URL, no dots)
+          setAgoraChannelName(data.room_id);
+          setVideoRoomId(data.room_id);
+          setStreamProvider("agora");
+          logDebug("[Session] Loaded Agora channel from room_id:", data.room_id);
+          // Auto-enable video for active sessions (attendees can watch immediately)
+          if (data.status === "active" && data.host_id !== userId) {
+            logDebug("[Session] Auto-enabling video for attendee viewing active session");
+            setVideoReady(true);
+            // NOTE: We no longer auto-add attendees just for viewing
+            // They must actually join video to be counted
+          }
         } else {
-          setStreamProvider("agora"); // Default to Agora now
+          // Legacy Jitsi or other providers
+          const roomUrl = data.video_url || (data.room_id?.startsWith("http") 
+            ? data.room_id 
+            : `https://meet.jit.si/${data.room_id}`);
+          setVideoRoomId(roomUrl);
+          setVideoToken(roomUrl);
+          
+          // Detect provider type
+          if (roomUrl.includes("twitch.tv")) {
+            setStreamProvider("twitch");
+            const channelMatch = roomUrl.match(/twitch\.tv\/([^/?]+)/);
+            if (channelMatch) setTwitchChannel(channelMatch[1]);
+          } else if (roomUrl.includes("youtube.com") || roomUrl.includes("youtu.be")) {
+            setStreamProvider("youtube");
+            const videoIdMatch = roomUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?/]+)/);
+            if (videoIdMatch) setYoutubeVideoId(videoIdMatch[1]);
+          } else {
+            // Default to Agora for new sessions
+            setStreamProvider("agora");
+          }
         }
       }
 
@@ -322,14 +355,16 @@ export default function SessionDetailScreen() {
       // Note: Timer will be started in useEffect after component mounts
     } catch (err: any) {
       setNotice({ visible: true, title: "Error", message: err?.message || "Failed to load session." });
+      setLoading(false); // Set loading to false even on error
     }
-  }, [id]);
+  }, [id, userId, isParticipant]);
 
   const loadParticipants = useCallback(async () => {
     if (!id) return;
 
     try {
-      // Load participants
+      // Load participants (exclude host - host is not a participant)
+      // Only count participants who have actually joined video (have videoReady or are in Agora channel)
       const { data: participantsData, error } = await supabase
         .from("enlisted_club_participants")
         .select("*")
@@ -337,7 +372,19 @@ export default function SessionDetailScreen() {
         .is("left_at", null)
         .order("joined_at", { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        logError("Failed to load participants:", error);
+        throw error;
+      }
+
+      const isHostUser = session?.host_id === userId;
+      logDebug("Loaded participants:", {
+        count: participantsData?.length || 0,
+        sessionId: id,
+        userId: userId,
+        isHost: isHostUser,
+        participants: participantsData?.map((p: any) => ({ userId: p.user_id, role: p.role })) || [],
+      });
 
       if (!participantsData || participantsData.length === 0) {
         setParticipants([]);
@@ -388,8 +435,17 @@ export default function SessionDetailScreen() {
           setChatMessages([]);
           return;
         }
+        // RLS policy violation
+        if (error.code === "42501") {
+          logError("RLS policy violation - cannot view chat messages. User:", userId, "Session:", id);
+          setChatMessages([]);
+          return;
+        }
+        logError("Failed to load chat messages:", error);
         throw error;
       }
+      
+      logDebug("Loaded chat messages:", data?.length || 0, "for session:", id, "user:", userId);
 
       // Get unique user IDs
       const userIds = [...new Set((data || []).map((m: any) => m.user_id))];
@@ -419,7 +475,7 @@ export default function SessionDetailScreen() {
       logError("Failed to load chat messages:", err);
       setChatMessages([]);
     }
-  }, [id]);
+  }, [id, userId]);
 
   const sendReaction = useCallback(async (emoji: string) => {
     if (!userId || !id || (session?.status !== "active" && session?.status !== "scheduled")) return;
@@ -476,27 +532,26 @@ export default function SessionDetailScreen() {
     });
 
     try {
-      const { error } = await supabase.from("enlisted_club_reactions").insert({
+      const { data, error } = await supabase.from("enlisted_club_reactions").insert({
         session_id: id,
         user_id: userId,
         emoji: emoji,
-      });
+      }).select();
 
       if (error) {
         if (error.code === "PGRST205") {
           // Table doesn't exist yet - just ignore
+          logDebug("Reactions table doesn't exist yet");
         } else if (error.code === "42501") {
-          // RLS policy error - check if user is host
-          const isHostUser = session?.host_id === userId;
-          if (!isHostUser) {
-            logError("RLS policy violation - user cannot send reaction");
-          }
+          // RLS policy error
+          logError("RLS policy violation - user cannot send reaction", error);
         } else {
-          throw error;
+          logError("Failed to insert reaction:", error);
         }
+      } else {
+        logDebug("Reaction sent successfully:", data);
       }
     } catch (err: any) {
-      // Silently fail - reactions are optional
       logError("Failed to send reaction:", err);
     }
   }, [userId, id, session?.status, session?.host_id]);
@@ -586,7 +641,7 @@ export default function SessionDetailScreen() {
     }
   }, [id]);
 
-  // Countdown timer for scheduled sessions
+  // Countdown timer for scheduled sessions (shows when session will start)
   useEffect(() => {
     if (!session || session.status !== "scheduled" || !session.scheduled_start_at) {
       setCountdown(null);
@@ -600,7 +655,7 @@ export default function SessionDetailScreen() {
 
       if (diff <= 0) {
         setCountdown(null);
-        // Auto-start if host - using Alert instead
+        // Auto-start if host
         if (userId && session.host_id === userId) {
           onStartSession();
         }
@@ -626,17 +681,158 @@ export default function SessionDetailScreen() {
     return () => clearInterval(interval);
   }, [session, userId]);
 
+  // Track when video actually started (for countdown timer)
+  const [videoStartTime, setVideoStartTime] = useState<Date | null>(null);
+
+  // 30-minute countdown timer for active sessions (host sees this)
+  // Countdown should start from when video actually starts, not when session becomes active
+  useEffect(() => {
+    if (!session) return;
+    
+    const isHostUser = session.host_id === userId;
+    
+    // For attendees joining early, show countdown to scheduled start
+    if (session.status === "scheduled" && session.scheduled_start_at && !isHostUser) {
+      const updateEarlyJoinCountdown = () => {
+        const now = new Date().getTime();
+        const scheduled = new Date(session.scheduled_start_at).getTime();
+        const diff = scheduled - now;
+        
+        if (diff > 0) {
+          const hours = Math.floor(diff / (1000 * 60 * 60));
+          const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+          const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+          
+          if (hours > 0) {
+            setCountdown(`${hours}h ${minutes}m`);
+          } else if (minutes > 0) {
+            setCountdown(`${minutes}m ${seconds}s`);
+          } else {
+            setCountdown(`${seconds}s`);
+          }
+        } else {
+          setCountdown(null);
+        }
+      };
+      
+      updateEarlyJoinCountdown();
+      const interval = setInterval(updateEarlyJoinCountdown, 1000);
+      return () => clearInterval(interval);
+    }
+    
+    // For host: countdown starts when video is ready, not when session becomes active
+    if (session.status === "active" && isHostUser && videoReady) {
+      // Initialize video start time if not set
+      let currentStartTime = videoStartTime;
+      if (!currentStartTime) {
+        currentStartTime = new Date();
+        setVideoStartTime(currentStartTime);
+        setSessionTimeRemaining(30 * 60); // Initialize to 30 minutes
+        logDebug("[Countdown] Started 30-minute timer for host video", {
+          videoReady,
+          isHostUser,
+          sessionStatus: session.status,
+          currentStartTime: currentStartTime.toISOString(),
+          sessionTimeRemaining: 30 * 60,
+        });
+      }
+
+      // Set up interval to update countdown - use currentStartTime if videoStartTime not yet updated
+      const updateTimeRemaining = () => {
+        // Use the most recent start time available
+        const startTime = videoStartTime || currentStartTime;
+        if (!startTime) {
+          logDebug("[Countdown] No start time available, skipping update");
+          return;
+        }
+        
+        const startedAt = startTime.getTime ? startTime.getTime() : new Date(startTime).getTime();
+        const now = new Date().getTime();
+        const elapsed = (now - startedAt) / 1000; // seconds
+        const remaining = 30 * 60 - elapsed; // 30 minutes = 1800 seconds
+
+        if (remaining <= 0) {
+          setSessionTimeRemaining(0);
+          // Auto-end session after 30 minutes
+          const endSession = async () => {
+            try {
+              const { error } = await supabase
+                .from("enlisted_club_sessions")
+                .update({
+                  status: "ended",
+                  ended_at: new Date().toISOString(),
+                })
+                .eq("id", id);
+              
+              if (error) throw error;
+              
+              await loadSession();
+              setNotice({
+                visible: true,
+                title: "Session Ended",
+                message: "This session has reached the 30-minute time limit and has been automatically ended.",
+              });
+            } catch (err: any) {
+              logError("Failed to auto-end session:", err);
+            }
+          };
+          endSession();
+          return;
+        }
+
+        const remainingSeconds = Math.floor(remaining);
+        setSessionTimeRemaining(remainingSeconds);
+        logDebug("[Countdown] Updated remaining time:", {
+          remaining: remainingSeconds,
+          minutes: Math.floor(remainingSeconds / 60),
+          seconds: remainingSeconds % 60,
+        });
+      };
+
+      // Start the interval immediately
+      updateTimeRemaining();
+      const interval = setInterval(updateTimeRemaining, 1000);
+
+      return () => clearInterval(interval);
+    } else if ((!videoReady || !isHostUser) && videoStartTime) {
+      // Reset countdown if video is not ready or user is not host
+      logDebug("[Countdown] Resetting timer - video not ready or not host", {
+        videoReady,
+        isHostUser,
+        sessionStatus: session?.status,
+      });
+      setSessionTimeRemaining(null);
+      setVideoStartTime(null);
+    } else if (session && isHostUser && !videoReady) {
+      // Log why countdown isn't starting
+      logDebug("[Countdown] Timer not starting - waiting for video:", {
+        hasSession: !!session,
+        sessionStatus: session.status,
+        isHostUser,
+        videoReady,
+        hasVideoStartTime: !!videoStartTime,
+      });
+    }
+  }, [session, userId, videoReady, videoStartTime, id, loadSession]);
+
 
   useEffect(() => {
-    loadSession();
-    loadParticipants();
-    loadUserProfile();
-    checkAdmin();
-    loadUsageInfo();
-    loadRecentTips();
-    loadChatMessages();
-    setLoading(false);
+    const initializeData = async () => {
+      await loadSession(); // Wait for session to load first
+      loadParticipants(); // Load participants (will include auto-added attendees)
+      loadUserProfile();
+      checkAdmin();
+      loadUsageInfo();
+      loadRecentTips();
+      loadChatMessages();
+      setLoading(false); // Only set loading to false after session is loaded
+    };
+    initializeData();
   }, [loadSession, loadParticipants, loadUserProfile, checkAdmin, loadUsageInfo, loadRecentTips, loadChatMessages]);
+  
+  // NOTE: We no longer auto-add attendees just for viewing the session
+  // They are only added when they actually join video (in joinVideo function)
+  // This ensures the counter only shows people who are actually in the video
 
   // Real-time subscriptions
   useEffect(() => {
@@ -699,7 +895,7 @@ export default function SessionDetailScreen() {
       )
       .subscribe();
 
-    // Only subscribe to chat if table exists (will fail silently if table doesn't exist)
+    // Subscribe to chat for real-time updates
     const chatChannel = supabase
       .channel(`chat_${id}`)
       .on(
@@ -710,14 +906,58 @@ export default function SessionDetailScreen() {
           table: "enlisted_club_messages",
           filter: `session_id=eq.${id}`,
         },
-        () => {
-          loadChatMessages();
+        async (payload: any) => {
+          logDebug("Chat message received via realtime:", payload, "user:", userId, "isHost:", isHost);
+          
+          // If it's an INSERT event, try to add the message directly to avoid RLS issues
+          if (payload.eventType === "INSERT" && payload.new) {
+            const newMessage = payload.new;
+            // Load the profile for the new message
+            try {
+              const { data: profileData } = await supabase
+                .from("profiles")
+                .select("id, username, avatar_url")
+                .eq("id", newMessage.user_id)
+                .single();
+              
+              // Add the new message to the state
+              setChatMessages((prev) => {
+                // Check if message already exists (avoid duplicates)
+                if (prev.some((m) => m.id === newMessage.id)) {
+                  return prev;
+                }
+                return [
+                  ...prev,
+                  {
+                    ...newMessage,
+                    profile: profileData || null,
+                  },
+                ].sort((a, b) => 
+                  new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                );
+              });
+              logDebug("Added new chat message directly from realtime");
+            } catch (err) {
+              logError("Failed to load profile for new message, falling back to reload:", err);
+              // Fallback to reloading all messages
+              setTimeout(() => {
+                loadChatMessages();
+              }, 100);
+            }
+          } else {
+            // For UPDATE or DELETE, reload all messages
+            setTimeout(() => {
+              loadChatMessages();
+            }, 100);
+          }
         }
       )
       .subscribe((status) => {
-        // Silently handle subscription failures (table might not exist yet)
+        logDebug("Chat subscription status:", status);
         if (status === "CHANNEL_ERROR") {
-          logDebug("Chat subscription unavailable (table may not exist)");
+          logError("Chat subscription error - table may not exist or realtime not enabled");
+        } else if (status === "SUBSCRIBED") {
+          logDebug("Successfully subscribed to chat messages");
         }
       });
 
@@ -733,9 +973,11 @@ export default function SessionDetailScreen() {
           filter: `session_id=eq.${id}`,
         },
         (payload: any) => {
+          logDebug("Reaction received via realtime:", payload);
           // Show floating emoji animation when other users send reactions
           if (payload.new && payload.new.user_id !== userId) {
             const emoji = payload.new.emoji;
+            logDebug("Showing floating emoji for other user:", emoji, "from user:", payload.new.user_id);
             const emojiId = `emoji_${floatingEmojiIdRef.current++}`;
             const startX = Dimensions.get("window").width / 2;
             const startY = Dimensions.get("window").height * 0.7;
@@ -783,9 +1025,12 @@ export default function SessionDetailScreen() {
         }
       )
       .subscribe((status) => {
+        logDebug("Reactions subscription status:", status);
         // Silently handle subscription failures (table might not exist yet)
         if (status === "CHANNEL_ERROR") {
-          logDebug("Reactions subscription unavailable (table may not exist)");
+          logError("Reactions subscription error - table may not exist or realtime not enabled");
+        } else if (status === "SUBSCRIBED") {
+          logDebug("Successfully subscribed to reactions");
         }
       });
 
@@ -798,25 +1043,83 @@ export default function SessionDetailScreen() {
     };
   }, [id, userId, loadParticipants, loadRecentTips, loadChatMessages]);
 
+  // Auto-join video for attendees when session is active and has a channel
+  useEffect(() => {
+    const autoJoinVideo = async () => {
+      // Only for attendees (not host)
+      if (!userId || !session || !id || session.host_id === userId) {
+        logDebug("[Session] Auto-join skipped: not attendee or missing data", { userId, hasSession: !!session, id });
+        return;
+      }
+      
+      // Only if session is active and has a channel
+      if (session.status !== "active" || !session.room_id) {
+        logDebug("[Session] Auto-join skipped: session not active or no room_id", { status: session.status, room_id: session.room_id });
+        return;
+      }
+      
+      // Only if we have the channel name but video isn't ready yet
+      if (!agoraChannelName || videoReady) {
+        logDebug("[Session] Auto-join skipped: channel or ready state", { hasChannel: !!agoraChannelName, videoReady });
+        return;
+      }
+      
+      // Only if we have the App ID
+      if (!agoraAppId) {
+        logDebug("[Session] Auto-join skipped: no App ID");
+        return;
+      }
+      
+      logDebug("[Session] Auto-joining video for attendee", {
+        channel: agoraChannelName,
+        isParticipant,
+        status: session.status,
+        room_id: session.room_id,
+      });
+      
+      // Set video ready and room ID so the component renders
+      setVideoRoomId(agoraChannelName);
+      setVideoReady(true);
+    };
+    
+    autoJoinVideo();
+  }, [session, isParticipant, agoraChannelName, agoraAppId, videoReady, userId, id]);
+
+  // Handle keyboard show/hide for chat input
+  useEffect(() => {
+    const keyboardWillShow = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      (e) => {
+        setKeyboardHeight(e.endCoordinates.height);
+      }
+    );
+    const keyboardWillHide = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      () => {
+        setKeyboardHeight(0);
+      }
+    );
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardWillHide.remove();
+    };
+  }, []);
+
   const onJoin = async () => {
     if (!userId || !id) {
       setNotice({ visible: true, title: "Sign In Required", message: "Please sign in to join." });
       return;
     }
 
+    // NOTE: We no longer add participants just for joining the session
+    // They are only added when they actually join video (in joinVideo function)
+    // This ensures the counter only shows people who are actually in the video
+    
     setJoining(true);
     try {
-      const { error } = await supabase.from("enlisted_club_participants").insert({
-        session_id: id,
-        user_id: userId,
-        role: "viewer",
-      });
-
-      if (error) throw error;
-
       await success();
       setIsParticipant(true);
-      await loadParticipants();
       
       // Auto-join video if host has already started streaming
       if (session && session.status === "active" && session.room_id) {
@@ -956,23 +1259,25 @@ export default function SessionDetailScreen() {
       setVideoRoomId(channelName); // Keep for compatibility
       setVideoToken(data.token || null);
       setStreamProvider("agora");
-      setVideoReady(true);
-      await success();
-
       // If session isn't active yet, activate it
       if (session.status !== "active") {
         const startedAt = new Date().toISOString();
-        await supabase
+        const { error } = await supabase
           .from("enlisted_club_sessions")
           .update({
             status: "active",
             started_at: startedAt,
           })
           .eq("id", id);
-        await loadSession();
         
-        // Timer will start automatically via useEffect when session updates
+        if (error) throw error;
+        
+        await loadSession();
       }
+      
+      // Video is ready - this will trigger the countdown timer to start
+      setVideoReady(true);
+      await success();
     } catch (err: any) {
       await warn();
       setNotice({
@@ -986,7 +1291,7 @@ export default function SessionDetailScreen() {
   };
 
   const joinVideo = async () => {
-    if (!userId || !id || !session || !isParticipant || !isActive) return;
+    if (!userId || !id || !session || !isActive) return;
 
     setStartingVideo(true);
     try {
@@ -1054,6 +1359,27 @@ export default function SessionDetailScreen() {
       }
       setStreamProvider("agora");
 
+      // Only add participant to table AFTER they successfully join video
+      // This ensures we only count people who are actually in the video
+      if (!isParticipant && !isHost) {
+        try {
+          const { error: participantError } = await supabase.from("enlisted_club_participants").insert({
+            session_id: id,
+            user_id: userId,
+            role: "viewer",
+          });
+          if (!participantError) {
+            setIsParticipant(true);
+            await loadParticipants();
+            logDebug("[Video] Added participant to table after successful video join");
+          } else if (participantError.code !== "23505") { // Ignore duplicate key errors
+            logError("[Video] Failed to add participant:", participantError);
+          }
+        } catch (err) {
+          logError("[Video] Error adding participant:", err);
+        }
+      }
+
       setVideoReady(true);
       await success();
     } catch (err: any) {
@@ -1092,6 +1418,9 @@ export default function SessionDetailScreen() {
 
               await success();
               await loadSession();
+              
+              // Start 30-minute countdown timer
+              setSessionTimeRemaining(30 * 60); // 30 minutes in seconds
             } catch (err: any) {
               await warn();
               setNotice({ visible: true, title: "Error", message: err?.message || "Failed to start session." });
@@ -1365,7 +1694,19 @@ export default function SessionDetailScreen() {
                 token={videoToken || undefined}
                 isHost={isHost}
                 displayName={userProfile?.username || undefined}
-                viewerCount={participants.length}
+                // Pass participants.length as viewerCount since Agora doesn't fire onUserJoined for audience members
+                // Note: participants.length includes all viewers who joined (auto-added when they join video)
+                // Host should see the count of all viewers (not including themselves)
+                viewerCount={isHost ? participants.length : undefined}
+                onViewerCountChange={(count) => {
+                  // This will be called when viewer count changes from Agora
+                  logDebug("Viewer count updated from Agora:", {
+                    count,
+                    isHost,
+                    participantsLength: participants.length,
+                    participants: participants.map((p: any) => ({ userId: p.user_id, role: p.role })),
+                  });
+                }}
                 onError={(error: string) => {
                   setNotice({
                     visible: true,
@@ -1374,8 +1715,16 @@ export default function SessionDetailScreen() {
                   });
                 }}
                 onReady={() => {
-                  logDebug("Agora video ready");
+                  logDebug("[Video] Agora video ready callback - setting videoReady to true");
                   setVideoReady(true);
+                  // Log countdown state for debugging
+                  if (isHost && session.status === "active") {
+                    logDebug("[Countdown] Video ready callback - should start timer", {
+                      isHost,
+                      sessionStatus: session.status,
+                      videoReady: true,
+                    });
+                  }
                 }}
               />
             ) : agoraChannelName ? (
@@ -1443,17 +1792,40 @@ export default function SessionDetailScreen() {
                     )}
                   </View>
                   {isActive && (
-                    <View
-                      style={{
-                        backgroundColor: COLORS.accent,
-                        paddingHorizontal: 8,
-                        paddingVertical: 2,
-                        borderRadius: 8,
-                        marginTop: 4,
-                      }}
-                    >
-                      <Text style={{ color: "#000", fontWeight: "800", fontSize: 10 }}>LIVE</Text>
-                    </View>
+                    <>
+                      <View
+                        style={{
+                          backgroundColor: COLORS.accent,
+                          paddingHorizontal: 8,
+                          paddingVertical: 2,
+                          borderRadius: 8,
+                          marginTop: 4,
+                        }}
+                      >
+                        <Text style={{ color: "#000", fontWeight: "800", fontSize: 10 }}>LIVE</Text>
+                      </View>
+                      {isHost && videoReady && sessionTimeRemaining !== null && sessionTimeRemaining > 0 && (
+                        <View
+                          style={{
+                            marginTop: 4,
+                            paddingHorizontal: 8,
+                            paddingVertical: 2,
+                            borderRadius: 6,
+                            backgroundColor: sessionTimeRemaining < 300 ? COLORS.danger : COLORS.elevated,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              color: sessionTimeRemaining < 300 ? "#fff" : COLORS.subtext,
+                              fontWeight: "700",
+                              fontSize: 11,
+                            }}
+                          >
+                            {Math.floor(sessionTimeRemaining / 60)}:{(sessionTimeRemaining % 60).toString().padStart(2, "0")} remaining
+                          </Text>
+                        </View>
+                      )}
+                    </>
                   )}
                 </View>
                 {isHost && isActive && (
@@ -1476,40 +1848,40 @@ export default function SessionDetailScreen() {
           </View>
 
           {/* Right-Side Action Buttons (TikTok-style) */}
-          {/* Show buttons when participant/host AND (active session OR video is ready) */}
-          {((isParticipant || isHost) && (isActive || videoReady)) && (
+          {/* Show buttons when viewing active session (host and viewers can interact) */}
+          {(isActive || videoReady) && (
             <View
               style={{
                 position: "absolute",
                 right: SPACING.md,
-                bottom: bottomInset + (showChat ? 280 : 80),
+                bottom: bottomInset + (showChat ? 320 : 100), // More space to avoid chat overlap
                 zIndex: 100,
-                gap: SPACING.md,
+                gap: SPACING.sm, // Smaller gap between buttons
                 alignItems: "center",
               }}
             >
-              {/* Reaction Buttons */}
+              {/* Reaction Buttons - Smaller and better positioned */}
               {['❤️', '🔥', '👏', '💯'].map((emoji) => (
                 <TouchableOpacity
                   key={emoji}
                   onPress={() => sendReaction(emoji)}
                   style={{
                     backgroundColor: COLORS.overlay,
-                    width: 50,
-                    height: 50,
-                    borderRadius: 25,
+                    width: 42,
+                    height: 42,
+                    borderRadius: 21,
                     alignItems: "center",
                     justifyContent: "center",
-                    borderWidth: 2,
+                    borderWidth: 1.5,
                     borderColor: COLORS.border,
                   }}
                 >
-                  <Text style={{ fontSize: 24 }}>{emoji}</Text>
+                  <Text style={{ fontSize: 20 }}>{emoji}</Text>
                 </TouchableOpacity>
               ))}
 
-              {/* Tip Button (for participants only) - Always visible when participant */}
-              {isParticipant && !isHost && (
+              {/* Tip Button - Available to all viewers */}
+              {!isHost && (
                 <TouchableOpacity
                   onPress={() => {
                     if (hostHasStripe === false) {
@@ -1524,16 +1896,16 @@ export default function SessionDetailScreen() {
                   }}
                   style={{
                     backgroundColor: hostHasStripe === false ? COLORS.elevated : COLORS.accent,
-                    width: 50,
-                    height: 50,
-                    borderRadius: 25,
+                    width: 42,
+                    height: 42,
+                    borderRadius: 21,
                     alignItems: "center",
                     justifyContent: "center",
-                    borderWidth: 2,
+                    borderWidth: 1.5,
                     borderColor: COLORS.border,
                   }}
                 >
-                  <Ionicons name="cash" size={24} color={hostHasStripe === false ? COLORS.subtext : "#000"} />
+                  <Ionicons name="cash" size={20} color={hostHasStripe === false ? COLORS.subtext : "#000"} />
                 </TouchableOpacity>
               )}
 
@@ -1542,17 +1914,17 @@ export default function SessionDetailScreen() {
                 onPress={() => setShowChat(!showChat)}
                 style={{
                   backgroundColor: COLORS.overlay,
-                  width: 50,
-                  height: 50,
-                  borderRadius: 25,
+                  width: 42,
+                  height: 42,
+                  borderRadius: 21,
                   alignItems: "center",
                   justifyContent: "center",
-                  borderWidth: 2,
+                  borderWidth: 1.5,
                   borderColor: showChat ? COLORS.accent : COLORS.border,
                   position: "relative",
                 }}
               >
-                <Ionicons name="chatbubble" size={24} color={COLORS.text} />
+                <Ionicons name="chatbubble" size={20} color={COLORS.text} />
                 {chatMessages.length > 0 && (
                   <View
                     style={{
@@ -1561,14 +1933,14 @@ export default function SessionDetailScreen() {
                       right: -4,
                       backgroundColor: COLORS.accent,
                       borderRadius: 10,
-                      minWidth: 20,
-                      height: 20,
+                      minWidth: 18,
+                      height: 18,
                       alignItems: "center",
                       justifyContent: "center",
                       paddingHorizontal: 4,
                     }}
                   >
-                    <Text style={{ color: "#000", fontSize: 10, fontWeight: "800" }}>
+                    <Text style={{ color: "#000", fontSize: 9, fontWeight: "800" }}>
                       {chatMessages.length > 99 ? "99+" : chatMessages.length}
                     </Text>
                   </View>
@@ -1578,18 +1950,18 @@ export default function SessionDetailScreen() {
           )}
 
           {/* Transparent Chat Bubbles Overlay (Bottom) */}
-          {showChat && (isParticipant || isHost) && (
+          {showChat && (isActive || videoReady) && (
             <View
               style={{
                 position: "absolute",
-                bottom: 0,
+                bottom: keyboardHeight > 0 ? keyboardHeight - bottomInset : 0,
                 left: 0,
-                right: 0,
+                right: 60, // Leave space for right-side buttons
                 zIndex: 50, // Lower than buttons
                 paddingHorizontal: SPACING.md,
                 paddingBottom: bottomInset + SPACING.md,
                 paddingTop: SPACING.lg,
-                maxHeight: screenHeight * 0.35,
+                maxHeight: screenHeight * 0.3, // Slightly smaller to avoid covering buttons
               }}
             >
               {/* Gradient Overlay for Chat */}
@@ -1727,7 +2099,7 @@ export default function SessionDetailScreen() {
           )}
 
           {/* Start Video Button (for host) */}
-          {isHost && isActive && !videoReady && (
+          {isHost && isActive && !videoReady && session.status !== "ended" && (
             <View
               style={{
                 position: "absolute",
@@ -1872,7 +2244,7 @@ export default function SessionDetailScreen() {
                   >
                     <Text style={{ color: "#000", fontWeight: "800", fontSize: 10 }}>LIVE</Text>
                   </View>
-                  {sessionTimeRemaining !== null && sessionTimeRemaining > 0 && (
+                  {isHost && isActive && videoReady && sessionTimeRemaining !== null && sessionTimeRemaining > 0 && (
                     <View
                       style={{
                         marginTop: 4,
@@ -1890,6 +2262,27 @@ export default function SessionDetailScreen() {
                         }}
                       >
                         {Math.floor(sessionTimeRemaining / 60)}:{(sessionTimeRemaining % 60).toString().padStart(2, "0")} remaining
+                      </Text>
+                    </View>
+                  )}
+                  {!isHost && countdown && session.status === "scheduled" && (
+                    <View
+                      style={{
+                        marginTop: 4,
+                        paddingHorizontal: 8,
+                        paddingVertical: 2,
+                        borderRadius: 6,
+                        backgroundColor: COLORS.elevated,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: COLORS.subtext,
+                          fontWeight: "700",
+                          fontSize: 11,
+                        }}
+                      >
+                        Starts in: {countdown}
                       </Text>
                     </View>
                   )}

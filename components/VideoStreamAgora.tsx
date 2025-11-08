@@ -25,8 +25,10 @@ type Props = {
   onReady?: () => void;
   onUserJoined?: (uid: number) => void;
   onUserOffline?: (uid: number) => void;
+  onViewerCountChange?: (count: number) => void; // Callback when viewer count changes
   showControls?: boolean; // Show mute/camera controls
   viewerCount?: number; // Optional: show live viewer count
+  muteAudio?: boolean; // Mute audio (for previews in feed)
 };
 
 export default function VideoStreamAgora({
@@ -40,20 +42,58 @@ export default function VideoStreamAgora({
   onReady,
   onUserJoined,
   onUserOffline,
+  onViewerCountChange,
   showControls = true,
   viewerCount,
+  muteAudio = false,
 }: Props) {
   const [loading, setLoading] = useState(true);
   const [remoteUids, setRemoteUids] = useState<number[]>([]);
-  const [muted, setMuted] = useState(false);
+  const [allUserIds, setAllUserIds] = useState<number[]>([]); // Track all users (including audience members without video)
+  const [muted, setMuted] = useState(false); // Host: local audio muted, Attendee: remote audio muted
+  const [remoteAudioMuted, setRemoteAudioMuted] = useState(false); // For attendees: track if remote audio is muted
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [connectionQuality, setConnectionQuality] = useState<"excellent" | "good" | "poor" | "unknown">("unknown");
   const engineRef = useRef<any>(null);
   const insets = useSafeAreaInsets();
 
+  // Calculate and notify viewer count when users change
+  // Note: For host in live broadcasting, Agora doesn't fire onUserJoined for audience members,
+  // so we rely on the viewerCount prop from the participants table instead
+  useEffect(() => {
+    // For host: if viewerCount prop is provided, use it (from participants table)
+    // Otherwise, try to use allUserIds (but this won't work for audience members)
+    // For attendees: count themselves (1) + any remote users (host)
+    const calculatedCount = isHost 
+      ? (viewerCount !== undefined ? viewerCount : allUserIds.length) // Host: prefer prop, fallback to Agora
+      : allUserIds.length + 1; // Attendees: allUserIds.length (host) + 1 (themselves)
+    
+    logDebug("[Agora] Viewer count updated:", {
+      isHost,
+      remoteUids: remoteUids.length,
+      allUserIds: allUserIds.length,
+      viewerCountProp: viewerCount,
+      calculatedViewerCount: calculatedCount,
+      finalDisplayCount: isHost 
+        ? (viewerCount !== undefined ? viewerCount : allUserIds.length)
+        : (viewerCount !== undefined ? viewerCount : allUserIds.length + 1),
+    });
+    
+    // Only notify parent if we're not using a provided viewerCount for host
+    // (since the parent already knows the count from participants table)
+    if (onViewerCountChange && !(isHost && viewerCount !== undefined)) {
+      onViewerCountChange(calculatedCount);
+    }
+  }, [remoteUids, allUserIds, isHost, viewerCount, onViewerCountChange]);
+
   useEffect(() => {
     if (!appId) {
       onError?.("Agora App ID is required");
+      return;
+    }
+
+    if (!channelName) {
+      logDebug("[Agora] No channel name provided, skipping initialization");
       return;
     }
 
@@ -64,26 +104,55 @@ export default function VideoStreamAgora({
         await engine.initialize({ appId });
         engineRef.current = engine;
 
-        // Enable video
-        await engine.enableVideo();
-        
-        // Set channel profile (communication = 2-way, live = 1-way streaming)
-        await engine.setChannelProfile(
-          isHost 
-            ? ChannelProfileType.ChannelProfileLiveBroadcasting 
-            : ChannelProfileType.ChannelProfileCommunication
-        );
-
-        // Set client role (host publishes, audience subscribes)
-        if (isHost) {
-          await engine.setClientRole(ClientRoleType.ClientRoleBroadcaster);
+        // Enable video (but disable local video for previews in feed)
+        if (muteAudio && !isHost) {
+          // For feed previews, we only want to see remote video, not enable local camera
+          await engine.enableVideo();
+          await engine.muteLocalAudioStream(true);
+          await engine.enableLocalVideo(false); // Don't show user's own camera in preview
+          logDebug("[Agora] Preview mode: audio muted, local video disabled");
         } else {
-          await engine.setClientRole(ClientRoleType.ClientRoleAudience);
+          await engine.enableVideo();
         }
+        
+        // Set channel profile (ALL users must use the same profile - LiveBroadcasting for streaming)
+        // Communication = 2-way, LiveBroadcasting = 1-way streaming (host broadcasts, audience watches)
+        await engine.setChannelProfile(ChannelProfileType.ChannelProfileLiveBroadcasting);
+        logDebug("[Agora] Channel profile set: LiveBroadcasting");
+
+        // Set client role BEFORE joining (host publishes, audience subscribes)
+        const clientRole = isHost 
+          ? ClientRoleType.ClientRoleBroadcaster 
+          : ClientRoleType.ClientRoleAudience;
+        await engine.setClientRole(clientRole);
+        logDebug("[Agora] Set role:", isHost ? "Broadcaster (Host)" : "Audience (Viewer)");
 
         // Event handlers
-        engine.addListener("onJoinChannelSuccess", (connection: any, elapsed: number) => {
-          logDebug("[Agora] Joined channel:", connection.channelId, "uid:", connection.localUid);
+        engine.addListener("onJoinChannelSuccess", async (connection: any, elapsed: number) => {
+          logDebug("[Agora] Joined channel:", connection.channelId, "uid:", connection.localUid, "isHost:", isHost);
+          
+          // For audience members, ensure remote video/audio is enabled after joining
+          if (!isHost && engineRef.current) {
+            try {
+              // Enable remote video for all users (0 = all users)
+              await engineRef.current.muteRemoteVideoStream(0, false);
+              // Mute remote audio if this is a preview (feed view)
+              await engineRef.current.muteRemoteAudioStream(0, muteAudio);
+              logDebug("[Agora] Enabled remote video subscription for audience, audio muted:", muteAudio);
+              
+              // Note: onUserJoined will fire for users already in the channel
+              // We'll also get onRemoteVideoStateChanged when their video starts
+            } catch (e) {
+              logError("[Agora] Error enabling remote streams:", e);
+            }
+          }
+          
+          // For host: onUserJoined should fire for existing users, but if it doesn't,
+          // we'll rely on the events. For now, just log that we've joined.
+          if (isHost) {
+            logDebug("[Agora] Host joined channel, waiting for onUserJoined events for existing users");
+          }
+          
           setLoading(false);
           onReady?.();
         });
@@ -93,16 +162,110 @@ export default function VideoStreamAgora({
           onError?.(`Agora error: ${msg || String(err)}`);
         });
 
-        engine.addListener("onUserJoined", (connection: any, remoteUid: number, elapsed: number) => {
-          logDebug("[Agora] User joined:", remoteUid);
-          setRemoteUids((prev) => [...prev, remoteUid]);
+        engine.addListener("onUserJoined", async (connection: any, remoteUid: number, elapsed: number) => {
+          // Verify we're still on the correct channel
+          if (connection.channelId !== channelName) {
+            logDebug("[Agora] Ignoring onUserJoined - wrong channel:", connection.channelId, "expected:", channelName);
+            return;
+          }
+          
+          logDebug("[Agora] User joined:", remoteUid, "channel:", connection.channelId, "isHost:", isHost, "elapsed:", elapsed);
+          
+          // Add to allUserIds for viewer counting (this includes all users, even audience members without video)
+          setAllUserIds((prev) => {
+            if (!prev.includes(remoteUid)) {
+              const newCount = prev.length + 1;
+              logDebug("[Agora] Added user to allUserIds:", remoteUid, "isHost:", isHost, "total users:", newCount);
+              if (isHost) {
+                logDebug("[Agora] Host detected audience member joined:", remoteUid, "total audience:", newCount);
+              }
+              return [...prev, remoteUid];
+            }
+            return prev;
+          });
+          
+          // For audience members, explicitly enable remote video/audio for this user
+          if (!isHost && engineRef.current) {
+            try {
+              await engineRef.current.muteRemoteVideoStream(remoteUid, false);
+              // Mute remote audio if this is a preview (feed view)
+              await engineRef.current.muteRemoteAudioStream(remoteUid, muteAudio);
+              logDebug("[Agora] Enabled remote video for user:", remoteUid, "audio muted:", muteAudio, "channel:", channelName);
+              
+              // Add to remote UIDs immediately - video might already be streaming
+              // onRemoteVideoStateChanged will also add it when video starts decoding
+              setRemoteUids((prev) => {
+                if (!prev.includes(remoteUid)) {
+                  logDebug("[Agora] Added remote UID from onUserJoined:", remoteUid, "channel:", channelName);
+                  return [...prev, remoteUid];
+                }
+                return prev;
+              });
+            } catch (e) {
+              logError("[Agora] Error enabling remote streams for user:", remoteUid, e);
+            }
+          }
+          // Note: For host, audience members are added to allUserIds above but not to remoteUids
+          // because they don't publish video streams
+          
           onUserJoined?.(remoteUid);
         });
 
         engine.addListener("onUserOffline", (connection: any, remoteUid: number, reason: number) => {
-          logDebug("[Agora] User offline:", remoteUid);
+          logDebug("[Agora] User offline:", remoteUid, "isHost:", isHost, "reason:", reason);
           setRemoteUids((prev) => prev.filter((id) => id !== remoteUid));
+          setAllUserIds((prev) => {
+            const updated = prev.filter((id) => id !== remoteUid);
+            logDebug("[Agora] Removed user from allUserIds:", remoteUid, "remaining users:", updated.length);
+            return updated;
+          });
           onUserOffline?.(remoteUid);
+        });
+
+        // Listen for remote video state changes (important for audience members)
+        engine.addListener("onRemoteVideoStateChanged", async (connection: any, remoteUid: number, state: number, reason: number, elapsed: number) => {
+          // Verify we're still on the correct channel
+          if (connection.channelId !== channelName) {
+            logDebug("[Agora] Ignoring onRemoteVideoStateChanged - wrong channel:", connection.channelId, "expected:", channelName);
+            return;
+          }
+          
+          const stateNames = ["stopped", "starting", "decoding", "failed", "frozen"];
+          logDebug("[Agora] Remote video state changed:", { 
+            remoteUid, 
+            state: stateNames[state] || state, 
+            reason,
+            isHost,
+            channel: connection.channelId
+          });
+          
+          // State: 0 = stopped, 1 = starting, 2 = decoding, 3 = failed, 4 = frozen
+          // When video starts decoding (state 2), ensure the UID is in our list and streams are enabled
+          if (state === 2 && !isHost && engineRef.current) {
+            try {
+              // Ensure remote video is enabled, audio muted if preview
+              await engineRef.current.muteRemoteVideoStream(remoteUid, false);
+              await engineRef.current.muteRemoteAudioStream(remoteUid, muteAudio);
+              logDebug("[Agora] Enabled remote video for user:", remoteUid, "audio muted:", muteAudio, "channel:", channelName);
+            } catch (e) {
+              logError("[Agora] Error enabling remote streams:", e);
+            }
+          }
+          
+          // Add to remote UIDs list when video starts decoding
+          if (state === 2) {
+            setRemoteUids((prev) => {
+              if (!prev.includes(remoteUid)) {
+                logDebug("[Agora] Adding remote UID to list:", remoteUid, "channel:", channelName);
+                return [...prev, remoteUid];
+              }
+              return prev;
+            });
+          } else if (state === 0 || state === 3) {
+            // Remove from list if video stops or fails
+            logDebug("[Agora] Removing remote UID from list:", remoteUid, "channel:", channelName);
+            setRemoteUids((prev) => prev.filter((id) => id !== remoteUid));
+          }
         });
 
         // Join channel - needs token, channelName, uid, and optional info
@@ -121,20 +284,26 @@ export default function VideoStreamAgora({
 
     initAgora();
 
-    // Cleanup on unmount
+    // Cleanup on unmount or when channel/appId changes
     return () => {
+      logDebug("[Agora] Cleanup triggered for channel:", channelName);
       if (engineRef.current) {
         try {
           engineRef.current.leaveChannel();
           engineRef.current.removeAllListeners();
           engineRef.current.release();
+          logDebug("[Agora] Engine released for channel:", channelName);
         } catch (e) {
           logError("[Agora] Error during cleanup:", e);
         }
         engineRef.current = null;
       }
+      // Reset state on cleanup immediately
+      setRemoteUids([]);
+      setAllUserIds([]);
+      setLoading(true);
     };
-  }, [appId, channelName, token, uid, isHost]);
+  }, [appId, channelName, token, uid, isHost, muteAudio]);
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom }]}>
@@ -148,11 +317,18 @@ export default function VideoStreamAgora({
       )}
 
       {/* Live Viewer Count Overlay (Top Right) */}
-      {(viewerCount !== undefined || remoteUids.length > 0) && (
+      {(!loading || allUserIds.length > 0 || viewerCount !== undefined) && (
         <View style={[styles.viewerCountBadge, { top: insets.top + 60, right: 16 }]}>
           <Text style={styles.viewerIcon}>👁️</Text>
           <Text style={styles.viewerCountText}>
-            {viewerCount !== undefined ? viewerCount : remoteUids.length}
+            {isHost 
+              ? viewerCount !== undefined 
+                ? viewerCount // Host: use provided count from participants table (Agora doesn't fire onUserJoined for audience)
+                : allUserIds.length // Fallback to Agora count if available
+              : viewerCount !== undefined 
+                ? viewerCount // Use provided count if available
+                : allUserIds.length + 1 // Attendees: allUserIds.length (host) + 1 (themselves)
+            }
           </Text>
         </View>
       )}
@@ -179,7 +355,7 @@ export default function VideoStreamAgora({
       )}
 
       {/* Host view: Show host's own video large in center */}
-      {isHost && engineRef.current && videoEnabled ? (
+      {isHost && !muteAudio && engineRef.current && videoEnabled ? (
         <View style={styles.hostMainVideo}>
           <RtcSurfaceView
             style={styles.mainVideo}
@@ -188,7 +364,7 @@ export default function VideoStreamAgora({
             }}
           />
         </View>
-      ) : isHost && !videoEnabled ? (
+      ) : isHost && !muteAudio && !videoEnabled ? (
         <View style={styles.hostMainVideo}>
           <View style={styles.videoDisabledPlaceholder}>
             <Text style={styles.videoDisabledText}>📵 Camera Off</Text>
@@ -197,9 +373,9 @@ export default function VideoStreamAgora({
       ) : null}
 
       {/* Remote video views (for viewers - show host's video large) */}
-      {!isHost && (
+      {(!isHost || muteAudio) && (
         <View style={styles.remoteVideos}>
-          {remoteUids.length > 0 ? (
+          {remoteUids.length > 0 && engineRef.current && !loading ? (
             remoteUids.map((remoteUid) => (
               <View key={remoteUid} style={styles.remoteVideoContainer}>
                 <RtcSurfaceView
@@ -212,76 +388,115 @@ export default function VideoStreamAgora({
             ))
           ) : (
             <View style={styles.waitingForHost}>
-              <Text style={styles.waitingText}>Waiting for host to start video...</Text>
+              <Text style={styles.waitingText}>
+                {loading ? "Connecting..." : "Waiting for host to start video..."}
+              </Text>
             </View>
           )}
         </View>
       )}
 
-      {/* Video/Audio Controls for Host */}
-      {showControls && isHost && engineRef.current && !loading && (
-        <View style={styles.controlsContainer}>
-          <TouchableOpacity
-            style={[styles.controlButton, muted && styles.controlButtonActive]}
-            onPress={async () => {
-              try {
-                if (muted) {
-                  await engineRef.current.muteLocalAudioStream(false);
-                  setMuted(false);
-                  logDebug("[Agora] Microphone unmuted");
-                } else {
-                  await engineRef.current.muteLocalAudioStream(true);
-                  setMuted(true);
-                  logDebug("[Agora] Microphone muted");
-                }
-              } catch (e) {
-                logError("[Agora] Error toggling audio:", e);
-              }
-            }}
-          >
-            <Text style={styles.controlIcon}>{muted ? "🔇" : "🎤"}</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[styles.controlButton, !videoEnabled && styles.controlButtonActive]}
-            onPress={async () => {
-              try {
-                if (videoEnabled) {
-                  // Actually disable the camera, not just mute
-                  await engineRef.current.enableLocalVideo(false);
-                  setVideoEnabled(false);
-                  logDebug("[Agora] Camera disabled");
-                } else {
-                  // Re-enable the camera
-                  await engineRef.current.enableLocalVideo(true);
-                  setVideoEnabled(true);
-                  logDebug("[Agora] Camera enabled");
-                }
-              } catch (e) {
-                logError("[Agora] Error toggling video:", e);
-              }
-            }}
-          >
-            <Text style={styles.controlIcon}>{videoEnabled ? "📹" : "📵"}</Text>
-          </TouchableOpacity>
+      {/* Audio/Video Controls */}
+      {showControls && engineRef.current && !loading && (
+        <>
+          {isHost ? (
+            // Host: Show full controls at bottom
+            <View style={styles.controlsContainer}>
+              <TouchableOpacity
+                style={[styles.controlButton, muted && styles.controlButtonActive]}
+                onPress={async () => {
+                  try {
+                    if (muted) {
+                      await engineRef.current.muteLocalAudioStream(false);
+                      setMuted(false);
+                      logDebug("[Agora] Microphone unmuted");
+                    } else {
+                      await engineRef.current.muteLocalAudioStream(true);
+                      setMuted(true);
+                      logDebug("[Agora] Microphone muted");
+                    }
+                  } catch (e) {
+                    logError("[Agora] Error toggling audio:", e);
+                  }
+                }}
+              >
+                <Text style={styles.controlIcon}>{muted ? "🔇" : "🎤"}</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.controlButton, !videoEnabled && styles.controlButtonActive]}
+                onPress={async () => {
+                  try {
+                    if (videoEnabled) {
+                      await engineRef.current.enableLocalVideo(false);
+                      setVideoEnabled(false);
+                      logDebug("[Agora] Camera disabled");
+                    } else {
+                      await engineRef.current.enableLocalVideo(true);
+                      setVideoEnabled(true);
+                      logDebug("[Agora] Camera enabled");
+                    }
+                  } catch (e) {
+                    logError("[Agora] Error toggling video:", e);
+                  }
+                }}
+              >
+                <Text style={styles.controlIcon}>{videoEnabled ? "📹" : "📵"}</Text>
+              </TouchableOpacity>
 
-          {/* Switch Camera Button (only when video is enabled) */}
-          {videoEnabled && (
+              {videoEnabled && (
+                <TouchableOpacity
+                  style={styles.controlButton}
+                  onPress={async () => {
+                    try {
+                      await engineRef.current.switchCamera();
+                      logDebug("[Agora] Camera switched");
+                    } catch (e) {
+                      logError("[Agora] Error switching camera:", e);
+                    }
+                  }}
+                >
+                  <Text style={styles.controlIcon}>🔄</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            // Attendee: Small semi-transparent audio icon overlay (top-left)
             <TouchableOpacity
-              style={styles.controlButton}
+              style={{
+                position: "absolute",
+                top: insets.top + 60,
+                left: 16,
+                backgroundColor: "rgba(0, 0, 0, 0.5)",
+                width: 40,
+                height: 40,
+                borderRadius: 20,
+                alignItems: "center",
+                justifyContent: "center",
+                zIndex: 10,
+              }}
               onPress={async () => {
                 try {
-                  await engineRef.current.switchCamera();
-                  logDebug("[Agora] Camera switched");
+                  if (remoteAudioMuted) {
+                    await engineRef.current.muteRemoteAudioStream(0, false);
+                    setRemoteAudioMuted(false);
+                    logDebug("[Agora] Remote audio unmuted");
+                  } else {
+                    await engineRef.current.muteRemoteAudioStream(0, true);
+                    setRemoteAudioMuted(true);
+                    logDebug("[Agora] Remote audio muted");
+                  }
                 } catch (e) {
-                  logError("[Agora] Error switching camera:", e);
+                  logError("[Agora] Error toggling remote audio:", e);
                 }
               }}
             >
-              <Text style={styles.controlIcon}>🔄</Text>
+              <Text style={{ fontSize: 20, opacity: remoteAudioMuted ? 0.5 : 1 }}>
+                {remoteAudioMuted ? "🔇" : "🔊"}
+              </Text>
             </TouchableOpacity>
           )}
-        </View>
+        </>
       )}
     </View>
   );
