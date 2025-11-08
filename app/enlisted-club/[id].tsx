@@ -36,6 +36,10 @@ import ThemedConfirm from "../../components/ui/ThemedConfirm";
 import { useStripe } from "@stripe/stripe-react-native";
 import Constants from "expo-constants";
 import { logDebug, logError, logWarn } from "../../lib/logger";
+import DateTimePicker, {
+  DateTimePickerAndroid,
+  DateTimePickerEvent,
+} from "@react-native-community/datetimepicker";
 
 type Participant = {
   id: string;
@@ -126,6 +130,9 @@ export default function SessionDetailScreen() {
   const floatingEmojiIdRef = useRef(0);
   const sessionTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [userProfile, setUserProfile] = useState<{ username: string | null; avatar_url: string | null } | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [tempDate, setTempDate] = useState(new Date());
+  const [updatingStartTime, setUpdatingStartTime] = useState(false);
 
   // Load current user profile and ensure avatar URL is publicly accessible
   const loadUserProfile = useCallback(async () => {
@@ -1431,6 +1438,79 @@ export default function SessionDetailScreen() {
     );
   };
 
+  const openStartTimePicker = async () => {
+    if (!session || !session.scheduled_start_at) return;
+    await tap();
+    const initialDate = new Date(session.scheduled_start_at);
+
+    if (Platform.OS === "android") {
+      DateTimePickerAndroid.open({
+        value: initialDate,
+        mode: "date",
+        minimumDate: new Date(),
+        onChange: (event, date) => {
+          if (event.type !== "set" || !date) {
+            return;
+          }
+          const pickedDate = new Date(date);
+          DateTimePickerAndroid.open({
+            value: initialDate,
+            mode: "time",
+            is24Hour: false,
+            onChange: (timeEvent, timeValue) => {
+              if (timeEvent.type !== "set" || !timeValue) {
+                return;
+              }
+              const finalDate = new Date(pickedDate);
+              finalDate.setHours(timeValue.getHours(), timeValue.getMinutes(), 0, 0);
+              updateStartTime(finalDate.toISOString());
+            },
+          });
+        },
+      });
+      return;
+    }
+
+    setTempDate(initialDate);
+    setShowDatePicker(true);
+  };
+
+  const updateStartTime = async (newStartTime: string) => {
+    if (!userId || !id || !session || session.host_id !== userId) return;
+    if (session.status !== "scheduled") {
+      await warn();
+      setNotice({ visible: true, title: "Cannot Edit", message: "You can only edit the start time for scheduled sessions." });
+      return;
+    }
+
+    setUpdatingStartTime(true);
+    try {
+      const { error } = await supabase
+        .from("enlisted_club_sessions")
+        .update({
+          scheduled_start_at: newStartTime,
+        })
+        .eq("id", id)
+        .eq("host_id", userId);
+
+      if (error) throw error;
+
+      await success();
+      setNotice({
+        visible: true,
+        title: "Start Time Updated",
+        message: "The session start time has been updated successfully.",
+      });
+      await loadSession();
+    } catch (err: any) {
+      await warn();
+      setNotice({ visible: true, title: "Error", message: err?.message || "Failed to update start time." });
+    } finally {
+      setUpdatingStartTime(false);
+      setShowDatePicker(false);
+    }
+  };
+
   // Admin kill session function
   const adminKillSession = useCallback(async (reason?: string) => {
     if (!isAdmin || !id) return;
@@ -2435,6 +2515,35 @@ export default function SessionDetailScreen() {
                       })
                     : "soon"}
                 </Text>
+                {isHost && session.scheduled_start_at && (
+                  <TouchableOpacity
+                    onPress={openStartTimePicker}
+                    disabled={updatingStartTime}
+                    style={{
+                      backgroundColor: COLORS.card,
+                      paddingHorizontal: SPACING.lg,
+                      paddingVertical: SPACING.sm,
+                      borderRadius: 12,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 8,
+                      marginTop: 16,
+                      borderWidth: 1,
+                      borderColor: COLORS.border,
+                    }}
+                  >
+                    {updatingStartTime ? (
+                      <ActivityIndicator size="small" color={COLORS.accent} />
+                    ) : (
+                      <>
+                        <Ionicons name="create-outline" size={16} color={COLORS.accent} />
+                        <Text style={{ color: COLORS.accent, fontWeight: "700", fontSize: 14 }}>
+                          Edit Start Time
+                        </Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
               </>
             ) : (
               <>
@@ -2970,6 +3079,26 @@ export default function SessionDetailScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Date/Time Picker for iOS */}
+      {Platform.OS === "ios" && showDatePicker && (
+        <DateTimePicker
+          value={tempDate}
+          mode="datetime"
+          is24Hour={false}
+          minimumDate={new Date()}
+          display="spinner"
+          onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
+            if (event.type === "set" && selectedDate) {
+              setTempDate(selectedDate);
+              updateStartTime(selectedDate.toISOString());
+            }
+            if (event.type === "dismissed") {
+              setShowDatePicker(false);
+            }
+          }}
+        />
+      )}
     </View>
   );
 }

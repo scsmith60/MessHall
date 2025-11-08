@@ -71,6 +71,7 @@ export default function EnlistedClubScreen() {
   });
   const [agoraAppId, setAgoraAppId] = useState<string | null>(null);
   const [countdowns, setCountdowns] = useState<Map<string, string>>(new Map()); // Session ID -> countdown string
+  const [showMySessionsOnly, setShowMySessionsOnly] = useState(false);
 
   // Load Agora App ID
   useEffect(() => {
@@ -313,6 +314,7 @@ export default function EnlistedClubScreen() {
     // Only consider it "has video" if session is active AND there's actually a video stream
     const hasVideo = isActive && (item.video_url || item.room_id);
     const isVisible = Math.abs(currentIndex - index) <= 1; // Only play video if within 1 item of current
+    const isMySession = userId && item.host_id === userId; // Check if this is the user's session
     
     // Detect video provider type first (needed for isActuallyLive check)
     let videoProvider: "twitch" | "youtube" | "cloudflare" | "jitsi" | "agora" | null = null;
@@ -475,47 +477,97 @@ export default function EnlistedClubScreen() {
                 justifyContent: "space-between",
               }}
             >
-              <View
-                style={{
-                  backgroundColor: isActuallyLive ? COLORS.accent : "rgba(0,0,0,0.7)",
-                  paddingHorizontal: 14,
-                  paddingVertical: 7,
-                  borderRadius: 20,
-                  borderWidth: isActuallyLive ? 0 : 1,
-                  borderColor: "rgba(255,255,255,0.3)",
-                }}
-              >
-                <Text
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <View
                   style={{
-                    color: isActuallyLive ? "#000" : "#fff",
-                    fontWeight: "900",
-                    fontSize: 11,
-                    letterSpacing: 0.5,
+                    backgroundColor: isActuallyLive ? COLORS.accent : "rgba(0,0,0,0.7)",
+                    paddingHorizontal: 14,
+                    paddingVertical: 7,
+                    borderRadius: 20,
+                    borderWidth: isActuallyLive ? 0 : 1,
+                    borderColor: "rgba(255,255,255,0.3)",
                   }}
                 >
-                  {isActuallyLive ? "🔴 LIVE" : item.status === "scheduled" ? "⏰ SOON" : item.status === "active" ? "⏳ STARTING" : "ENDED"}
-                </Text>
+                  <Text
+                    style={{
+                      color: isActuallyLive ? "#000" : "#fff",
+                      fontWeight: "900",
+                      fontSize: 11,
+                      letterSpacing: 0.5,
+                    }}
+                  >
+                    {isActuallyLive ? "🔴 LIVE" : item.status === "scheduled" ? "⏰ SOON" : item.status === "active" ? "⏳ STARTING" : "ENDED"}
+                  </Text>
+                </View>
+                {isMySession && (
+                  <View
+                    style={{
+                      backgroundColor: COLORS.accent,
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: 12,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: "#000",
+                        fontWeight: "900",
+                        fontSize: 10,
+                        letterSpacing: 0.5,
+                      }}
+                    >
+                      MY SESSION
+                    </Text>
+                  </View>
+                )}
               </View>
-              <TouchableOpacity
-                onPress={(e) => {
-                  e.stopPropagation();
-                  onCreateSession();
-                }}
-                style={{
-                  backgroundColor: "rgba(0,0,0,0.7)",
-                  paddingHorizontal: 18,
-                  paddingVertical: 9,
-                  borderRadius: 20,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 8,
-                  borderWidth: 1,
-                  borderColor: "rgba(255,255,255,0.2)",
-                }}
-              >
-                <Ionicons name="add" size={20} color="#fff" />
-                <Text style={{ color: "#fff", fontWeight: "900", fontSize: 14 }}>Host</Text>
-              </TouchableOpacity>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                {userId && (
+                  <TouchableOpacity
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      setShowMySessionsOnly(!showMySessionsOnly);
+                      tap();
+                    }}
+                    style={{
+                      backgroundColor: showMySessionsOnly ? COLORS.accent : "rgba(0,0,0,0.7)",
+                      paddingHorizontal: 14,
+                      paddingVertical: 9,
+                      borderRadius: 20,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 6,
+                      borderWidth: 1,
+                      borderColor: showMySessionsOnly ? COLORS.accent : "rgba(255,255,255,0.2)",
+                    }}
+                  >
+                    <Ionicons name={showMySessionsOnly ? "filter" : "filter-outline"} size={18} color={showMySessionsOnly ? "#000" : "#fff"} />
+                    <Text style={{ color: showMySessionsOnly ? "#000" : "#fff", fontWeight: "900", fontSize: 12 }}>
+                      My Sessions
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    onCreateSession();
+                  }}
+                  style={{
+                    backgroundColor: "rgba(0,0,0,0.7)",
+                    paddingHorizontal: 18,
+                    paddingVertical: 9,
+                    borderRadius: 20,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.2)",
+                  }}
+                >
+                  <Ionicons name="add" size={20} color="#fff" />
+                  <Text style={{ color: "#fff", fontWeight: "900", fontSize: 14 }}>Host</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </LinearGradient>
         </SafeAreaView>
@@ -774,6 +826,75 @@ export default function EnlistedClubScreen() {
           <ActivityIndicator size="large" color={COLORS.accent} />
           <Text style={{ color: COLORS.text, marginTop: SPACING.md }}>Loading sessions...</Text>
         </View>
+      ) : (showMySessionsOnly && userId && sessions.filter((s) => s.host_id === userId).length === 0) ? (
+        <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: SPACING.xl }}>
+          <SafeAreaView edges={["top"]} style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 10 }}>
+            <View style={{ flexDirection: "row", justifyContent: "flex-end", padding: SPACING.lg }}>
+              <TouchableOpacity
+                onPress={async () => {
+                  setShowMySessionsOnly(false);
+                  await tap();
+                }}
+                style={{
+                  backgroundColor: COLORS.accent,
+                  paddingHorizontal: 14,
+                  paddingVertical: 9,
+                  borderRadius: 20,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Ionicons name="filter" size={18} color="#000" />
+                <Text style={{ color: "#000", fontWeight: "900", fontSize: 12 }}>My Sessions</Text>
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
+          <Ionicons name="videocam-outline" size={64} color={COLORS.subtext} />
+          <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 18, marginTop: 16 }}>
+            No Sessions Found
+          </Text>
+          <Text style={{ color: COLORS.subtext, fontSize: 14, marginTop: 8, textAlign: "center" }}>
+            You don't have any scheduled or active sessions.
+          </Text>
+          <TouchableOpacity
+            onPress={async () => {
+              setShowMySessionsOnly(false);
+              await tap();
+            }}
+            style={{
+              backgroundColor: COLORS.card,
+              paddingHorizontal: 24,
+              paddingVertical: 12,
+              borderRadius: 12,
+              marginTop: SPACING.xl,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+            }}
+          >
+            <Ionicons name="close" size={20} color={COLORS.text} />
+            <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 16 }}>Show All Sessions</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onCreateSession}
+            style={{
+              backgroundColor: COLORS.accent,
+              paddingHorizontal: 24,
+              paddingVertical: 12,
+              borderRadius: 12,
+              marginTop: SPACING.md,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <Ionicons name="add" size={20} color="#000" />
+            <Text style={{ color: "#000", fontWeight: "800", fontSize: 16 }}>Host Session</Text>
+          </TouchableOpacity>
+        </View>
       ) : sessions.length === 0 ? (
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: SPACING.xl }}>
           <Ionicons name="videocam-outline" size={64} color={COLORS.subtext} />
@@ -803,7 +924,7 @@ export default function EnlistedClubScreen() {
       ) : (
         <FlatList
           ref={flatListRef}
-          data={sessions}
+          data={showMySessionsOnly && userId ? sessions.filter((s) => s.host_id === userId) : sessions}
           keyExtractor={(item) => item.id}
           renderItem={renderSession}
           pagingEnabled
@@ -826,6 +947,78 @@ export default function EnlistedClubScreen() {
             offset: SCREEN_HEIGHT * index,
             index,
           })}
+          ListEmptyComponent={
+            showMySessionsOnly && userId ? (
+              <View style={{ height: SCREEN_HEIGHT, alignItems: "center", justifyContent: "center", padding: SPACING.xl }}>
+                <SafeAreaView edges={["top"]} style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 10 }}>
+                  <View style={{ flexDirection: "row", justifyContent: "flex-end", padding: SPACING.lg }}>
+                    <TouchableOpacity
+                      onPress={async () => {
+                        setShowMySessionsOnly(false);
+                        await tap();
+                      }}
+                      style={{
+                        backgroundColor: COLORS.accent,
+                        paddingHorizontal: 14,
+                        paddingVertical: 9,
+                        borderRadius: 20,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <Ionicons name="filter" size={18} color="#000" />
+                      <Text style={{ color: "#000", fontWeight: "900", fontSize: 12 }}>My Sessions</Text>
+                    </TouchableOpacity>
+                  </View>
+                </SafeAreaView>
+                <Ionicons name="videocam-outline" size={64} color={COLORS.subtext} />
+                <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 18, marginTop: 16 }}>
+                  No Sessions Found
+                </Text>
+                <Text style={{ color: COLORS.subtext, fontSize: 14, marginTop: 8, textAlign: "center" }}>
+                  You don't have any scheduled or active sessions.
+                </Text>
+                <TouchableOpacity
+                  onPress={async () => {
+                    setShowMySessionsOnly(false);
+                    await tap();
+                  }}
+                  style={{
+                    backgroundColor: COLORS.card,
+                    paddingHorizontal: 24,
+                    paddingVertical: 12,
+                    borderRadius: 12,
+                    marginTop: SPACING.xl,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    borderWidth: 1,
+                    borderColor: COLORS.border,
+                  }}
+                >
+                  <Ionicons name="close" size={20} color={COLORS.text} />
+                  <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 16 }}>Show All Sessions</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={onCreateSession}
+                  style={{
+                    backgroundColor: COLORS.accent,
+                    paddingHorizontal: 24,
+                    paddingVertical: 12,
+                    borderRadius: 12,
+                    marginTop: SPACING.md,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <Ionicons name="add" size={20} color="#000" />
+                  <Text style={{ color: "#000", fontWeight: "800", fontSize: 16 }}>Host Session</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null
+          }
         />
       )}
     </View>
