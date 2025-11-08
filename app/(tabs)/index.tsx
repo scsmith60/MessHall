@@ -33,6 +33,7 @@ import {
   PanResponder, // for swipe-to-close on the header
   InteractionManager, // NEW: for safe scroll restore after layout
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import ThemedNotice from "../../components/ui/ThemedNotice";
 import { router, useFocusEffect } from "expo-router";
@@ -1492,7 +1493,7 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
       <SearchFab onPress={() => router.push("/search")} bottomOffset={24} />
       {/* comments modal */}
       <Modal visible={commentsVisible} animationType="slide" transparent onRequestClose={closeComments}>
-        <View style={{ flex: 1, backgroundColor: COLORS.card, justifyContent: "flex-end" }}>
+        <View style={{ flex: 1, backgroundColor: COLORS.overlay, justifyContent: "flex-end" }}>
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : undefined}
             style={{
@@ -1521,7 +1522,7 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
                 style={{ paddingHorizontal: 16, paddingVertical: 10, marginLeft: 8 }}
                 hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
               >
-                <Text style={{ color: "#fff", fontWeight: "900", fontSize: 22 }}>✕</Text>
+                <Ionicons name="close" size={24} color="#fff" />
               </TouchableOpacity>
             </View>
 

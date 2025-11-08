@@ -36,6 +36,7 @@ import {
 } from "react-native";
 import { supabase } from "@/lib/supabase";
 import ThemedActionSheet, { SheetAction } from "./ui/ThemedActionSheet";
+import ThemedNotice from "./ui/ThemedNotice";
 import { tap } from "@/lib/haptics";
 import { COLORS } from "@/lib/theme";
 
@@ -124,6 +125,8 @@ export default function RecipeComments({
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [errorVisible, setErrorVisible] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
 
   const lastCreatedAt = useRef<string | null>(null);
   const pageSize = 20;
@@ -379,8 +382,11 @@ export default function RecipeComments({
       setReplyTo(null);
       // optimistic add is not needed; realtime will insert it quickly
     } catch (e: any) {
-      // Neutral, no hints about blocking state
-      Alert.alert("M.I.A (missing in action)");
+      // Show actual error message for debugging, but keep M.I.A as fallback
+      const errorMsg = e?.message || e?.error?.message || "M.I.A (missing in action)";
+      console.error("[RecipeComments] add_comment error:", e);
+      setErrorMessage(errorMsg);
+      setErrorVisible(true);
     } finally {
       setSending(false);
     }
@@ -640,6 +646,15 @@ export default function RecipeComments({
 
       {/* ⚙️ action sheet */}
       <ThemedActionSheet visible={sheetOpen} title={sheetTitle} actions={sheetActions} onClose={() => setSheetOpen(false)} />
+      
+      {/* 🚨 Themed error dialog */}
+      <ThemedNotice
+        visible={errorVisible}
+        title="M.I.A (missing in action)"
+        message={errorMessage}
+        onClose={() => setErrorVisible(false)}
+        confirmText="OK"
+      />
     </View>
   );
 }

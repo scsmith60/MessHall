@@ -6,7 +6,6 @@ import { View, ActivityIndicator } from "react-native";
 import { Tabs, Redirect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth";
-import FloatingBell from "@/components/FloatingBell";
 import { COLORS } from "../../lib/theme";
 import { supabase } from "../../lib/supabase";
 
@@ -76,29 +75,28 @@ export default function TabsLayout() {
   }
 
   return (
-    <View style={{ flex: 1 }}>
-      <Tabs
-        screenOptions={{
-          headerShown: false, // 👈 hide header to remove the empty bar
-          tabBarActiveTintColor: COLORS.accent,
-          tabBarInactiveTintColor: COLORS.subtext,
-          tabBarStyle: { backgroundColor: COLORS.bg, borderTopColor: COLORS.border },
-        }}
-      >
-        <Tabs.Screen name="index"   options={{ title: "Scuttlebutt", tabBarIcon: makeIcon("home") }} />
-        <Tabs.Screen name="capture" options={{ title: "Capture",     tabBarIcon: makeIcon("camera") }} />
-        <Tabs.Screen name="planner" options={{ title: "Planner",     tabBarIcon: makeIcon("calendar") }} />
-        <Tabs.Screen name="shop"    options={{ title: "Commissary",  tabBarIcon: makeIcon("cart") }} />
-        <Tabs.Screen name="enlisted-club" options={{ title: "Enlisted", tabBarIcon: makeIcon("videocam") }} />
-        <Tabs.Screen name="profile" options={{ title: "Profile",     tabBarIcon: makeIcon("person") }} />
-        {isAdmin && (
-          <Tabs.Screen name="owner"   options={{ title: "Owner",       tabBarIcon: makeIcon("stats-chart") }} />
-        )}
-        <Tabs.Screen name="public-profile" options={{ href: null }} />
-      </Tabs>
-
-      {/* Floating bell shows on top of everything */}
-      <FloatingBell />
-    </View>
+    <Tabs
+      screenOptions={{
+        headerShown: false, // 👈 hide header to remove the empty bar
+        tabBarActiveTintColor: COLORS.accent,
+        tabBarInactiveTintColor: COLORS.subtext,
+        tabBarStyle: { backgroundColor: COLORS.bg, borderTopColor: COLORS.border },
+      }}
+    >
+      <Tabs.Screen name="index"   options={{ title: "Scuttlebutt", tabBarIcon: makeIcon("home") }} />
+      <Tabs.Screen name="capture" options={{ title: "Capture",     tabBarIcon: makeIcon("camera") }} />
+      <Tabs.Screen name="planner" options={{ title: "Planner",     tabBarIcon: makeIcon("calendar") }} />
+      <Tabs.Screen name="shop"    options={{ title: "Commissary",  tabBarIcon: makeIcon("cart") }} />
+      <Tabs.Screen name="enlisted-club" options={{ title: "Enlisted", tabBarIcon: makeIcon("videocam") }} />
+      <Tabs.Screen name="profile" options={{ title: "Profile",     tabBarIcon: makeIcon("person") }} />
+      <Tabs.Screen 
+        name="owner" 
+        options={isAdmin 
+          ? { title: "Owner", tabBarIcon: makeIcon("stats-chart") }
+          : { href: null }
+        } 
+      />
+      <Tabs.Screen name="public-profile" options={{ href: null }} />
+    </Tabs>
   );
 }

@@ -19,7 +19,10 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import DateTimePicker from "@react-native-community/datetimepicker";
+import DateTimePicker, {
+  DateTimePickerAndroid,
+  DateTimePickerEvent,
+} from "@react-native-community/datetimepicker";
 import { supabase } from "../../lib/supabase";
 import { COLORS, SPACING } from "../../lib/theme";
 import { useUserId } from "../../lib/auth";
@@ -43,20 +46,48 @@ export default function CreateSessionScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [tempDate, setTempDate] = useState(new Date());
   
-  // Cleanup: ensure picker is closed on unmount to prevent Android errors
-  useEffect(() => {
-    return () => {
-      if (Platform.OS === "android" && showDatePicker) {
-        setShowDatePicker(false);
-      }
-    };
-  }, [showDatePicker]);
-  
   // Recipe picker state
   const [showRecipePicker, setShowRecipePicker] = useState(false);
   const [recipeSearchQuery, setRecipeSearchQuery] = useState("");
   const [recipeSearchResults, setRecipeSearchResults] = useState<any[]>([]);
   const [recipeSearchLoading, setRecipeSearchLoading] = useState(false);
+
+  const openStartTimePicker = async () => {
+    await tap();
+    const defaultDate = new Date(Date.now() + 30 * 60000);
+    const initialDate = scheduledStartAt ? new Date(scheduledStartAt) : defaultDate;
+
+    if (Platform.OS === "android") {
+      DateTimePickerAndroid.open({
+        value: initialDate,
+        mode: "date",
+        minimumDate: new Date(),
+        onChange: (event, date) => {
+          if (event.type !== "set" || !date) {
+            return;
+          }
+          const pickedDate = new Date(date);
+          DateTimePickerAndroid.open({
+            value: initialDate,
+            mode: "time",
+            is24Hour: false,
+            onChange: (timeEvent, timeValue) => {
+              if (timeEvent.type !== "set" || !timeValue) {
+                return;
+              }
+              const finalDate = new Date(pickedDate);
+              finalDate.setHours(timeValue.getHours(), timeValue.getMinutes(), 0, 0);
+              setScheduledStartAt(finalDate.toISOString());
+            },
+          });
+        },
+      });
+      return;
+    }
+
+    setTempDate(initialDate);
+    setShowDatePicker(true);
+  };
 
   const onCreate = async () => {
     if (!userId) {
@@ -327,12 +358,7 @@ export default function CreateSessionScreen() {
             </Text>
             <View style={{ flexDirection: "row", gap: 8 }}>
               <TouchableOpacity
-                onPress={async () => {
-                  await tap();
-                  const now = new Date();
-                  setTempDate(new Date(now.getTime() + 30 * 60000)); // Default to 30 min from now
-                  setShowDatePicker(true);
-                }}
+                onPress={openStartTimePicker}
                 style={{
                   flex: 1,
                   backgroundColor: COLORS.card,
@@ -380,25 +406,20 @@ export default function CreateSessionScreen() {
           </View>
 
           {/* Date/Time Picker */}
-          {showDatePicker && (
+          {Platform.OS === "ios" && showDatePicker && (
             <DateTimePicker
-              key={Platform.OS === "android" ? `android-${showDatePicker}` : "ios"}
               value={tempDate}
               mode="datetime"
               is24Hour={false}
               minimumDate={new Date()}
               display={Platform.OS === "ios" ? "spinner" : "default"}
-              onChange={(event, selectedDate) => {
-                // On Android, the native modal handles dismissal automatically
-                // On iOS, we need to close it manually
-                // Always close the picker state immediately to prevent unmount errors
-                if (Platform.OS === "android" || event.type === "set" || event.type === "dismissed") {
-                  setShowDatePicker(false);
-                }
-                
-                // Only update the date if user actually selected one (not cancelled)
+              onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
                 if (event.type === "set" && selectedDate) {
+                  setTempDate(selectedDate);
                   setScheduledStartAt(selectedDate.toISOString());
+                }
+                if (event.type === "dismissed") {
+                  setShowDatePicker(false);
                 }
               }}
             />
@@ -544,4 +565,3 @@ export default function CreateSessionScreen() {
     </SafeAreaView>
   );
 }
-

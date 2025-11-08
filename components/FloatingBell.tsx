@@ -91,7 +91,7 @@ export default function FloatingBell() {
   const refreshList = async () => {
     setLoading(true);
     try {
-      const list = await listNotifications(50, false); // show all (read + unread)
+      const list = await listNotifications(50, true); // show only unread notifications
       setRows(list);
     } finally {
       setLoading(false);
@@ -118,7 +118,8 @@ export default function FloatingBell() {
   const onTapRow = async (n: NotificationItem) => {
     try {
       await markNotificationRead(n.id);
-      setRows((old) => old.map((x) => (x.id === n.id ? { ...x, isRead: true } : x)));
+      // Remove the notification from the list since it's now read
+      setRows((old) => old.filter((x) => x.id !== n.id));
       setCount((c) => Math.max(0, c - 1));
     } catch {}
     setOpen(false);
@@ -220,28 +221,30 @@ export default function FloatingBell() {
                 Notifications
               </Text>
               <View style={{ flex: 1 }} />
-              <TouchableOpacity
-                onPress={async () => {
-                  setLoading(true);
-                  try {
-                    await markAllNotificationsRead();
-                    await refreshList();
-                    await refreshCount();
-                  } finally {
-                    setLoading(false);
-                  }
-                }}
-                style={{
-                  paddingHorizontal: 10,
-                  paddingVertical: 6,
-                  borderRadius: 10,
-                  backgroundColor: COLORS.card2,
-                  borderWidth: 1,
-                  borderColor: COLORS.border,
-                }}
-              >
-                <Text style={{ color: COLORS.text, fontWeight: "800" }}>Mark all read</Text>
-              </TouchableOpacity>
+              {count > 0 && (
+                <TouchableOpacity
+                  onPress={async () => {
+                    setLoading(true);
+                    try {
+                      await markAllNotificationsRead();
+                      await refreshCount(); // Update badge count first
+                      await refreshList(); // Then refresh list (will now be empty since all are read)
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                    borderRadius: 10,
+                    backgroundColor: COLORS.card2,
+                    borderWidth: 1,
+                    borderColor: COLORS.border,
+                  }}
+                >
+                  <Text style={{ color: COLORS.text, fontWeight: "800" }}>Mark all read</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             {loading ? (

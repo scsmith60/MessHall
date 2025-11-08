@@ -1435,7 +1435,7 @@ export async function toggleFollow(otherUserId: string): Promise<boolean> {
 
 // ===============================
 // 🔔 NOTIFICATIONS HELPERS (updated for your schema)
-// Table columns you showed: id, recipient_id, user_id (actor), notif_type, title, body, is_read, created_at, updated_at
+// Table columns: id, recipient_id, actor_id, notif_type, title, body, is_read, created_at, updated_at
 // ===============================
 
 /**
@@ -1487,8 +1487,10 @@ export async function listNotifications(limit = 50, unreadOnly = true) {
     .select(`
       id,
       recipient_id,
-      user_id,
+      actor_id,
       notif_type,
+      recipe_id,
+      comment_id,
       title,
       body,
       is_read,
@@ -1504,10 +1506,10 @@ export async function listNotifications(limit = 50, unreadOnly = true) {
   if (error) throw error;
   if (!notifications || notifications.length === 0) return [];
 
-  // Get unique user IDs from notifications
+  // Get unique user IDs from notifications (using actor_id)
   const userIds = Array.from(new Set(
     (notifications as any[])
-      .map((n) => n.user_id)
+      .map((n) => n.actor_id)
       .filter(Boolean)
   ));
 
@@ -1532,7 +1534,7 @@ export async function listNotifications(limit = 50, unreadOnly = true) {
 
   // Combine notifications with profile data
   return (notifications ?? []).map((r: any) => {
-    const profile = r.user_id ? profilesMap.get(r.user_id) : null;
+    const profile = r.actor_id ? profilesMap.get(r.actor_id) : null;
     return {
       id: r.id as string,
       type: (r.notif_type ?? "comment") as string,
@@ -1540,7 +1542,7 @@ export async function listNotifications(limit = 50, unreadOnly = true) {
       commentId: r.comment_id ?? null, // same ^
       title: r.title ?? null,
       body: r.body ?? null,
-      actorId: r.user_id ?? null,
+      actorId: r.actor_id ?? null,
       actorUsername: profile?.username ?? null,
       actorAvatar: profile?.avatar_url ?? null,
       recipeTitle: r.recipe_title ?? null, // stays null unless you add it

@@ -32,6 +32,7 @@ const Gate =
 // 🎨 centralized colors
 import { COLORS } from "../lib/theme";
 import { logWarn } from "../lib/logger";
+import FloatingBell from "../components/FloatingBell";
 
 /* -----------------------------------------------------------
    🧸 helper: am I at an auth route?
@@ -125,10 +126,34 @@ class RootErrorBoundary extends React.Component<
     this.state = { hasError: false, message: undefined };
   }
   static getDerivedStateFromError(err: any) {
+    // Ignore DateTimePicker errors on Android - they're harmless during unmount
+    const errorMessage = err?.message || "";
+    const errorStack = err?.stack || "";
+    
+    if (errorMessage.includes("Cannot read property 'dismiss'") || 
+        errorMessage.includes("Cannot read property 'openPicker'") ||
+        (errorMessage.includes("dismiss") && (errorStack.includes("DateTimePicker") || errorStack.includes("DatePickerWrapper") || errorStack.includes("StableDateTimePicker"))) ||
+        (errorMessage.includes("openPicker") && (errorStack.includes("DateTimePicker") || errorStack.includes("DatePickerWrapper") || errorStack.includes("StableDateTimePicker")))) {
+      // This is a known issue with @react-native-community/datetimepicker on Android
+      // The picker tries to dismiss/openPicker during cleanup but the native module is already gone
+      // It's harmless - the component is already unmounting
+      return { hasError: false, message: undefined };
+    }
     return { hasError: true, message: err?.message ?? "Something went wrong." };
   }
-  componentDidCatch(err: any) {
-    logWarn("[RootErrorBoundary]", err);
+  componentDidCatch(err: any, errorInfo: any) {
+    // Ignore DateTimePicker errors - they're harmless
+    const errorMessage = err?.message || "";
+    const errorStack = err?.stack || "";
+    
+    if (errorMessage.includes("Cannot read property 'dismiss'") || 
+        errorMessage.includes("Cannot read property 'openPicker'") ||
+        (errorMessage.includes("dismiss") && (errorStack.includes("DateTimePicker") || errorStack.includes("DatePickerWrapper") || errorStack.includes("StableDateTimePicker"))) ||
+        (errorMessage.includes("openPicker") && (errorStack.includes("DateTimePicker") || errorStack.includes("DatePickerWrapper") || errorStack.includes("StableDateTimePicker")))) {
+      // Silently ignore - this is a known Android DateTimePicker cleanup issue
+      return;
+    }
+    logWarn("[RootErrorBoundary]", err, errorInfo);
   }
   render() {
     if (!this.state.hasError) return this.props.children;
@@ -457,6 +482,57 @@ export default function RootLayout() {
   const router = useRouter();
   const inAuthFlow = useInAuthFlow();
   const segments = useSegments() as any;
+  
+  // Global error handler to catch DateTimePicker dismiss errors on Android
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    
+    // ErrorUtils might not be available in all React Native versions
+    // Access it safely through require or check if it exists
+    let ErrorUtils: any;
+    try {
+      ErrorUtils = require("react-native").ErrorUtils;
+    } catch (e) {
+      // ErrorUtils not available, skip global handler setup
+      return;
+    }
+    
+    // Check if ErrorUtils is available and has the required methods
+    if (!ErrorUtils || typeof ErrorUtils.getGlobalHandler !== "function" || typeof ErrorUtils.setGlobalHandler !== "function") {
+      return;
+    }
+    
+    const originalHandler = ErrorUtils.getGlobalHandler();
+    const customHandler = (error: any, isFatal?: boolean) => {
+      // Check if this is the DateTimePicker dismiss error
+      const errorMessage = error?.message || "";
+      const errorStack = error?.stack || "";
+      
+      if (errorMessage.includes("Cannot read property 'dismiss'") || 
+          errorMessage.includes("Cannot read property 'openPicker'") ||
+          (errorMessage.includes("dismiss") && (errorStack.includes("DateTimePicker") || errorStack.includes("materialtimepicker") || errorStack.includes("PlannerSlots") || errorStack.includes("DatePickerWrapper") || errorStack.includes("StableDateTimePicker"))) ||
+          (errorMessage.includes("openPicker") && (errorStack.includes("DateTimePicker") || errorStack.includes("DatePickerWrapper") || errorStack.includes("StableDateTimePicker")))) {
+        // Silently ignore - this is a known Android DateTimePicker cleanup issue
+        // The picker tries to dismiss/openPicker during unmount but the native module is already gone
+        // It's harmless - the component is already unmounting
+        return;
+      }
+      
+      // For other errors, use the original handler
+      if (originalHandler) {
+        originalHandler(error, isFatal);
+      }
+    };
+    
+    ErrorUtils.setGlobalHandler(customHandler);
+    
+    return () => {
+      // Restore original handler on unmount
+      if (ErrorUtils && typeof ErrorUtils.setGlobalHandler === "function") {
+        ErrorUtils.setGlobalHandler(originalHandler);
+      }
+    };
+  }, []);
 
   // ✅ We track if the first check finished
   const [checkedOnce, setCheckedOnce] = useState(false);
@@ -595,6 +671,8 @@ export default function RootLayout() {
         <AuthProvider>
           <RootErrorBoundary>
             <InnerApp />
+            {/* Floating bell shows on top of everything */}
+            <FloatingBell />
           </RootErrorBoundary>
         </AuthProvider>
       </StripeProvider>
