@@ -444,6 +444,11 @@ export default function OwnerDashboard() {
             variant="success"
             onPress={() => router.push("/(tabs)/owner/create-slot")}
           />
+          <PillButton
+            icon="cart"
+            label="Manage Product Suggestions"
+            onPress={() => router.push("/(tabs)/owner/product-suggestions")}
+          />
         </View>
 
         {/* Metrics */}

@@ -31,7 +31,7 @@ export type SuggestionSet = {
   selectedIndex: number;  // which we picked first
 };
 
-// 🆕 what our server may return (ok + maybe a link to open)
+// Server may also return a link to open after add-to-cart
 export type AddToCartResult = {
   ok: boolean;
   redirectUrl?: string;
@@ -43,11 +43,11 @@ export type ICartProvider = {
   isConnected: (userId: string) => Promise<boolean>;
   connect: (userId: string) => Promise<void>;
   suggest: (items: CartItem[], userId: string) => Promise<SuggestionSet[]>;
-  // 🆕 returns AddToCartResult so caller can open redirectUrl if present
+  // Returns AddToCartResult so caller can open redirectUrl if present
   addToCart: (selections: SuggestionCandidate[], userId: string) => Promise<AddToCartResult>;
 };
 
-// 🔎 which stores are connected for this user?
+// Which stores are connected for this user?
 export async function getConnectedProviders(userId: string): Promise<ProviderId[]> {
   const { data } = await supabase
     .from("store_links")
@@ -57,7 +57,7 @@ export async function getConnectedProviders(userId: string): Promise<ProviderId[
   return (data || []).map((r: any) => r.provider as ProviderId);
 }
 
-// ⭐ set a default store (we zero out current default and upsert)
+// Set a default store (we zero out current default and upsert)
 export async function setDefaultProvider(userId: string, provider: ProviderId) {
   await supabase.from("store_links").update({ is_default: false }).eq("user_id", userId);
   await supabase.from("store_links").upsert(
@@ -71,41 +71,89 @@ function norm(s: string) {
   return (s || "").toLowerCase().trim();
 }
 
-// make suggestion lists based on our tiny catalog (safe + local)
-function makeSuggestionSetForProvider(pid: ProviderId, items: CartItem[]): SuggestionSet[] {
-  // pick the right catalog key per store
-  const pickKey: keyof (typeof MINI_CATALOG)[string][number] =
-    pid === "amazon" ? "amazonAsin" :
-    pid === "walmart" ? "walmartId" :
-    pid === "kroger"  ? "krogerUpc"  :
-    pid === "heb"     ? "hebSku"     : "albertsonsSku";
+// Query database for product suggestions (owner-managed)
+async function getSuggestionsFromDB(ingredientName: string, store: ProviderId): Promise<SuggestionCandidate[]> {
+  try {
+    const normalized = norm(ingredientName);
+    
+    // Query database for suggestions, ordered by priority and default status
+    const { data, error } = await supabase
+      .from("product_suggestions")
+      .select("*")
+      .eq("ingredient_name", normalized)
+      .eq("store", store)
+      .order("is_default", { ascending: false })
+      .order("priority", { ascending: false })
+      .limit(5);
 
-  const out: SuggestionSet[] = [];
-  items.forEach((it, idx) => {
-    const key = Object.keys(MINI_CATALOG).find(k => norm(it.name).includes(k));
-    const catalogHits = key ? (MINI_CATALOG as any)[key] as any[] : [];
-
-    const candidates: SuggestionCandidate[] = [];
-    for (const hit of catalogHits) {
-      const storeId = hit[pickKey];
-      if (!storeId) continue;
-      candidates.push({
-        id: `${pid}-${idx}-${candidates.length}`,
-        title: hit.title,
-        variant: hit.variant,
-        storeProductId: String(storeId),
-        quantity: toStoreQuantity(it.quantity, it.name),
-        source: "catalog",
-      });
+    if (error || !data || data.length === 0) {
+      return [];
     }
 
-    // fallback → simple "search" candidate (so you can still cycle + send)
+    // Convert database rows to SuggestionCandidate format
+    return data.map((row, idx) => ({
+      id: `${store}-${normalized}-${idx}`,
+      title: row.product_title,
+      variant: row.variant || undefined,
+      storeProductId: row.product_id,
+      quantity: undefined, // Will be set by toStoreQuantity later
+      source: "catalog" as const,
+    }));
+  } catch (error) {
+    console.warn("[getSuggestionsFromDB] Error:", error);
+    return [];
+  }
+}
+
+// make suggestion lists based on database (with fallback to hardcoded catalog)
+async function makeSuggestionSetForProvider(pid: ProviderId, items: CartItem[]): Promise<SuggestionSet[]> {
+  const out: SuggestionSet[] = [];
+  
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx];
+    const normalizedName = norm(it.name);
+    
+    // Try database first (owner-managed suggestions)
+    let candidates: SuggestionCandidate[] = await getSuggestionsFromDB(normalizedName, pid);
+    
+    // Fallback to hardcoded catalog if database has no results
+    if (candidates.length === 0) {
+      const pickKey: keyof (typeof MINI_CATALOG)[string][number] =
+        pid === "amazon" ? "amazonAsin" :
+        pid === "walmart" ? "walmartId" :
+        pid === "kroger"  ? "krogerUpc"  :
+        pid === "heb"     ? "hebSku"     : "albertsonsSku";
+
+      const key = Object.keys(MINI_CATALOG).find(k => normalizedName.includes(k));
+      const catalogHits = key ? (MINI_CATALOG as any)[key] as any[] : [];
+
+      for (const hit of catalogHits) {
+        const storeId = hit[pickKey];
+        if (!storeId) continue;
+        candidates.push({
+          id: `${pid}-${idx}-${candidates.length}`,
+          title: hit.title,
+          variant: hit.variant,
+          storeProductId: String(storeId),
+          quantity: toStoreQuantity(it.quantity, it.name),
+          source: "catalog",
+        });
+      }
+    } else {
+      // Apply quantity conversion to database suggestions
+      candidates = candidates.map(c => ({
+        ...c,
+        quantity: toStoreQuantity(it.quantity, it.name),
+      }));
+    }
+
+    // Final fallback -> simple "search" candidate (so you can still cycle + send)
     if (candidates.length === 0) {
       candidates.push({
         id: `${pid}-${idx}-0`,
         title: it.name,
         variant: it.category,
-        storeProductId: norm(it.name),
+        storeProductId: normalizedName,
         quantity: toStoreQuantity(it.quantity, it.name),
         source: "search",
       });
@@ -117,11 +165,12 @@ function makeSuggestionSetForProvider(pid: ProviderId, items: CartItem[]): Sugge
       candidates,
       selectedIndex: 0,
     });
-  });
+  }
+  
   return out;
 }
 
-// 🆕 call our secure server function (Supabase Edge Function) to add things to a cart
+// Call our secure server function (Supabase Edge Function) to add things to a cart
 async function serverAddToCart(provider: ProviderId, selections: SuggestionCandidate[]): Promise<AddToCartResult> {
   // LIKE I'M 5: we hand our picks to the server, the server talks to Walmart/Amazon/etc.
   // This keeps your secret keys secret.
@@ -152,9 +201,9 @@ function stubProvider(id: ProviderId, label: string): ICartProvider {
         { onConflict: "user_id,provider" }
       );
     },
-    suggest: async (items, _userId) => makeSuggestionSetForProvider(id, items),
+    suggest: async (items, _userId) => await makeSuggestionSetForProvider(id, items),
     addToCart: async (selections, _userId) => {
-      // 🔐 send to server and bubble the server response back to the caller (UI)
+      // Send to server and bubble the server response back to the caller (UI)
       return await serverAddToCart(id, selections);
     },
   };
