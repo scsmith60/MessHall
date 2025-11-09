@@ -24,6 +24,22 @@ if (!STRIPE_PUBLISHABLE_KEY) {
   console.warn(
     "[stripe] Stripe publishable key is missing. Add EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY to your .env"
   );
+} else if (STRIPE_PUBLISHABLE_KEY.startsWith("sk_")) {
+  console.error(
+    "[stripe] ERROR: You are using a SECRET key instead of a PUBLISHABLE key!\n" +
+      "Secret keys start with 'sk_' and should NEVER be used in client-side code.\n" +
+      "Publishable keys start with 'pk_' and are safe for client-side use.\n" +
+      "Get your publishable key from: https://dashboard.stripe.com/apikeys\n" +
+      "Update EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY in your .env file."
+  );
+  // Clear the invalid key to prevent it from being used
+  throw new Error(
+    "Invalid Stripe key: Secret key detected. Use a publishable key (pk_...) instead."
+  );
+} else if (!STRIPE_PUBLISHABLE_KEY.startsWith("pk_")) {
+  console.warn(
+    "[stripe] Warning: Stripe key doesn't start with 'pk_'. Make sure you're using a publishable key from https://dashboard.stripe.com/apikeys"
+  );
 }
 
 // Store connect flags (per retailer)

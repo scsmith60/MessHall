@@ -10,7 +10,7 @@
 //
 // Everything else stays the same.
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -110,6 +110,7 @@ export default function MonetizationScreen() {
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [applying, setApplying] = useState(false);
   const [appStatus, setAppStatus] = useState<AppStatus>("none");
+  const [rejectionNotes, setRejectionNotes] = useState<string | null>(null);
 
   // switch state now persists to DB via profiles.monetize_enabled_at
   const [monetizeOn, setMonetizeOn] = useState(false);
@@ -125,31 +126,68 @@ export default function MonetizationScreen() {
   const [toastMsg, setToastMsg] = useState("");
 
   // 🕵️ load newest application (+ eligibility only if needed) and current switch state
-  const load = async () => {
-    if (!userId) return;
+  const load = useCallback(async () => {
+    console.log("=== LOAD FUNCTION CALLED ===", { userId, hasUserId: !!userId });
+    if (!userId) {
+      console.log("No userId, returning early");
+      return;
+    }
+    console.log("Setting loading to true");
     setLoading(true);
 
     // 1) newest application row (might not exist)
-    const { data: apps, error: appErr } = await supabase
-      .from("creator_applications")
-      .select("status, submitted_at")
-      .eq("user_id", userId)
-      .order("submitted_at", { ascending: false })
-      .limit(1);
+    console.log("Querying creator_applications...");
+    let apps: any[] | null = null;
+    let appErr: any = null;
+    
+    try {
+      // Add timeout to prevent hanging
+      const queryPromise = supabase
+        .from("creator_applications")
+        .select("status, submitted_at, notes")
+        .eq("user_id", userId)
+        .order("submitted_at", { ascending: false })
+        .limit(1);
+      
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Query timeout after 5 seconds")), 5000)
+      );
+      
+      const result = await Promise.race([queryPromise, timeoutPromise]) as any;
+      
+      apps = result.data;
+      appErr = result.error;
+      console.log("creator_applications query result - apps:", apps, "error:", appErr);
+      
+      if (appErr) {
+        console.error("Error querying creator_applications:", appErr);
+        // Continue with status "none" if query fails
+      }
+    } catch (queryError: any) {
+      console.error("Exception querying creator_applications:", queryError);
+      appErr = queryError;
+      // Continue with status "none" if query fails
+    }
 
     let status: AppStatus = "none";
+    let notes: string | null = null;
     if (!appErr && apps && apps.length > 0) {
       status = (apps[0].status as AppStatus) || "none";
+      notes = apps[0].notes || null;
     }
+    console.log("Setting appStatus to:", status, "notes:", notes);
     setAppStatus(status);
+    setRejectionNotes(notes);
 
     // 2) If APPROVED, read current on/off from profiles.monetize_enabled_at and Stripe status
     if (status === "approved") {
+      console.log("Status is approved, loading profile data...");
       const { data: prof } = await supabase
         .from("profiles")
         .select("monetize_enabled_at, stripe_account_id")
         .eq("id", userId)
         .maybeSingle();
+      console.log("Profile data loaded:", prof);
       setMonetizeOn(!!prof?.monetize_enabled_at);
       setStripeAccountId(prof?.stripe_account_id || null);
       setStripeSetupComplete(!!prof?.stripe_account_id);
@@ -157,36 +195,128 @@ export default function MonetizationScreen() {
       setEligible(null);
       setChecklist([]);
       setLoading(false);
+      console.log("Returning early (approved)");
       return;
     }
 
-    // 3) If PENDING/REJECTED, we also skip the checklist (no need to nag).
-    if (status === "pending" || status === "rejected" || status === "withdrawn") {
+    // 3) If PENDING, skip the checklist (but allow withdrawn to see checklist)
+    if (status === "pending") {
+      console.log("Status is pending, skipping checklist");
       setEligible(null);
       setChecklist([]);
       setLoading(false);
+      console.log("Returning early (pending)");
+      return;
+    }
+    
+    // 3a) If WITHDRAWN, treat like "none" - show checklist so they can reapply
+    if (status === "withdrawn") {
+      console.log("Status is withdrawn, loading checklist for reapplication");
+      // Continue to load checklist below (don't return early)
+    }
+
+    // 3b) If REJECTED, load the checklist so they can see what to fix
+    if (status === "rejected") {
+      try {
+        const { data, error } = await supabase.functions.invoke("eligibility-check", {
+          body: {},
+        });
+        console.log("Eligibility check response (rejected) - data:", JSON.stringify(data), "error:", error);
+        
+        if (error) {
+          console.error("Eligibility check function error (rejected):", error);
+          setEligible(null);
+          setChecklist([]);
+          setLoading(false);
+          return;
+        }
+        // Check if response has an error field
+        if (data?.error) {
+          console.error("Eligibility check returned error (rejected):", data.error);
+          setEligible(null);
+          setChecklist([]);
+        } else if (data) {
+          console.log("Setting eligibility (rejected) - eligible:", data.eligible, "checklist type:", typeof data.checklist, "checklist:", data.checklist);
+          setEligible(!!data?.eligible);
+          const checklistArray = Array.isArray(data?.checklist) ? data.checklist : [];
+          console.log("Checklist array length (rejected):", checklistArray.length);
+          setChecklist(checklistArray);
+        } else {
+          console.error("No data returned from eligibility check (rejected)");
+          setEligible(null);
+          setChecklist([]);
+        }
+      } catch (e: any) {
+        console.error("Failed to load eligibility checklist (rejected):", e);
+        setEligible(null);
+        setChecklist([]);
+      } finally {
+        setLoading(false);
+      }
       return;
     }
 
-    // 4) Only when there's NO application yet (status === "none"), load the checklist
+    // 4) Load checklist when status is "none" OR "withdrawn" (so they can reapply)
+    console.log("About to call eligibility-check function, status is:", status);
     try {
-      const { data, error } = await supabase.functions.invoke("eligibility-check", {
+      console.log("Calling supabase.functions.invoke('eligibility-check')...");
+      
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Eligibility check timeout after 10 seconds")), 10000)
+      );
+      
+      const functionPromise = supabase.functions.invoke("eligibility-check", {
         body: {},
       });
-      if (error) throw error;
-      setEligible(!!data?.eligible);
-      setChecklist(Array.isArray(data?.checklist) ? data.checklist : []);
-    } catch {
-      setEligible(null);
+      
+      const { data, error } = await Promise.race([functionPromise, timeoutPromise]) as any;
+      
+      console.log("Eligibility check response received - data:", JSON.stringify(data), "error:", error);
+      console.log("Data type:", typeof data, "Is array:", Array.isArray(data));
+      
+      if (error) {
+        console.error("Eligibility check function error:", error);
+        setEligible(false);
+        setChecklist([]);
+        setLoading(false);
+        return;
+      }
+      
+      // Check if response has an error field
+      if (data?.error) {
+        console.error("Eligibility check returned error:", data.error);
+        setEligible(false);
+        setChecklist([]);
+      } else if (data) {
+        console.log("Setting eligibility - eligible:", data.eligible, "checklist type:", typeof data.checklist, "checklist:", data.checklist);
+        setEligible(!!data?.eligible);
+        const checklistArray = Array.isArray(data?.checklist) ? data.checklist : [];
+        console.log("Checklist array length:", checklistArray.length);
+        setChecklist(checklistArray);
+      } else {
+        console.error("No data returned from eligibility check");
+        setEligible(false);
+        setChecklist([]);
+      }
+    } catch (e: any) {
+      console.error("Failed to load eligibility checklist:", e);
+      console.error("Error details:", JSON.stringify(e, null, 2));
+      setEligible(false);
       setChecklist([]);
+    } finally {
+      console.log("Setting loading to false");
+      setLoading(false);
     }
-
-    setLoading(false);
-  };
+  }, [userId]);
 
   useEffect(() => {
-    load();
-  }, [userId]);
+    console.log("useEffect triggered, userId:", userId);
+    if (userId) {
+      load();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]); // Only depend on userId, not load (load is stable due to useCallback)
 
   // 🚀 user taps Apply — unchanged except we already use invoke()
   const applyNow = async () => {
@@ -278,7 +408,7 @@ export default function MonetizationScreen() {
     </View>
   );
 
-  // 🧠 decide button text + disabled state (unchanged)
+  // 🧠 decide button text + disabled state
   let buttonText = "Apply for Monetization";
   let buttonDisabled = false;
 
@@ -288,13 +418,38 @@ export default function MonetizationScreen() {
   } else if (appStatus === "approved") {
     buttonText = "Approved";
     buttonDisabled = true;
-  } else if (appStatus === "rejected") {
-    buttonText = "Application rejected";
-    buttonDisabled = true; // (you can add a "Reapply" flow later)
+  } else if (appStatus === "rejected" || appStatus === "withdrawn") {
+    buttonText = "Reapply for Monetization";
+    // Allow resubmission, but still check if they've fixed the issues
+    if (eligible === false) {
+      buttonText = "Fix the issues above to reapply";
+      buttonDisabled = true;
+    } else if (eligible === null && checklist.length === 0) {
+      // Still loading checklist
+      buttonText = "Loading checklist...";
+      buttonDisabled = true;
+    } else {
+      buttonDisabled = false;
+    }
   } else {
     // no application yet → use eligibility gates
-    if (eligible === false) {
-      buttonText = "Complete the steps to apply";
+    if (loading) {
+      // Still loading
+      buttonText = "Loading checklist...";
+      buttonDisabled = true;
+    } else if (eligible === null && checklist.length === 0) {
+      // Loading completed but no data - show error state
+      buttonText = "Unable to load checklist";
+      buttonDisabled = true;
+    } else if (eligible === false) {
+      buttonText = "Complete the steps above to apply";
+      buttonDisabled = true;
+    } else if (eligible === true) {
+      buttonText = "Apply for Monetization";
+      buttonDisabled = false;
+    } else {
+      // Unknown state, disable to be safe
+      buttonText = "Complete the steps above to apply";
       buttonDisabled = true;
     }
   }
@@ -315,24 +470,77 @@ export default function MonetizationScreen() {
         {loading && (
           <View style={{ padding: 12, alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator />
-            <Text style={{ color: COLORS.subtext, marginTop: 6 }}>Checking your status…</Text>
+            <Text style={{ color: COLORS.subtext, marginTop: 6 }}>Loading your eligibility status…</Text>
           </View>
         )}
 
-        {/* Checklist — ONLY before you apply (no app yet) */}
-        {!loading && appStatus === "none" && (
-          <View style={{ gap: 10 }}>
-            <Text style={{ color: COLORS.subtext }}>Eligibility checklist</Text>
-            {checklist.length === 0 && (
-              <Text style={{ color: COLORS.subtext }}>
-                We couldn’t load your checklist right now.
-              </Text>
-            )}
-            {checklist.map((c, i) => (
-              <Row key={i} ok={!!c.passed} label={c.label} help={c.help} />
-            ))}
+        {/* Rejection notes */}
+        {!loading && appStatus === "rejected" && rejectionNotes && (
+          <View
+            style={{
+              backgroundColor: COLORS.card,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: COLORS.bad,
+              padding: 12,
+              marginTop: 4,
+            }}
+          >
+            <Text style={{ color: COLORS.bad, fontWeight: "800", marginBottom: 6 }}>
+              Why your application was rejected:
+            </Text>
+            <Text style={{ color: COLORS.text, lineHeight: 20 }}>{rejectionNotes}</Text>
           </View>
         )}
+
+        {/* Checklist — Show when rejected, withdrawn, OR before applying */}
+        {!loading && (appStatus === "none" || appStatus === "rejected" || appStatus === "withdrawn") && (
+          <View style={{ gap: 10, marginTop: 8 }}>
+            <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 16 }}>
+              {appStatus === "rejected" || appStatus === "withdrawn" 
+                ? "Fix these issues to reapply:" 
+                : "Eligibility Checklist"}
+            </Text>
+            {checklist.length === 0 ? (
+              <View
+                style={{
+                  backgroundColor: COLORS.card,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: COLORS.border,
+                  padding: 12,
+                }}
+              >
+                <Text style={{ color: COLORS.subtext }}>
+                  We couldn't load your checklist right now. Please try refreshing.
+                </Text>
+              </View>
+            ) : (
+              <>
+                {checklist.map((c, i) => (
+                  <Row key={i} ok={!!c.passed} label={c.label} help={c.help} />
+                ))}
+                {eligible === true && (
+                  <View
+                    style={{
+                      backgroundColor: COLORS.card,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: COLORS.good,
+                      padding: 12,
+                      marginTop: 4,
+                    }}
+                  >
+                    <Text style={{ color: COLORS.good, fontWeight: "800" }}>
+                      ✅ All requirements met! You can apply now.
+                    </Text>
+                  </View>
+                )}
+              </>
+            )}
+          </View>
+        )}
+
 
         {/* Apply button */}
         <Pressable
