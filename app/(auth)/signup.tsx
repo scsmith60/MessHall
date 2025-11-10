@@ -64,16 +64,31 @@ export default function SignUp() {
     let alive = true;
     (async () => {
       setChecking(true);
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id")
-        .ilike("username", value)
-        .limit(1);
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("id")
+          .ilike("username", value)
+          .limit(1);
 
-      if (!alive) return;
+        if (!alive) return;
 
-      setChecking(false);
-      setAvailable(!error && (data?.length ?? 0) === 0);
+        // If there's an error, don't block signup - just set available to null
+        // The actual signup will catch duplicate username errors
+        if (error) {
+          console.warn("Username check error (non-blocking):", error.message);
+          setAvailable(null); // Don't block, let signup handle it
+        } else {
+          setAvailable((data?.length ?? 0) === 0);
+        }
+      } catch (err) {
+        console.warn("Username check exception (non-blocking):", err);
+        setAvailable(null); // Don't block, let signup handle it
+      } finally {
+        if (alive) {
+          setChecking(false);
+        }
+      }
     })();
 
     return () => {
@@ -110,26 +125,59 @@ export default function SignUp() {
       const userId = sign.user?.id;
       if (!userId) throw new Error("Could not create user.");
 
-      // Use UPSERT to create or update the profile
-      // This handles the case where the profile doesn't exist yet (e.g., after data clear)
-      const { error: profileErr } = await supabase
-        .from("profiles")
-        .upsert(
-          { 
+      console.log("✅ User created, userId:", userId);
+
+      // Wait a moment for any triggers to complete
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      // Use a database function to create/update the profile
+      // This bypasses RLS and is more reliable
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('create_or_update_profile', {
+        p_user_id: userId,
+        p_username: u,
+        p_email: email
+      });
+
+      if (rpcErr) {
+        console.error("RPC error, falling back to direct insert:", rpcErr);
+        
+        // Fallback: Try direct insert (should work with the new RLS policy)
+        const { data: profileData, error: insertErr } = await supabase
+          .from("profiles")
+          .insert({ 
             id: userId, 
             username: u, 
             email 
-          },
-          { 
-            onConflict: "id" 
-          }
-        );
+          })
+          .select()
+          .single();
 
-      if (profileErr) {
-        if ((profileErr as any).code === "23505") {
-          throw new Error("That call sign was just taken. Please choose another.");
+        if (insertErr) {
+          console.error("❌ Profile insert error:", insertErr);
+          console.error("Error code:", (insertErr as any).code);
+          console.error("Error message:", insertErr.message);
+          console.error("Full error:", JSON.stringify(insertErr, null, 2));
+          
+          // Check for specific error codes
+          if ((insertErr as any).code === "23505") {
+            throw new Error("That call sign was just taken. Please choose another.");
+          }
+          
+          // Check for RLS/permission errors
+          if (insertErr.message?.includes("permission") || 
+              insertErr.message?.includes("policy") ||
+              (insertErr as any).code === "42501") {
+            throw new Error("Permission denied. Please run the migrations: create_profile_on_signup.sql and allow_anon_profile_insert.sql");
+          }
+          
+          // Show the actual error message
+          const errorMsg = insertErr.message || (insertErr as any).hint || String(insertErr);
+          throw new Error(`Failed to create profile: ${errorMsg}`);
         }
-        throw profileErr;
+        
+        console.log("✅ Profile created via insert:", profileData);
+      } else {
+        console.log("✅ Profile created/updated via RPC:", rpcData);
       }
 
       router.replace({ pathname: "/verify", params: { email } });

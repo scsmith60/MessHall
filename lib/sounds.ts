@@ -83,13 +83,17 @@ export async function playDonutEasterEgg(): Promise<void> {
     const local = require("../assets/sounds/lee-ermey-what-have-we-got-here.mp3");
     const ok = await tryPlayWithExpoAV(local);
     if (ok) return;
-  } catch {}
+  } catch (err) {
+    console.warn('[sounds] Donut easter egg: local file not found, trying env URL');
+  }
 
   // 2) try remote URL from env (EXPO_PUBLIC_DONUT_SFX_URL)
   const url = process.env.EXPO_PUBLIC_DONUT_SFX_URL;
   if (url && /^https?:\/\//i.test(url)) {
     const ok = await tryPlayWithExpoAV({ uri: url });
     if (ok) return;
+  } else {
+    console.warn('[sounds] Donut easter egg: no env URL configured (EXPO_PUBLIC_DONUT_SFX_URL)');
   }
 }
 
@@ -102,11 +106,15 @@ export async function playLiverEasterEgg(): Promise<void> {
     const local = require("../assets/sounds/ate-his-liver.mp3");
     const ok = await tryPlayWithExpoAV(local);
     if (ok) return;
-  } catch {}
+  } catch (err) {
+    console.warn('[sounds] Liver easter egg: local file not found, trying env URL');
+  }
   const url = process.env.EXPO_PUBLIC_LIVER_SFX_URL;
   if (url && /^https?:\/\//i.test(url)) {
     const ok = await tryPlayWithExpoAV({ uri: url });
     if (ok) return;
+  } else {
+    console.warn('[sounds] Liver easter egg: no env URL configured (EXPO_PUBLIC_LIVER_SFX_URL)');
   }
 }
 
@@ -116,11 +124,15 @@ export async function playRockyMountainOystersEasterEgg(): Promise<void> {
     const local = require("../assets/sounds/do-you-suck-dicks.mp3");
     const ok = await tryPlayWithExpoAV(local);
     if (ok) return;
-  } catch {}
+  } catch (err) {
+    console.warn('[sounds] Oysters easter egg: local file not found, trying env URL');
+  }
   const url = process.env.EXPO_PUBLIC_OYSTERS_SFX_URL;
   if (url && /^https?:\/\//i.test(url)) {
     const ok = await tryPlayWithExpoAV({ uri: url });
     if (ok) return;
+  } else {
+    console.warn('[sounds] Oysters easter egg: no env URL configured (EXPO_PUBLIC_OYSTERS_SFX_URL)');
   }
 }
 
@@ -130,11 +142,15 @@ export async function playLambEasterEgg(): Promise<void> {
     const local = require("../assets/sounds/what-became-of-your-lamb.mp3");
     const ok = await tryPlayWithExpoAV(local);
     if (ok) return;
-  } catch {}
+  } catch (err) {
+    console.warn('[sounds] Lamb easter egg: local file not found, trying env URL');
+  }
   const url = process.env.EXPO_PUBLIC_LAMB_SFX_URL;
   if (url && /^https?:\/\//i.test(url)) {
     const ok = await tryPlayWithExpoAV({ uri: url });
     if (ok) return;
+  } else {
+    console.warn('[sounds] Lamb easter egg: no env URL configured (EXPO_PUBLIC_LAMB_SFX_URL)');
   }
 }
 
