@@ -69,7 +69,7 @@ export default function Login() {
           .limit(1);
 
         if (error) throw error;
-        if (!data?.[0]?.email) throw new Error("No account found with that username.");
+        if (!data?.[0]?.email) throw new Error("No account found with that call sign.");
         emailToUse = data[0].email;
       }
 
@@ -170,17 +170,17 @@ export default function Login() {
             gap: 12,
           }}
         >
-          {/* Identifier (email or username) */}
+          {/* Identifier (email or call sign) */}
           <View style={{ gap: 6 }}>
             <Text style={{ color: LOCAL.subtext, fontSize: 12 }}>
-              Email or Username
+              Email or Call Sign
             </Text>
             <TextInput
               value={identifier}
               onChangeText={setIdentifier}
               autoCapitalize="none"
               autoCorrect={false}
-              placeholder="you@example.com  or  your_username"
+              placeholder="you@example.com  or  your_callsign"
               placeholderTextColor="#6b7280"
               keyboardType="email-address"
               style={{
@@ -246,7 +246,7 @@ export default function Login() {
                     : undefined;
 
                 if (!email) {
-                  setNotice({ visible: true, title: "Use email", message: "Password reset needs an email, not a username." });
+                  setNotice({ visible: true, title: "Use email", message: "Password reset needs an email, not a call sign." });
                   return;
                 }
 

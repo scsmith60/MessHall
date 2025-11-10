@@ -97,8 +97,8 @@ export default function SignUp() {
       setBusy(true);
 
       const u = normalize(username);
-      if (!u || u.length < 3) throw new Error("Username must be at least 3 characters.");
-      if (available === false) throw new Error("That username is already taken.");
+      if (!u || u.length < 3) throw new Error("Call sign must be at least 3 characters.");
+      if (available === false) throw new Error("That call sign is already taken.");
 
       const { data: sign, error: signErr } = await supabase.auth.signUp({
         email,
@@ -117,7 +117,7 @@ export default function SignUp() {
 
       if (profileErr) {
         if ((profileErr as any).code === "23505") {
-          throw new Error("That username was just taken. Please choose another.");
+          throw new Error("That call sign was just taken. Please choose another.");
         }
         throw profileErr;
       }
@@ -219,9 +219,9 @@ export default function SignUp() {
         }}
       />
 
-      {/* =========================== Username ======================= */}
+      {/* =========================== Call Sign ======================= */}
       <TextInput
-        placeholder="Username (your public @name)"
+        placeholder="Call sign (your public @name)"
         placeholderTextColor={COLORS.subtext}
         autoCapitalize="none"
         value={username}
@@ -239,14 +239,14 @@ export default function SignUp() {
         {checking ? (
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <ActivityIndicator />
-            <Text style={{ color: COLORS.subtext }}>Checking username…</Text>
+            <Text style={{ color: COLORS.subtext }}>Checking call sign…</Text>
           </View>
         ) : available === true ? (
-          <Text style={{ color: COLORS.green, fontWeight: "700" }}>✓ Username is available</Text>
+          <Text style={{ color: COLORS.green, fontWeight: "700" }}>✓ Call sign is available</Text>
         ) : available === false ? (
-          <Text style={{ color: COLORS.red, fontWeight: "700" }}>✗ Username is taken</Text>
+          <Text style={{ color: COLORS.red, fontWeight: "700" }}>✗ Call sign is taken</Text>
         ) : (
-          <Text style={{ color: COLORS.subtext }}>Tip: 3+ characters. We turn spaces into underscores.</Text>
+          <Text style={{ color: COLORS.subtext }}>Tip: Call sign must be 3+ characters. We turn spaces into underscores.</Text>
         )}
       </View>
 
