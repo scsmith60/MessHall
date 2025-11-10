@@ -110,10 +110,20 @@ export default function SignUp() {
       const userId = sign.user?.id;
       if (!userId) throw new Error("Could not create user.");
 
+      // Use UPSERT to create or update the profile
+      // This handles the case where the profile doesn't exist yet (e.g., after data clear)
       const { error: profileErr } = await supabase
         .from("profiles")
-        .update({ username: u, email })
-        .eq("id", userId);
+        .upsert(
+          { 
+            id: userId, 
+            username: u, 
+            email 
+          },
+          { 
+            onConflict: "id" 
+          }
+        );
 
       if (profileErr) {
         if ((profileErr as any).code === "23505") {
