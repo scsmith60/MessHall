@@ -170,6 +170,10 @@ Deno.serve(async (req) => {
         // Ignore errors if creator_status column doesn't exist
       });
 
+    // Note: Stripe setup is now a pre-requirement (checked in eligibility checklist)
+    // Users must complete Stripe onboarding before they can apply
+    // So we don't create Stripe accounts or links here anymore
+
     return json({
       ok: true,
       application_id: inserted.id,

@@ -24,7 +24,6 @@ type AppRow = {
   email: string | null;
   creator_status: 'none' | 'eligible' | 'applied' | 'active' | 'rejected';
   account_created_at: string;
-  two_factor_enabled: boolean;
   followers: number | null;
   views_30d: number | null;
   recipes_published: number | null;
@@ -143,7 +142,23 @@ export default function CreatorApprovals() {
               </Text>
               <Text>Recipes: {item.recipes_published ?? 0} • Followers: {item.followers ?? 0} • Views30d: {item.views_30d ?? 0}</Text>
               <Text>Avg Rating: {item.avg_rating ?? '—'} • Conversions60d: {item.affiliate_conversions_60d ?? 0}</Text>
-              <Text>2FA: {item.two_factor_enabled ? '✅' : '❌'} • Stripe: {item.stripe_account_id ? '✅ Ready for Tips' : item.details_submitted ? '⏳ Processing' : '⭕ Not Set Up'}</Text>
+              
+              {/* Stripe Payment Setup Status */}
+              <View style={{ marginTop: 8, padding: 10, backgroundColor: item.details_submitted || item.stripe_account_id ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)', borderRadius: 8, borderWidth: 1, borderColor: item.details_submitted || item.stripe_account_id ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)' }}>
+                <Text style={{ color: item.details_submitted || item.stripe_account_id ? '#22c55e' : '#ef4444', fontWeight: '800' }}>
+                  {item.details_submitted || item.stripe_account_id ? '✅' : '⭕'} Stripe Payment Setup
+                </Text>
+                {item.details_submitted || item.stripe_account_id ? (
+                  <Text style={{ color: '#cbd5e1', fontSize: 12, marginTop: 4 }}>
+                    Account ID: {item.stripe_account_id ? `${item.stripe_account_id.substring(0, 12)}...` : 'N/A'}
+                    {item.details_submitted && ' • Details submitted'}
+                  </Text>
+                ) : (
+                  <Text style={{ color: '#cbd5e1', fontSize: 12, marginTop: 4, lineHeight: 16 }}>
+                    Creator needs to complete Stripe Connect onboarding to receive payments. Use "Send Stripe Link" button below.
+                  </Text>
+                )}
+              </View>
 
               {/* Note box */}
               <TextInput

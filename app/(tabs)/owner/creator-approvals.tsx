@@ -45,9 +45,8 @@ type AppRow = {
   views_30d?: number | null;
   avg_rating?: number | null;
   affiliate_conversions_60d?: number | null;
-  two_factor_enabled?: boolean | null;
 
-  // payout info (optional)
+  // Stripe payment info
   stripe_account_id?: string | null;
   details_submitted: boolean | null;
 };
@@ -300,10 +299,39 @@ export default function OwnerCreatorApprovals() {
                 Avg Rating: {item.avg_rating ?? "—"} • Conversions60d:{" "}
                 {item.affiliate_conversions_60d ?? 0}
               </Text>
-              <Text style={{ color: "#cbd5e1" }}>
-                2FA: {item.two_factor_enabled ? "✅" : "❌"} • Stripe:{" "}
-                {item.details_submitted ? "✅ Onboarded" : "⭕ Not done"}
-              </Text>
+              
+              {/* Stripe Payment Setup Status */}
+              <View
+                style={{
+                  marginTop: 8,
+                  padding: 10,
+                  backgroundColor: item.details_submitted || item.stripe_account_id 
+                    ? "rgba(34, 197, 94, 0.1)" 
+                    : "rgba(239, 68, 68, 0.1)",
+                  borderRadius: 8,
+                  borderWidth: 1,
+                  borderColor: item.details_submitted || item.stripe_account_id 
+                    ? "rgba(34, 197, 94, 0.3)" 
+                    : "rgba(239, 68, 68, 0.3)",
+                }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Text style={{ color: item.details_submitted || item.stripe_account_id ? "#22c55e" : "#ef4444", fontWeight: "800" }}>
+                    {item.details_submitted || item.stripe_account_id ? "✅" : "⭕"} Stripe Payment Setup
+                  </Text>
+                </View>
+                {item.details_submitted || item.stripe_account_id ? (
+                  <Text style={{ color: "#cbd5e1", fontSize: 12, marginTop: 4 }}>
+                    Account ID: {item.stripe_account_id ? `${item.stripe_account_id.substring(0, 12)}...` : "N/A"}
+                    {item.details_submitted && " • Details submitted"}
+                  </Text>
+                ) : (
+                  <Text style={{ color: "#cbd5e1", fontSize: 12, marginTop: 4, lineHeight: 16 }}>
+                    Creator needs to complete Stripe Connect onboarding to receive payments. 
+                    Use "Resend Stripe Link" button below to send them the setup link.
+                  </Text>
+                )}
+              </View>
 
               {/* Notes box (owner can type a reason before Approve/Reject) */}
               <TextInput

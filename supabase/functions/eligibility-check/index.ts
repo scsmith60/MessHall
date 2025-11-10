@@ -25,14 +25,7 @@ function checklistMaster() {
       key: 'age_18_plus',
       label: 'You are 18 or older',
       help: 'We need you to be a grown-up to earn money.',
-      // If you let users correct birthdate:
       ctaRoute: '/(account)/profile/edit-birthdate'
-    },
-    {
-      key: 'enable_2fa',
-      label: '2FA is turned on',
-      help: '2FA is like a stronger lock on your door. It keeps your money safe.',
-      ctaRoute: '/(account)/settings/security' // your screen for 2FA
     },
     {
       key: 'no_recent_strikes',
@@ -55,6 +48,12 @@ function checklistMaster() {
       key: 'account_age_≥_30_days',
       label: 'Account is at least 30 days old',
       help: 'New accounts need a short waiting period before earning.'
+    },
+    {
+      key: 'stripe_account_setup',
+      label: 'Stripe payment account is set up',
+      help: 'You need to complete Stripe onboarding to receive payments. This is the final step before applying.',
+      ctaRoute: '/(account)/monetization' // Will show Stripe setup link
     }
   ];
 }

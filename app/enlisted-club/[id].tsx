@@ -97,6 +97,7 @@ export default function SessionDetailScreen() {
     message: "",
   });
   const [endSessionConfirm, setEndSessionConfirm] = useState(false);
+  const [startSessionConfirm, setStartSessionConfirm] = useState(false);
   const [hostHasStripe, setHostHasStripe] = useState<boolean | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatText, setChatText] = useState("");
@@ -1403,39 +1404,65 @@ export default function SessionDetailScreen() {
 
   const onStartSession = async () => {
     if (!userId || !id || !session) return;
-    Alert.alert(
-      "Start Session?",
-      "Are you ready to go live? This will make the session active and allow participants to join.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Start Live",
-          onPress: async () => {
-            try {
-              const { error } = await supabase
-                .from("enlisted_club_sessions")
-                .update({
-                  status: "active",
-                  started_at: new Date().toISOString(),
-                })
-                .eq("id", id)
-                .eq("host_id", userId);
 
-              if (error) throw error;
+    // Check if user is still an approved creator
+    try {
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("creator_status")
+        .eq("id", userId)
+        .maybeSingle();
 
-              await success();
-              await loadSession();
-              
-              // Start 30-minute countdown timer
-              setSessionTimeRemaining(30 * 60); // 30 minutes in seconds
-            } catch (err: any) {
-              await warn();
-              setNotice({ visible: true, title: "Error", message: err?.message || "Failed to start session." });
-            }
-          },
-        },
-      ]
-    );
+      if (profileError) throw profileError;
+
+      const status = profile?.creator_status?.toLowerCase();
+      if (status !== "approved") {
+        await warn();
+        setNotice({
+          visible: true,
+          title: "Approved Creator Required",
+          message: "Your creator status is no longer approved. Please contact support or reapply for monetization.",
+        });
+        return;
+      }
+    } catch (err: any) {
+      await warn();
+      setNotice({
+        visible: true,
+        title: "Error",
+        message: "Could not verify creator status. Please try again.",
+      });
+      return;
+    }
+
+    setStartSessionConfirm(true);
+  };
+
+  const handleStartSessionConfirm = async () => {
+    setStartSessionConfirm(false);
+    if (!userId || !id) return;
+
+    try {
+      const { error } = await supabase
+        .from("enlisted_club_sessions")
+        .update({
+          status: "active",
+          started_at: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .eq("host_id", userId);
+
+      if (error) throw error;
+
+      await success();
+      await loadSession();
+      
+      // Start 30-minute countdown timer
+      setSessionTimeRemaining(30 * 60); // 30 minutes in seconds
+    } catch (err: any) {
+      await warn();
+      setNotice({ visible: true, title: "Error", message: err?.message || "Failed to start session." });
+    }
   };
 
   const openStartTimePicker = async () => {
@@ -2950,6 +2977,16 @@ export default function SessionDetailScreen() {
         destructive={true}
       />
 
+      <ThemedConfirm
+        visible={startSessionConfirm}
+        title="Start Session?"
+        message="Are you ready to go live? This will make the session active and allow participants to join."
+        confirmText="START LIVE"
+        cancelText="CANCEL"
+        onConfirm={handleStartSessionConfirm}
+        onCancel={() => setStartSessionConfirm(false)}
+      />
+
       {/* Tip Modal */}
       <Modal
         visible={tipModalVisible}
@@ -3058,6 +3095,9 @@ export default function SessionDetailScreen() {
             <Text style={{ color: COLORS.subtext, fontSize: 12, marginTop: SPACING.md, textAlign: "center" }}>
               Minimum $0.50 • Platform fee: 10%
             </Text>
+            <Text style={{ color: COLORS.accent, fontSize: 13, marginTop: SPACING.sm, textAlign: "center", fontWeight: "600" }}>
+              💳 You'll be prompted to enter your payment information
+            </Text>
             <View
               style={{
                 backgroundColor: COLORS.elevated,
@@ -3070,6 +3110,7 @@ export default function SessionDetailScreen() {
                 How Tipping Works:
               </Text>
               <Text style={{ color: COLORS.subtext, fontSize: 12, lineHeight: 18 }}>
+                • Click "Send" to proceed - you'll enter your card details securely via Stripe{"\n"}
                 • Your payment goes directly to the host's Stripe account{"\n"}
                 • Stripe automatically transfers it to their bank account (usually 2-7 days){"\n"}
                 • MessHall takes a 10% platform fee for hosting the service{"\n"}

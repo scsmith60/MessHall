@@ -6,6 +6,10 @@
 ALTER TABLE profiles
 ADD COLUMN IF NOT EXISTS creator_status TEXT CHECK (creator_status IN ('none', 'eligible', 'applied', 'approved', 'rejected'));
 
+-- Add birthdate column if it doesn't exist (for age verification)
+ALTER TABLE profiles
+ADD COLUMN IF NOT EXISTS birthdate DATE;
+
 -- Create the eligibility check function
 CREATE OR REPLACE FUNCTION check_creator_eligibility(p_user UUID)
 RETURNS TABLE (
@@ -19,7 +23,7 @@ AS $$
 DECLARE
   v_missing TEXT[] := ARRAY[]::TEXT[];
   v_age_18_plus BOOLEAN := false;
-  v_has_2fa BOOLEAN := false;
+  -- v_has_2fa BOOLEAN := false; -- Disabled: MFA requires Supabase Pro plan
   v_no_recent_strikes BOOLEAN := true; -- Default to true if no strikes table exists
   v_recipes_count INTEGER := 0;
   v_followers_count INTEGER := 0;
@@ -27,6 +31,7 @@ DECLARE
   v_account_age_days INTEGER := 0;
   v_user_created_at TIMESTAMPTZ;
   v_birthdate DATE;
+  v_stripe_account_id TEXT;
 BEGIN
   -- Get user creation date
   SELECT created_at INTO v_user_created_at
@@ -67,8 +72,11 @@ BEGIN
     v_missing := array_append(v_missing, 'age_18_plus');
   END;
   
-  -- Check 2FA (check auth.mfa_factors table)
-  -- Note: This requires access to auth schema, which SECURITY DEFINER should allow
+  -- Check 2FA (DISABLED - MFA requires Supabase Pro plan)
+  -- Note: 2FA is only available on Supabase Pro plan or higher.
+  -- For free tier projects, we skip this requirement.
+  -- If you upgrade to Pro, uncomment this section to require 2FA.
+  /*
   BEGIN
     SELECT COUNT(*) > 0 INTO v_has_2fa
     FROM auth.mfa_factors
@@ -90,6 +98,7 @@ BEGIN
       -- Other error, mark as missing to be safe
       v_missing := array_append(v_missing, 'enable_2fa');
   END;
+  */
   
   -- Check for recent strikes (if strikes/moderation table exists)
   BEGIN
@@ -127,19 +136,26 @@ BEGIN
   FROM follows
   WHERE following_id = p_user;
   
-  -- Check views in last 30 days (if recipe_views table exists)
+  -- Check views in last 30 days (from recipes table)
+  -- Note: This checks recipes.view_count and recipes.viewed_at columns
+  -- If you need detailed view tracking, use a separate recipe_views table instead
   BEGIN
     SELECT COALESCE(SUM(view_count), 0) INTO v_views_30d
-    FROM recipe_views
-    WHERE recipe_id IN (
-      SELECT id FROM recipes WHERE user_id = p_user
-    )
-    AND viewed_at > NOW() - INTERVAL '30 days';
+    FROM recipes
+    WHERE user_id = p_user
+      AND is_private = false
+      AND viewed_at IS NOT NULL
+      AND viewed_at > NOW() - INTERVAL '30 days';
+    
+    -- Debug: Log the views count (remove in production)
+    -- RAISE NOTICE 'Views in last 30 days: %', v_views_30d;
   EXCEPTION 
-    WHEN undefined_table THEN
-      -- No recipe_views table, use 0
+    WHEN undefined_column THEN
+      -- view_count or viewed_at columns don't exist in recipes table, use 0
       v_views_30d := 0;
     WHEN OTHERS THEN
+      -- Log the error for debugging
+      -- RAISE NOTICE 'Error checking views: %', SQLERRM;
       v_views_30d := 0;
   END;
   
@@ -147,6 +163,24 @@ BEGIN
   IF v_followers_count < 500 AND v_views_30d < 10000 THEN
     v_missing := array_append(v_missing, 'followers_≥_500_or_views30d_≥_10000');
   END IF;
+  
+  -- Check Stripe account setup (REQUIRED before applying)
+  BEGIN
+    SELECT stripe_account_id INTO v_stripe_account_id
+    FROM profiles
+    WHERE id = p_user;
+    
+    IF v_stripe_account_id IS NULL THEN
+      v_missing := array_append(v_missing, 'stripe_account_setup');
+    END IF;
+  EXCEPTION 
+    WHEN undefined_column THEN
+      -- stripe_account_id column doesn't exist yet, mark as missing
+      v_missing := array_append(v_missing, 'stripe_account_setup');
+    WHEN OTHERS THEN
+      -- Other error, mark as missing to be safe
+      v_missing := array_append(v_missing, 'stripe_account_setup');
+  END;
   
   -- Return result
   RETURN QUERY SELECT

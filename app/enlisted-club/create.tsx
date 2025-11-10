@@ -32,6 +32,8 @@ import ThemedNotice from "../../components/ui/ThemedNotice";
 export default function CreateSessionScreen() {
   const { userId } = useUserId();
   const [loading, setLoading] = useState(false);
+  const [checkingStatus, setCheckingStatus] = useState(true);
+  const [isApprovedCreator, setIsApprovedCreator] = useState(false);
   const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>({
     visible: false,
     title: "",
@@ -51,6 +53,36 @@ export default function CreateSessionScreen() {
   const [recipeSearchQuery, setRecipeSearchQuery] = useState("");
   const [recipeSearchResults, setRecipeSearchResults] = useState<any[]>([]);
   const [recipeSearchLoading, setRecipeSearchLoading] = useState(false);
+
+  // Check creator status on mount
+  useEffect(() => {
+    const checkCreatorStatus = async () => {
+      if (!userId) {
+        setCheckingStatus(false);
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("creator_status")
+          .eq("id", userId)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        const status = data?.creator_status?.toLowerCase();
+        setIsApprovedCreator(status === "approved");
+      } catch (err: any) {
+        console.error("Error checking creator status:", err);
+        setIsApprovedCreator(false);
+      } finally {
+        setCheckingStatus(false);
+      }
+    };
+
+    checkCreatorStatus();
+  }, [userId]);
 
   const openStartTimePicker = async () => {
     await tap();
@@ -92,6 +124,21 @@ export default function CreateSessionScreen() {
   const onCreate = async () => {
     if (!userId) {
       setNotice({ visible: true, title: "Sign In Required", message: "Please sign in to create a session." });
+      return;
+    }
+
+    // Check creator status before allowing creation
+    if (!isApprovedCreator) {
+      await warn();
+      setNotice({
+        visible: true,
+        title: "Approved Creator Required",
+        message: "Only approved creators can host Enlisted Club sessions. Please apply for monetization first.",
+      });
+      // Navigate to monetization screen after a delay
+      setTimeout(() => {
+        router.push("/(account)/monetization");
+      }, 2000);
       return;
     }
 
@@ -236,6 +283,51 @@ export default function CreateSessionScreen() {
           contentContainerStyle={{ padding: SPACING.lg }}
           keyboardShouldPersistTaps="handled"
         >
+          {/* Creator Status Check */}
+          {checkingStatus ? (
+            <View style={{ alignItems: "center", padding: SPACING.xl }}>
+              <ActivityIndicator size="large" color={COLORS.accent} />
+              <Text style={{ color: COLORS.subtext, marginTop: SPACING.md }}>
+                Checking creator status...
+              </Text>
+            </View>
+          ) : !isApprovedCreator ? (
+            <View
+              style={{
+                backgroundColor: COLORS.card,
+                padding: SPACING.lg,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: COLORS.border,
+                marginBottom: SPACING.lg,
+              }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.md }}>
+                <Ionicons name="lock-closed" size={24} color={COLORS.accent} />
+                <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 18, marginLeft: SPACING.sm }}>
+                  Approved Creator Required
+                </Text>
+              </View>
+              <Text style={{ color: COLORS.subtext, fontSize: 14, marginBottom: SPACING.md, lineHeight: 20 }}>
+                Only approved creators can host Enlisted Club sessions. This ensures quality content and allows you to receive tips from participants.
+              </Text>
+              <Pressable
+                onPress={() => router.push("/(account)/monetization")}
+                style={{
+                  backgroundColor: COLORS.accent,
+                  padding: SPACING.md,
+                  borderRadius: 12,
+                  alignItems: "center",
+                  marginTop: SPACING.sm,
+                }}
+              >
+                <Text style={{ color: "#000", fontWeight: "800", fontSize: 16 }}>
+                  Apply for Monetization
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+
           {/* Title */}
           <View style={{ marginBottom: SPACING.lg }}>
             <Text style={{ color: COLORS.text, fontWeight: "800", fontSize: 16, marginBottom: 8 }}>
@@ -428,9 +520,9 @@ export default function CreateSessionScreen() {
           {/* Create Button */}
           <Pressable
             onPress={onCreate}
-            disabled={loading}
+            disabled={loading || !isApprovedCreator}
             style={{
-              backgroundColor: loading ? COLORS.elevated : COLORS.accent,
+              backgroundColor: loading || !isApprovedCreator ? COLORS.elevated : COLORS.accent,
               padding: SPACING.md,
               borderRadius: 12,
               alignItems: "center",
@@ -440,7 +532,7 @@ export default function CreateSessionScreen() {
             {loading ? (
               <ActivityIndicator color="#000" />
             ) : (
-              <Text style={{ color: "#000", fontWeight: "800", fontSize: 16 }}>
+              <Text style={{ color: !isApprovedCreator ? COLORS.subtext : "#000", fontWeight: "800", fontSize: 16 }}>
                 Create Session
               </Text>
             )}

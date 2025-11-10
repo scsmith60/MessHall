@@ -19,8 +19,10 @@ import {
   ScrollView,
   Switch,
   Modal,
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
@@ -97,11 +99,12 @@ function ThemedToast({
   );
 }
 
-type ChecklistItem = { label: string; help?: string; passed: boolean };
+type ChecklistItem = { label: string; help?: string; passed: boolean; ctaRoute?: string };
 type AppStatus = "none" | "pending" | "approved" | "rejected" | "withdrawn";
 
 export default function MonetizationScreen() {
   const { session } = useAuth();
+  const router = useRouter();
   const userId = session?.user?.id;
 
   // 🧺 little buckets
@@ -141,39 +144,41 @@ export default function MonetizationScreen() {
     let appErr: any = null;
     
     try {
-      // Add timeout to prevent hanging
-      const queryPromise = supabase
+      // Query with better error handling - use maybeSingle for efficiency
+      const { data, error } = await supabase
         .from("creator_applications")
         .select("status, submitted_at, notes")
         .eq("user_id", userId)
         .order("submitted_at", { ascending: false })
-        .limit(1);
+        .limit(1)
+        .maybeSingle();
       
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Query timeout after 5 seconds")), 5000)
-      );
-      
-      const result = await Promise.race([queryPromise, timeoutPromise]) as any;
-      
-      apps = result.data;
-      appErr = result.error;
-      console.log("creator_applications query result - apps:", apps, "error:", appErr);
-      
-      if (appErr) {
-        console.error("Error querying creator_applications:", appErr);
-        // Continue with status "none" if query fails
+      if (error) {
+        console.error("Error querying creator_applications:", error);
+        appErr = error;
+        apps = null;
+      } else {
+        apps = data ? [data] : [];
+        appErr = null;
       }
+      console.log("creator_applications query result - apps:", apps, "error:", appErr);
     } catch (queryError: any) {
       console.error("Exception querying creator_applications:", queryError);
       appErr = queryError;
+      apps = null;
       // Continue with status "none" if query fails
     }
 
     let status: AppStatus = "none";
     let notes: string | null = null;
-    if (!appErr && apps && apps.length > 0) {
+    if (!appErr && apps && Array.isArray(apps) && apps.length > 0) {
       status = (apps[0].status as AppStatus) || "none";
       notes = apps[0].notes || null;
+    } else if (appErr) {
+      // If query failed, default to "none" status and continue
+      console.warn("Using default status 'none' due to query error");
+      status = "none";
+      notes = null;
     }
     console.log("Setting appStatus to:", status, "notes:", notes);
     setAppStatus(status);
@@ -335,7 +340,7 @@ export default function MonetizationScreen() {
 
       // ✅ immediately reflect "pending" in UI
       setAppStatus("pending");
-      setToastMsg("Application submitted! We’ll email you when approved.");
+      setToastMsg("Application submitted! We'll email you when approved.");
       setToastOpen(true);
     } catch (e: any) {
       setToastMsg(e?.message || "Something went wrong.");
@@ -391,22 +396,102 @@ export default function MonetizationScreen() {
     </View>
   );
 
-  const Row = ({ ok, label, help }: { ok: boolean; label: string; help?: string }) => (
-    <View
-      style={{
-        backgroundColor: COLORS.card,
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        padding: 12,
-      }}
-    >
-      <Text style={{ color: ok ? COLORS.text : COLORS.subtext, fontWeight: "800" }}>
-        {ok ? "✅" : "⭕"} {label}
-      </Text>
-      {help ? <Text style={{ color: COLORS.subtext, marginTop: 4 }}>{help}</Text> : null}
-    </View>
-  );
+  const Row = ({ 
+    ok, 
+    label, 
+    help, 
+    ctaRoute 
+  }: { 
+    ok: boolean; 
+    label: string; 
+    help?: string; 
+    ctaRoute?: string;
+  }) => {
+    const handlePress = async () => {
+      if (!ok && ctaRoute) {
+        // Special handling for Stripe setup
+        if (label.includes('Stripe')) {
+          // Get/create Stripe onboarding link
+          try {
+            setToastMsg("Getting your Stripe onboarding link...");
+            setToastOpen(true);
+            
+            // Don't send user_id - let the function use the current authenticated user
+            // This ensures the permission check passes (user requesting their own link)
+            const { data, error } = await supabase.functions.invoke(
+              "admin-resend-stripe-onboarding",
+              { body: {} } // Empty body - function will use current user
+            );
+            
+            if (error) {
+              console.error("Stripe onboarding error:", error);
+              setToastMsg(error.message || "Couldn't get Stripe link. The function may not be deployed or Stripe is not configured.");
+              setToastOpen(true);
+              return;
+            }
+            
+            if (!data?.url) {
+              const errorMsg = data?.error || "No Stripe link was returned. Contact support.";
+              console.error("Stripe onboarding response:", data);
+              setToastMsg(errorMsg);
+              setToastOpen(true);
+              return;
+            }
+            
+            // Open the Stripe onboarding link
+            const canOpen = await Linking.canOpenURL(data.url);
+            if (canOpen) {
+              await Linking.openURL(data.url);
+              setToastMsg("Opening Stripe setup page...");
+            } else {
+              setToastMsg(`Please visit: ${data.url}`);
+            }
+            setToastOpen(true);
+          } catch (e: any) {
+            setToastMsg(e?.message || "Failed to get Stripe link");
+            setToastOpen(true);
+          }
+        } else {
+          // Regular navigation for other checklist items
+          router.push(ctaRoute as any);
+        }
+      }
+    };
+
+    const isPressable = !ok && !!ctaRoute;
+
+    return (
+      <Pressable
+        onPress={handlePress}
+        disabled={!isPressable}
+        style={{
+          backgroundColor: COLORS.card,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: COLORS.border,
+          padding: 12,
+          opacity: isPressable ? 1 : 1,
+        }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: ok ? COLORS.text : COLORS.subtext, fontWeight: "800" }}>
+              {ok ? "✅" : "⭕"} {label}
+            </Text>
+            {help ? <Text style={{ color: COLORS.subtext, marginTop: 4 }}>{help}</Text> : null}
+          </View>
+          {isPressable && (
+            <Ionicons 
+              name="chevron-forward" 
+              size={20} 
+              color={COLORS.subtext} 
+              style={{ marginLeft: 8 }}
+            />
+          )}
+        </View>
+      </Pressable>
+    );
+  };
 
   // 🧠 decide button text + disabled state
   let buttonText = "Apply for Monetization";
@@ -518,7 +603,13 @@ export default function MonetizationScreen() {
             ) : (
               <>
                 {checklist.map((c, i) => (
-                  <Row key={i} ok={!!c.passed} label={c.label} help={c.help} />
+                  <Row 
+                    key={i} 
+                    ok={!!c.passed} 
+                    label={c.label} 
+                    help={c.help}
+                    ctaRoute={c.ctaRoute}
+                  />
                 ))}
                 {eligible === true && (
                   <View
