@@ -4,51 +4,72 @@
 
 // lazy import to avoid adding a hard dependency at startup
 async function tryPlayWithExpoAV(source: any): Promise<boolean> {
+  let sound: any = null;
   try {
     // dynamic import so this file is safe even if expo-av isn't installed yet
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const AV = require("expo-av");
     const { Audio } = AV as typeof import("expo-av");
-    // make sure sound plays even if device is on silent (Android)
+    
+    // make sure sound plays even if device is on silent (iOS/Android)
     try {
       await Audio.setAudioModeAsync({
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
-        interruptionModeAndroid: 1,
+        interruptionModeIOS: 1, // DuckOthers
+        interruptionModeAndroid: 1, // DuckOthers
         shouldDuckAndroid: true,
       } as any);
     } catch {}
-    const sound = new Audio.Sound();
-    await sound.loadAsync(source, { shouldPlay: false, volume: 1.0 });
     
-    // Wait for the sound to be loaded before playing
-    const status = await sound.getStatusAsync();
-    if (!status.isLoaded) {
-      await sound.unloadAsync().catch(() => {});
-      return false;
-    }
+    sound = new Audio.Sound();
     
-    // Play the sound and wait a moment to confirm it started
-    await sound.playAsync();
-    
-    // Set up cleanup when playback finishes
-    sound.setOnPlaybackStatusUpdate((st: any) => {
-      if (st?.didJustFinish || st?.isLoaded === false) {
-        sound.unloadAsync().catch(() => {});
+    // Set up cleanup when playback finishes - keep sound alive until done
+    sound.setOnPlaybackStatusUpdate((status: any) => {
+      if (status?.didJustFinish || (status?.isLoaded === false && status?.error)) {
+        // Only unload when playback actually finishes or errors
+        sound?.unloadAsync().catch(() => {});
       }
     });
     
-    // Wait a brief moment to verify playback started successfully
-    await new Promise(resolve => setTimeout(resolve, 100));
-    const playStatus = await sound.getStatusAsync();
+    // Load and play the sound in one go - this is more reliable
+    await sound.loadAsync(source, { 
+      shouldPlay: true, 
+      volume: 1.0,
+      isMuted: false,
+    });
     
-    if (playStatus.isLoaded && playStatus.isPlaying) {
-      return true;
-    } else {
+    // Verify it loaded and started playing
+    const loadStatus = await sound.getStatusAsync();
+    if (!loadStatus.isLoaded) {
       await sound.unloadAsync().catch(() => {});
       return false;
     }
-  } catch {
+    
+    // Verify playback started - wait a moment for it to begin
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const playStatus = await sound.getStatusAsync();
+    
+    if (playStatus.isLoaded && playStatus.isPlaying) {
+      // Success! Sound is playing. Don't unload - let it finish naturally via the callback
+      console.log('[sounds] Audio playing successfully');
+      return true;
+    } else {
+      // Failed to start playing
+      console.warn('[sounds] Audio failed to play. Status:', {
+        isLoaded: playStatus.isLoaded,
+        isPlaying: playStatus.isPlaying,
+        error: playStatus.error,
+      });
+      await sound.unloadAsync().catch(() => {});
+      return false;
+    }
+  } catch (error) {
+    // Clean up on any error
+    console.warn('[sounds] Audio playback error:', error);
+    if (sound) {
+      await sound.unloadAsync().catch(() => {});
+    }
     return false;
   }
 }
