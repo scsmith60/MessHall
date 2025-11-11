@@ -261,10 +261,48 @@ export default function InstagramDomScraper({
       async function run(){
         send("log",{msg:"page:loading", extra:{url:location.href}});
         
+        // IMMEDIATELY try to extract data from meta tags before any redirects can happen
+        // This is critical because Instagram may redirect to deep links
+        const immediateMeta = readFromMeta();
+        const immediateLd = readFromJsonLd();
+        const immediateData = immediateLd && immediateLd.length > immediateMeta.length ? immediateLd : immediateMeta;
+        
+        if (immediateData && immediateData.length > 50) {
+          send("log",{msg:"immediate:data", extra:{len:immediateData.length, source: immediateLd ? "jsonld" : "meta"}});
+          const score = scoreRecipeText(immediateData);
+          if (score > 100) { // Lower threshold - any reasonable recipe data
+            const cleaned = stripIGBoilerplate(immediateData);
+            finish({
+              ok: true,
+              caption: cleaned.slice(0, 4000),
+              comments: [], bestComment: "",
+              text: cleaned.slice(0, 4000),
+              imageUrl: getImageUrl(),
+              cleanTitle: makeCleanTitle(cleaned),
+              debug: "immediate:meta-or-jsonld"
+            });
+            return;
+          }
+        }
+        
         // Check if we got redirected to a deep link (this means Instagram blocked us)
         const currentUrl = location.href.toLowerCase();
         if (currentUrl.startsWith("instagram://") || currentUrl.includes("instagram://")) {
           send("log",{msg:"error:deep-link-redirect", extra:{url:currentUrl}});
+          // Even if redirected, try to return any data we got from meta/jsonld
+          if (immediateData && immediateData.length > 0) {
+            const cleaned = stripIGBoilerplate(immediateData);
+            finish({
+              ok: true,
+              caption: cleaned.slice(0, 4000),
+              comments: [], bestComment: "",
+              text: cleaned.slice(0, 4000),
+              imageUrl: getImageUrl(),
+              cleanTitle: makeCleanTitle(cleaned),
+              debug: "deep-link-redirect:but-had-meta-data"
+            });
+            return;
+          }
           finish({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"error:deep-link-redirect" });
           return;
         }
@@ -275,11 +313,25 @@ export default function InstagramDomScraper({
             bodyText.includes("page not found") || bodyText.includes("sorry, this page isn't available") ||
             bodyText.includes("content isn't available") || bodyText.includes("login to continue")) {
           send("log",{msg:"error:blocked", extra:{reason:"page blocked or unavailable"}});
+          // Even if blocked, try to return any data we got from meta/jsonld
+          if (immediateData && immediateData.length > 0) {
+            const cleaned = stripIGBoilerplate(immediateData);
+            finish({
+              ok: true,
+              caption: cleaned.slice(0, 4000),
+              comments: [], bestComment: "",
+              text: cleaned.slice(0, 4000),
+              imageUrl: getImageUrl(),
+              cleanTitle: makeCleanTitle(cleaned),
+              debug: "blocked:but-had-meta-data"
+            });
+            return;
+          }
           finish({ ok:false, caption:"", comments:[], bestComment:"", text:"", debug:"error:blocked" });
           return;
         }
         
-        // Try to get data immediately first (fast path)
+        // Try to get data from DOM (slower but more complete)
         const quickMeta = readFromMeta();
         const quickLd = readFromJsonLd();
         const quickData = quickLd && quickLd.length > quickMeta.length ? quickLd : quickMeta;

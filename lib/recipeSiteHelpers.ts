@@ -370,21 +370,59 @@ export function extractRecipeFromJsonLd(html: string): {
           json = JSON.parse(content);
         } catch (parseErr) {
           // If parsing fails, try cleaning up JavaScript assignments
-          const cleaned = content
+          let cleaned = content
             .replace(/^[^=]*=\s*/, '')  // Remove variable assignments
             .replace(/;\s*$/, '')        // Remove trailing semicolons
             .replace(/^[^{]*/, '')       // Remove anything before first {
             .replace(/[^}]*$/, '');      // Remove anything after last }
+          
+          // Also try to extract JSON from array assignments like: var x = [{...}];
+          if (!cleaned.startsWith('{') && !cleaned.startsWith('[')) {
+            const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+            if (arrayMatch) {
+              cleaned = arrayMatch[0];
+            }
+          }
+          
           try {
             json = JSON.parse(cleaned);
-          } catch {
-            continue; // Skip if still can't parse
+          } catch (err2) {
+            // Last attempt: try to find the first valid JSON object/array in the content
+            const jsonMatch = content.match(/(\[?\{[\s\S]*\}\]?)/);
+            if (jsonMatch) {
+              try {
+                json = JSON.parse(jsonMatch[1]);
+              } catch (err3) {
+                // Debug: log parsing failures for troubleshooting
+                if (source === 'script-tag' || source === 'inline-recipe-schema') {
+                  console.log('[recipeSiteHelpers] JSON-LD parse failed for', source, 'preview:', content.slice(0, 200));
+                }
+                continue; // Skip if still can't parse
+              }
+            } else {
+              if (source === 'script-tag' || source === 'inline-recipe-schema') {
+                console.log('[recipeSiteHelpers] No JSON match found for', source, 'preview:', content.slice(0, 200));
+              }
+              continue; // Skip if still can't parse
+            }
           }
         }
         
-        const items = Array.isArray(json) ? json : json["@graph"] ? json["@graph"] : [json];
+        // Handle array format: [{...}] or @graph array
+        let items: any[] = [];
+        if (Array.isArray(json)) {
+          items = json;
+        } else if (json["@graph"] && Array.isArray(json["@graph"])) {
+          items = json["@graph"];
+        } else if (json && typeof json === "object") {
+          items = [json];
+        }
+        
+        console.log('[recipeSiteHelpers] Processing', items.length, 'items from JSON-LD');
         
         for (const item of items) {
+          if (!item || typeof item !== "object") continue;
+          
           const type = item["@type"];
           const isRecipe = typeof type === "string" 
             ? /Recipe/i.test(type)
@@ -940,18 +978,19 @@ export function extractRecipeFromHtml(html: string): {
     // Pattern 1: List items in ingredient sections (more flexible patterns)
     // First, try to find the main ingredients section
     const ingSectionPatterns = [
-      /<h[2-4][^>]*>\s*ingredients?\s*<\/h[2-4]>([\s\S]{0,20000}?)(?=<h[2-4][^>]*>\s*(?:instructions?|directions?|steps?|method)|<\/section|<\/div|$)/i,
-      /<div[^>]*class[^>]*ingredient[^>]*>([\s\S]{0,20000}?)(?=<\/div>)/i,
-      /<ul[^>]*class[^>]*ingredient[^>]*>([\s\S]{0,20000}?)(?=<\/ul>)/i,
+      /<h[1-6][^>]*>\s*ingredients?\s*<\/h[1-6]>([\s\S]{0,30000}?)(?=<h[1-6][^>]*>\s*(?:instructions?|directions?|steps?|method|preparation|cooking|how\s+to|procedure)|<\/section|<\/div|$)/i,
+      /<div[^>]*class[^>]*ingredient[^>]*>([\s\S]{0,30000}?)(?=<\/div>)/i,
+      /<ul[^>]*class[^>]*ingredient[^>]*>([\s\S]{0,30000}?)(?=<\/ul>)/i,
       // Also try finding ingredients list after "Ingredients" heading anywhere
-      /(?:^|>)\s*ingredients?\s*[:\-–—]?\s*([\s\S]{0,20000}?)(?=\s*(?:instructions?|directions?|steps?|method)|<h[2-4]|$)/i,
+      /(?:^|>)\s*ingredients?\s*[:\-–—]?\s*([\s\S]{0,30000}?)(?=\s*(?:instructions?|directions?|steps?|method|preparation|cooking|how\s+to|procedure)|<h[1-6]|$)/i,
       // Try uppercase INGREDIENTS
-      /<h[2-4][^>]*>\s*INGREDIENTS\s*<\/h[2-4]>([\s\S]{0,20000}?)(?=<h[2-4][^>]*>\s*(?:instructions?|directions?|steps?|method)|<\/section|<\/div|$)/i,
+      /<h[1-6][^>]*>\s*INGREDIENTS\s*<\/h[1-6]>([\s\S]{0,30000}?)(?=<h[1-6][^>]*>\s*(?:instructions?|directions?|steps?|method|preparation|cooking|how\s+to|procedure)|<\/section|<\/div|$)/i,
     ];
     
     for (const pattern of ingSectionPatterns) {
       const sectionMatch = cleanHtml.match(pattern);
       if (sectionMatch) {
+        console.log('[HTML-EXTRACT] Found ingredient section with pattern, length:', sectionMatch[1].length);
         const mainSection = sectionMatch[1];
         
         // Try to detect subsections (like "FOR THE SHRIMP", "FOR THE SAUCE", etc.)
@@ -1010,13 +1049,27 @@ export function extractRecipeFromHtml(html: string): {
         // If no subsections found, extract all ingredients from main section
         if (ingredientSections.length === 0) {
           const liMatches = [...mainSection.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+          console.log('[HTML-EXTRACT] Found', liMatches.length, 'list items in ingredient section');
           for (const liMatch of liMatches) {
             let liContent = extractFullTextFromLi(liMatch[1]);
+            // Debug: show raw content for first few items
+            if (ingredients.length < 2) {
+              console.log('[HTML-EXTRACT] Raw li content:', liMatch[1].substring(0, 150));
+              console.log('[HTML-EXTRACT] Extracted text:', liContent);
+            }
             if (liContent && liContent.length > 3 && liContent.length < 300) {
-              const hasQuantity = /(\d+\s+)?(\d+\/\d+|\d+)\s*(cup|cups|tsp|tbsp|oz|lb|g|kg|ml|l|tablespoon|teaspoon|pound|ounce|clove|cloves|sheet|sheets|large|small|medium|jumbo|head|heads|bunch|can|cans|package|packages)/i.test(liContent);
-              const hasIngredientWord = /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|hot\s+sauce|worcestershire|egg|eggs|oil|vegetable|canola|olive)\b/i.test(liContent);
+              const hasQuantity = /(\d+\s+)?(\d+\/\d+|\d+)\s*(cup|cups|c\.|tsp|tbsp|oz|lb|g|kg|ml|l|tablespoon|teaspoon|pound|ounce|clove|cloves|sheet|sheets|large|small|medium|jumbo|head|heads|bunch|can|cans|package|packages)/i.test(liContent);
+              const hasIngredientWord = /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|hot\s+sauce|worcestershire|egg|eggs|oil|vegetable|canola|olive|potato|potatoes|cream\s+cheese|half\s+and\s+half|half-and-half)\b/i.test(liContent);
               if (hasQuantity || hasIngredientWord) {
                 ingredients.push(liContent);
+                if (ingredients.length <= 3) {
+                  console.log('[HTML-EXTRACT] Added ingredient', ingredients.length, ':', liContent);
+                }
+              } else {
+                if (liMatches.length <= 10) {
+                  console.log('[HTML-EXTRACT] Rejected ingredient (no quantity/word):', liContent.substring(0, 60));
+                  console.log('[HTML-EXTRACT] hasQuantity:', hasQuantity, 'hasIngredientWord:', hasIngredientWord);
+                }
               }
             }
           }
@@ -1037,6 +1090,10 @@ export function extractRecipeFromHtml(html: string): {
       // Remove script/style tags but keep everything else
       text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
       text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+      
+      // Remove form elements like checkboxes, inputs, labels (but preserve their text content if any)
+      text = text.replace(/<input[^>]*>/gi, '');
+      text = text.replace(/<label[^>]*>([\s\S]*?)<\/label>/gi, '$1');
       
       // IMPORTANT: Replace HTML tags with SINGLE spaces, not multiple
       // This preserves spacing between quantity and unit
@@ -1142,27 +1199,111 @@ export function extractRecipeFromHtml(html: string): {
       return cleaned;
     };
     
-    // Pattern 1: Instructions section (more flexible, stop before non-step sections)
+    // Pattern 1: Instructions/Directions/Steps/Method section (comprehensive patterns)
+    // Look for any heading that indicates instructions: directions, steps, method, preparation, cooking, how to, procedure
+    // IMPORTANT: After the heading, skip wrapper divs and capture the actual content
     const stepSectionPatterns = [
-      /<h[2-4][^>]*>\s*instructions?\s*<\/h[2-4]>([\s\S]{0,20000}?)(?=<h[2-4][^>]*>\s*(?:what to serve|leftovers|notes|tips|faq|nutrition|related|more like)|<\/section|<\/div|$)/i,
-      /<div[^>]*class[^>]*(?:instruction|direction|step|method)[^>]*>([\s\S]{0,20000}?)(?=<\/div>)/i,
-      /<ol[^>]*class[^>]*(?:instruction|direction|step)[^>]*>([\s\S]{0,20000}?)(?=<\/ol>)/i,
-      // Also try finding instructions after "Instructions" heading anywhere
-      /(?:^|>)\s*instructions?\s*[:\-–—]?\s*([\s\S]{0,20000}?)(?=<h[2-4][^>]*>\s*(?:what to serve|leftovers|notes|tips|faq|nutrition|related|more like)|<\/section|<\/div|$)/i,
+      // Pattern 1: Heading followed by content (skip wrapper divs, capture until next major section)
+      /<h[1-6][^>]*>\s*(?:instructions?|directions?|steps?|method|preparation|cooking\s+instructions?|how\s+to|procedure)\s*<\/h[1-6]>[\s\S]{0,500}?([\s\S]{0,50000}?)(?=<h[1-6][^>]*>\s*(?:what\s+to\s+serve|leftovers|notes|tips|faq|nutrition|related|more\s+like|serving|storage|variations|substitutions|ingredients?)|<\/section|<\/article|$)/i,
+      // Pattern 2: Look for div/section with direction/instruction class
+      /<div[^>]*class[^>]*(?:instruction|direction|step|method|preparation|procedure)[^>]*>([\s\S]{0,50000}?)(?=<\/div>)/i,
+      /<ol[^>]*class[^>]*(?:instruction|direction|step|method)[^>]*>([\s\S]{0,50000}?)(?=<\/ol>)/i,
+      /<section[^>]*class[^>]*(?:instruction|direction|step|method)[^>]*>([\s\S]{0,50000}?)(?=<\/section>)/i,
+      // Pattern 3: Find "Directions" heading, then look for the next container with numbered content
+      /<h[1-6][^>]*>\s*(?:instructions?|directions?|steps?|method)\s*<\/h[1-6]>[\s\S]*?(?:<div[^>]*>|<ol[^>]*>|<ul[^>]*>|<section[^>]*>)([\s\S]{0,50000}?)(?=<\/div>|<\/ol>|<\/ul>|<\/section>|<h[1-6]|$)/i,
+      // Pattern 4: Also try finding instructions/directions/steps/method after heading anywhere
+      /(?:^|>)\s*(?:instructions?|directions?|steps?|method|preparation|cooking\s+instructions?|how\s+to|procedure)\s*[:\-–—]?\s*([\s\S]{0,50000}?)(?=<h[1-6][^>]*>\s*(?:what\s+to\s+serve|leftovers|notes|tips|faq|nutrition|related|more\s+like|serving|storage|variations|substitutions|ingredients?)|<\/section|<\/div|<\/article|$)/i,
     ];
     
     for (const pattern of stepSectionPatterns) {
       const sectionMatch = cleanHtml.match(pattern);
       if (sectionMatch) {
+        console.log('[HTML-EXTRACT] Found step section with pattern, length:', sectionMatch[1].length);
         const section = sectionMatch[1];
+        // Debug: show first 500 chars of section to see structure
+        console.log('[HTML-EXTRACT] Step section preview:', section.substring(0, 500));
+        
         // First, try to find numbered steps (1., 2., etc.) in list items - these are most reliable
-        const numberedLiMatches = [...section.matchAll(/<li[^>]*>\s*(\d+[.)]\s+[^<]{20,600})/gi)];
-        for (const stepMatch of numberedLiMatches) {
-          const cleaned = cleanStepText(stepMatch[1], stepMatch[0]);
+        // Extract full <li> content first, then look for numbered patterns
+        const allLiMatches = [...section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+        console.log('[HTML-EXTRACT] Found', allLiMatches.length, 'list items in step section');
+        
+        // If no <li> tags, try <p> tags with numbered content
+        if (allLiMatches.length === 0) {
+          console.log('[HTML-EXTRACT] No <li> tags found, trying <p> tags with numbered steps');
+          const pMatches = [...section.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)];
+          console.log('[HTML-EXTRACT] Found', pMatches.length, '<p> tags in step section');
+          for (const pMatch of pMatches) {
+            let stepContent = extractFullTextFromLi(pMatch[1]);
+            // Check if it starts with a number (1., 2., etc.)
+            const numberedMatch = stepContent.match(/^(\d+[.)]\s+)(.+)$/);
+            if (numberedMatch) {
+              stepContent = numberedMatch[2];
+              const cleaned = cleanStepText(stepContent, pMatch[0]);
+              if (cleaned && cleaned.length > 15 && cleaned.length < 600) {
+                const hasCookingVerb = /\b(preheat|heat|melt|whisk|stir|mix|combine|add|pour|cook|bake|fry|simmer|boil|remove|transfer|serve|garnish|season|toss|flip|deglaze|bring|reduce|sauté|sautéed|start|working|wrap|set|allow|remove|garnish|using|caution|transfer|toss|coat|deglaze|scrape|whisk|peel|cut|drain|mash|place|turn|stir)\b/i.test(cleaned);
+                if (hasCookingVerb || cleaned.length > 30) {
+                  steps.push(cleaned);
+                  if (steps.length <= 3) {
+                    console.log('[HTML-EXTRACT] Added step from <p>', steps.length, ':', cleaned.substring(0, 100));
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        // If still no steps, try to find numbered patterns directly in the section text (any tag)
+        if (steps.length === 0) {
+          console.log('[HTML-EXTRACT] No steps from <li> or <p>, trying direct numbered pattern extraction');
+          // First, try to extract all text from the section (removing HTML tags but preserving structure)
+          const sectionText = section
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          
+          console.log('[HTML-EXTRACT] Section text (first 1000 chars):', sectionText.substring(0, 1000));
+          
+          // Look for numbered patterns like "1. " or "1) " anywhere in the section text
+          const numberedPattern = /(\d+[.)]\s+)(.{20,600}?)(?=\d+[.)]\s+|$)/gi;
+          let match;
+          while ((match = numberedPattern.exec(sectionText)) !== null && steps.length < 20) {
+            let stepContent = match[2].trim();
+            const cleaned = cleanStepText(stepContent, match[0]);
+            if (cleaned && cleaned.length > 15 && cleaned.length < 600) {
+              const hasCookingVerb = /\b(preheat|heat|melt|whisk|stir|mix|combine|add|pour|cook|bake|fry|simmer|boil|remove|transfer|serve|garnish|season|toss|flip|deglaze|bring|reduce|sauté|sautéed|start|working|wrap|set|allow|remove|garnish|using|caution|transfer|toss|coat|deglaze|scrape|whisk|peel|cut|drain|mash|place|turn|stir)\b/i.test(cleaned);
+              if (hasCookingVerb || cleaned.length > 30) {
+                steps.push(cleaned);
+                if (steps.length <= 3) {
+                  console.log('[HTML-EXTRACT] Added step from direct pattern', steps.length, ':', cleaned.substring(0, 100));
+                }
+              }
+            }
+          }
+          console.log('[HTML-EXTRACT] Direct pattern extraction found', steps.length, 'steps');
+        }
+        
+        for (const liMatch of allLiMatches) {
+          let stepContent = extractFullTextFromLi(liMatch[1]);
+          // Check if it starts with a number (1., 2., etc.) - if so, extract the content after the number
+          const numberedMatch = stepContent.match(/^(\d+[.)]\s+)(.+)$/);
+          if (numberedMatch) {
+            stepContent = numberedMatch[2]; // Use content after the number
+          }
+          const cleaned = cleanStepText(stepContent, liMatch[0]);
           if (cleaned && cleaned.length > 15 && cleaned.length < 600) {
-            const hasCookingVerb = /\b(preheat|heat|melt|whisk|stir|mix|combine|add|pour|cook|bake|fry|simmer|boil|remove|transfer|serve|garnish|season|toss|flip|deglaze|bring|reduce|sauté|sautéed|start|working|wrap|set|allow|remove|garnish|using|caution|transfer|toss|coat|deglaze|scrape|whisk)\b/i.test(cleaned);
+            const hasCookingVerb = /\b(preheat|heat|melt|whisk|stir|mix|combine|add|pour|cook|bake|fry|simmer|boil|remove|transfer|serve|garnish|season|toss|flip|deglaze|bring|reduce|sauté|sautéed|start|working|wrap|set|allow|remove|garnish|using|caution|transfer|toss|coat|deglaze|scrape|whisk|peel|cut|drain|mash|place|turn|stir)\b/i.test(cleaned);
             if (hasCookingVerb || cleaned.length > 30) {
               steps.push(cleaned);
+              if (steps.length <= 3) {
+                console.log('[HTML-EXTRACT] Added step', steps.length, ':', cleaned.substring(0, 100));
+              }
+            } else {
+              if (allLiMatches.length <= 5) {
+                console.log('[HTML-EXTRACT] Rejected step (no verb, length:', cleaned.length, '):', cleaned.substring(0, 80));
+              }
             }
           }
         }

@@ -20,6 +20,7 @@ export type RecipeMeta = {
   needsClientRender?: boolean;
   ingredients: string[];
   steps: string[];
+  rawCaption?: string; // Raw caption text for further parsing
 };
 
 const DEBUG = true;
@@ -32,13 +33,23 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
   let html = await fetchHtmlDesktop(url);
   d('html length', html.length);
 
-  // 0b) If this is TikTok and we didn’t see any obvious data,
+  // 0b) If this is TikTok and we didn't see any obvious data,
   //     try again with a **mobile** UA (TikTok sometimes hides desktop data).
   if (isTikTok(url) && !/\bSIGI_STATE\b|\bItemModule\b/i.test(html)) {
     d('retrying with MOBILE UA for TikTok…');
     const mobile = await fetchHtmlMobile(url);
     if (mobile && mobile.length > html.length * 0.5) html = mobile;
     d('mobile html length', mobile.length);
+  }
+
+  // 0c) If this is Instagram and we didn't see obvious data, try mobile UA
+  if (isInstagram(url) && !/\bwindow\._sharedData\b|\b"edge_media_to_caption"\b/i.test(html)) {
+    d('retrying with MOBILE UA for Instagram…');
+    const mobile = await fetchHtmlMobile(url);
+    if (mobile && mobile.length > html.length * 0.5) {
+      html = mobile;
+      d('mobile html length', mobile.length);
+    }
   }
 
   // 1) Blog structured data first (instant win when present)
@@ -97,9 +108,124 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
     }
   }
 
-  // 2) TikTok focused paths (videos AND photos)
+  // 2) Instagram focused paths (similar to TikTok - extract from server-side HTML)
+  if (isInstagram(url)) {
+    d('Instagram path - extracting from server-side HTML');
+    d('HTML preview (first 2000 chars):', html.slice(0, 2000));
+    d('Has _sharedData:', /\bwindow\._sharedData\b/i.test(html));
+    d('Has og:description:', !!pickMeta(html, 'og:description'));
+    d('Has JSON-LD:', /<script[^>]+type=["']application\/ld\+json["']/i.test(html));
+    
+    // 2a) Try window._sharedData (Instagram's embedded data)
+    const fromSharedData = extractInstagramFromSharedData(html);
+    if (fromSharedData) {
+      d('Instagram _sharedData found, length:', fromSharedData.length);
+      d('_sharedData preview:', fromSharedData.slice(0, 300));
+      const pick = smartExtractFromCaption(fromSharedData);
+      d('_sharedData parsed - ingredients:', pick.ingredients?.length || 0, 'steps:', pick.steps?.length || 0);
+      if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
+        return finalize(url, pick, html, 'instagram:shared-data');
+      }
+    } else {
+      d('Instagram _sharedData extraction returned null');
+    }
+
+    // 2b) Try JSON-LD (Instagram sometimes embeds caption here)
+    const fromJsonLd = parseJsonLdBestCaption(html);
+    if (fromJsonLd && fromJsonLd.length > 100) {
+      d('Instagram JSON-LD caption found, length:', fromJsonLd.length);
+      d('JSON-LD preview:', fromJsonLd.slice(0, 300));
+      const pick = smartExtractFromCaption(fromJsonLd);
+      d('JSON-LD parsed - ingredients:', pick.ingredients?.length || 0, 'steps:', pick.steps?.length || 0);
+      if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
+        return finalize(url, pick, html, 'instagram:json-ld');
+      }
+    } else {
+      d('Instagram JSON-LD extraction returned:', fromJsonLd ? `length ${fromJsonLd.length}` : 'null');
+    }
+
+    // 2c) Try OG/Twitter description (often contains full caption)
+    const fromMeta = pickMeta(html, 'og:description') || pickMeta(html, 'twitter:description');
+    if (fromMeta && fromMeta.length > 100) {
+      d('Instagram meta description found, length:', fromMeta.length);
+      d('Meta preview:', fromMeta.slice(0, 300));
+      const pick = smartExtractFromCaption(fromMeta);
+      d('Meta parsed - ingredients:', pick.ingredients?.length || 0, 'steps:', pick.steps?.length || 0);
+      if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
+        // Pass the raw meta description so it can be re-parsed more thoroughly
+        return finalize(url, pick, html, 'instagram:meta', fromMeta);
+      }
+    } else {
+      d('Instagram meta description:', fromMeta ? `length ${fromMeta.length}` : 'not found');
+    }
+
+    // 2d) Try visible HTML text (extract from page content)
+    const fromVisible = extractInstagramFromVisibleHtml(html);
+    if (fromVisible && fromVisible.length > 100) {
+      d('Instagram visible HTML found, length:', fromVisible.length);
+      d('Visible HTML preview:', fromVisible.slice(0, 300));
+      const pick = smartExtractFromCaption(fromVisible);
+      d('Visible HTML parsed - ingredients:', pick.ingredients?.length || 0, 'steps:', pick.steps?.length || 0);
+      if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
+        return finalize(url, pick, html, 'instagram:visible-html');
+      }
+    } else {
+      d('Instagram visible HTML extraction returned:', fromVisible ? `length ${fromVisible.length}` : 'null');
+    }
+
+    // 2e) Fuzzy search for "description"/"caption" keys in raw HTML/JS (like TikTok)
+    const fromDescKey = extractFromDescriptionKey(html);
+    if (fromDescKey) {
+      d('Instagram description key found, length:', fromDescKey.length);
+      d('Desc key preview:', fromDescKey.slice(0, 300));
+      const pick = smartExtractFromCaption(fromDescKey);
+      d('Desc key parsed - ingredients:', pick.ingredients?.length || 0, 'steps:', pick.steps?.length || 0);
+      if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
+        return finalize(url, pick, html, 'instagram:desc-key');
+      }
+    } else {
+      d('Instagram description key extraction returned null');
+    }
+
+    // 2f) Last resort: try to extract ANY text that looks like a recipe from the entire HTML
+    d('Instagram: Trying loose extraction from entire HTML...');
+    const visible = htmlToTextWithBreaks(html);
+    const loose = extractIngredientsAndStepsNearKeyword(visible);
+    d('Loose extraction - ingredients:', loose.ingredients.length, 'steps:', loose.steps.length);
+    if (loose.ingredients.length >= 2) {
+      return finalize(url, loose, html, 'instagram:loose-extraction');
+    }
+
+    // 2g) If we found ANY data from any source, return it even if it doesn't pass strict ingredient checks
+    // This is a last resort - Instagram might have the data but in a format we're not recognizing
+    const allAttempts = [
+      { data: fromSharedData, name: 'sharedData' },
+      { data: fromJsonLd, name: 'jsonLd' },
+      { data: fromMeta, name: 'meta' },
+      { data: fromVisible, name: 'visible' },
+      { data: fromDescKey, name: 'descKey' }
+    ].filter(a => a.data && a.data.length > 50);
+
+    if (allAttempts.length > 0) {
+      // Pick the longest one
+      allAttempts.sort((a, b) => (b.data?.length || 0) - (a.data?.length || 0));
+      const bestAttempt = allAttempts[0];
+      d('Instagram: Using best attempt from', bestAttempt.name, 'length:', bestAttempt.data?.length);
+      const pick = smartExtractFromCaption(bestAttempt.data!);
+      d('Best attempt parsed - ingredients:', pick.ingredients?.length || 0, 'steps:', pick.steps?.length || 0);
+      
+      // Return even if ingredients don't pass strict check, as long as we have something
+      if ((pick.ingredients && pick.ingredients.length > 0) || (pick.steps && pick.steps.length > 0)) {
+        return finalize(url, pick, html, `instagram:${bestAttempt.name}-fallback`);
+      }
+    }
+
+    d('Instagram: All extraction methods failed - no data found');
+  }
+
+  // 3) TikTok focused paths (videos AND photos)
   if (isTikTok(url)) {
-    // 2a) Server-rendered caption spans
+    // 3a) Server-rendered caption spans
     const fromCaptionSpans = extractTikTokCaptionFromDom(html);
     if (fromCaptionSpans) {
       const pick = smartExtractFromCaption(fromCaptionSpans);
@@ -108,7 +234,7 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
       }
     }
 
-    // 2b) ANY TikTok data JSON we can find (SIGI_STATE or friends)
+    // 3b) ANY TikTok data JSON we can find (SIGI_STATE or friends)
     const anyState = extractAnyTikTokDataJSON(html);
     const fromAny = captionFromAnyTikTokJSON(anyState);
     if (fromAny) {
@@ -118,7 +244,7 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
       }
     }
 
-    // 2c) Fuzzy search for "description"/"desc" keys in the raw HTML/JS
+    // 3c) Fuzzy search for "description"/"desc" keys in the raw HTML/JS
     const fromDescKey = extractFromDescriptionKey(html);
     if (fromDescKey) {
       const pick = smartExtractFromCaption(fromDescKey);
@@ -127,7 +253,7 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
       }
     }
 
-    // 2d) oEmbed fallback (TikTok API — returns caption as "title")
+    // 3d) oEmbed fallback (TikTok API — returns caption as "title")
     const oCap = await fetchTikTokOEmbedCaption(url);
     if (oCap) {
       const pick = smartExtractFromCaption(oCap);
@@ -137,33 +263,37 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
     }
   }
 
-  // 3) Generic JSON-LD caption (video/article/social posts)
-  const ldCaption = parseJsonLdBestCaption(html);
-  if (ldCaption) {
-    d('json-ld caption sample', ldCaption.slice(0, 120));
-    const pick = smartExtractFromCaption(ldCaption);
-    if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
-      return finalize(url, pick, html, 'json-ld:caption');
+  // 4) Generic JSON-LD caption (video/article/social posts) - skip if already tried for Instagram
+  if (!isInstagram(url)) {
+    const ldCaption = parseJsonLdBestCaption(html);
+    if (ldCaption) {
+      d('json-ld caption sample', ldCaption.slice(0, 120));
+      const pick = smartExtractFromCaption(ldCaption);
+      if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
+        return finalize(url, pick, html, 'json-ld:caption');
+      }
     }
   }
 
-  // 4) OG/Twitter description
-  const metaDesc = pickMeta(html, 'og:description') || pickMeta(html, 'twitter:description');
-  if (metaDesc) {
-    const pick = smartExtractFromCaption(metaDesc);
-    if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
-      return finalize(url, pick, html, 'og-description');
+  // 5) OG/Twitter description - skip if already tried for Instagram
+  if (!isInstagram(url)) {
+    const metaDesc = pickMeta(html, 'og:description') || pickMeta(html, 'twitter:description');
+    if (metaDesc) {
+      const pick = smartExtractFromCaption(metaDesc);
+      if (looksRealIngredients(pick.ingredients, { allowSoft: true })) {
+        return finalize(url, pick, html, 'og-description');
+      }
     }
   }
 
-  // 5) Visible “Ingredients:” ANYWHERE in the page text (loose)
+  // 6) Visible "Ingredients:" ANYWHERE in the page text (loose)
   const visible = htmlToTextWithBreaks(html);
   const loose = extractIngredientsAndStepsNearKeyword(visible);
   if (loose.ingredients.length >= 2) {
     return finalize(url, loose, html, 'visible-ingredients-loose');
   }
 
-  // 6) fallback basics
+  // 7) fallback basics
   const extracted = extractTitle(html, url);
   return finalize(url, fallbackPartial, html, "fallback");
 }
@@ -172,7 +302,7 @@ export async function fetchMeta(url: string): Promise<RecipeMeta> {
 
 type PartialPick = { title?: string; image?: string; ingredients?: string[]; steps?: string[] };
 
-function finalize(url: string, p: PartialPick, html: string, source: string): RecipeMeta {
+function finalize(url: string, p: PartialPick, html: string, source: string, rawCaption?: string): RecipeMeta {
   d('finalize from', source);
 
   // 1) robust title pass (JSON-LD/OG/Twitter/TikTok desc → cleaned)
@@ -182,6 +312,11 @@ function finalize(url: string, p: PartialPick, html: string, source: string): Re
 
   // 2) image from OG/Twitter (unless caller already sent one)
   const image = p.image || pickOgImage(html) || undefined;
+  if (image) {
+    d('finalize: image found:', image);
+  } else {
+    d('finalize: no image found in p.image or pickOgImage');
+  }
 
   // 3) ingredients → cleaned strings (UI will later parse into qty/unit)
   const rawIng = Array.isArray(p.ingredients) ? p.ingredients : [];
@@ -190,7 +325,22 @@ function finalize(url: string, p: PartialPick, html: string, source: string): Re
   // 4) steps → trimmed strings
   const steps = Array.isArray(p.steps) ? p.steps.map(s => String(s).trim()).filter(Boolean) : [];
 
-  return { url, title, image, ingredients: canonical, steps };
+  // 5) Decode HTML entities in raw caption if provided
+  let cleanedRawCaption = rawCaption;
+  if (cleanedRawCaption) {
+    cleanedRawCaption = decodeHtmlEntities(cleanedRawCaption);
+    // Remove Instagram boilerplate from the start - more aggressive pattern
+    // Pattern: "43K likes, 17 comments - username on date:"
+    cleanedRawCaption = cleanedRawCaption.replace(/^\s*\d+[KkMmBb]?\s+likes?,?\s*\d+\s+comments?\s*-\s*[^:]+(?:\s+on\s+[^:]+)?:\s*/i, "");
+    // Also handle patterns like "17 comments 8, July 2024 :"
+    cleanedRawCaption = cleanedRawCaption.replace(/^\s*\d+\s+comments?\s+\d+[,\s]+\w+\s+\d{4}\s*:\s*/i, "");
+    // Remove quoted wrapper if present (but keep the content)
+    cleanedRawCaption = cleanedRawCaption.replace(/^[""']\s*([^""']+)\s*[""']$/i, "$1");
+    // Remove leading/trailing whitespace
+    cleanedRawCaption = cleanedRawCaption.trim();
+  }
+
+  return { url, title, image, ingredients: canonical, steps, rawCaption: cleanedRawCaption };
 }
 
 function hasMeaningfulRecipeData(p: PartialPick): boolean {
@@ -351,6 +501,7 @@ function parseMicrodata(html: string): PartialPick | null {
 
 // If the link has tiktok.com/@ — it's TikTok!
 const isTikTok = (u: string) => /tiktok\.com\/@/i.test(u);
+const isInstagram = (u: string) => /instagram\.com\//i.test(u);
 
 // 1) Try to read the visible caption container (when server renders it)
 function extractTikTokCaptionFromDom(html: string): string | null {
@@ -805,7 +956,10 @@ function decodeHtmlEntities(s: string): string {
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
     .replace(/&nbsp;/gi, " ")
-    .replace(/&deg;/gi, "°");
+    .replace(/&deg;/gi, "°")
+    // Decode numeric HTML entities (decimal and hex)
+    .replace(/&#(\d+);/gi, (_, num) => String.fromCharCode(parseInt(num, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
 
 function captionFromAnyTikTokJSON(json: any): string | null {
@@ -925,6 +1079,144 @@ function extractFromDescriptionKey(html: string): string | null {
     if (sc > score) { score = sc; best = s; }
   }
   return best;
+}
+
+/* -------- Instagram extraction functions -------- */
+
+// Extract caption from window._sharedData (Instagram's embedded JSON)
+function extractInstagramFromSharedData(html: string): string | null {
+  try {
+    // Try to find window._sharedData = {...};
+    // Use brace counting to extract the full JSON object (similar to wprm_recipes)
+    const sharedPattern = /window\._sharedData\s*=\s*\{/;
+    const startMatch = html.match(sharedPattern);
+    
+    if (startMatch && startMatch.index !== undefined) {
+      const startPos = startMatch.index + startMatch[0].length - 1; // Position of the opening {
+      let braceCount = 0;
+      let inString = false;
+      let escapeNext = false;
+      
+      for (let i = startPos; i < html.length; i++) {
+        const char = html[i];
+        
+        if (escapeNext) {
+          escapeNext = false;
+          continue;
+        }
+        
+        if (char === '\\') {
+          escapeNext = true;
+          continue;
+        }
+        
+        if (char === '"' && !escapeNext) {
+          inString = !inString;
+          continue;
+        }
+        
+        if (inString) continue;
+        
+        if (char === '{') braceCount++;
+        if (char === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            const endPos = i + 1;
+            const jsonStr = html.substring(startPos, endPos).trim();
+            try {
+              const json = JSON.parse(jsonStr);
+              // Navigate to caption: entry_data.PostPage[0].graphql.shortcode_media.edge_media_to_caption.edges[0].node.text
+              const post = json?.entry_data?.PostPage?.[0]?.graphql?.shortcode_media;
+              if (post) {
+                const caption = post?.edge_media_to_caption?.edges?.[0]?.node?.text || 
+                               post?.caption || 
+                               '';
+                if (caption && typeof caption === 'string' && caption.length > 10) {
+                  return String(caption);
+                }
+              }
+            } catch (e) {
+              // Fall through
+            }
+            break;
+          }
+        }
+      }
+    }
+    
+    // Fallback: try simpler regex match (may not get full object but might work)
+    const simpleMatch = html.match(/window\._sharedData\s*=\s*(\{[\s\S]{0,50000}?\})\s*;?/);
+    if (simpleMatch?.[1]) {
+      try {
+        const json = JSON.parse(simpleMatch[1]);
+        const post = json?.entry_data?.PostPage?.[0]?.graphql?.shortcode_media;
+        if (post) {
+          const caption = post?.edge_media_to_caption?.edges?.[0]?.node?.text || 
+                         post?.caption || 
+                         '';
+          if (caption && typeof caption === 'string' && caption.length > 10) {
+            return String(caption);
+          }
+        }
+      } catch (e) {
+        // Fall through
+      }
+    }
+  } catch (e) {
+    // Fall through
+  }
+  
+  return null;
+}
+
+// Extract caption from visible HTML text (article, span elements, etc.)
+function extractInstagramFromVisibleHtml(html: string): string | null {
+  try {
+    // Remove script and style tags
+    const cleanHtml = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+    
+    // Try to find article or main content area
+    const articleMatch = cleanHtml.match(/<article[^>]*>([\s\S]{0,20000}?)<\/article>/i);
+    if (articleMatch) {
+      const articleContent = articleMatch[1];
+      // Look for span elements with dir="auto" (Instagram's caption containers)
+      const spanMatches = [...articleContent.matchAll(/<span[^>]*dir=["']auto["'][^>]*>([\s\S]*?)<\/span>/gi)];
+      if (spanMatches.length > 0) {
+        // Get the longest span (likely the caption)
+        const spans = spanMatches.map(m => {
+          const text = m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          return text;
+        }).filter(t => t.length > 50);
+        
+        if (spans.length > 0) {
+          spans.sort((a, b) => b.length - a.length);
+          return spans[0];
+        }
+      }
+      
+      // Fallback: extract all text from article
+      const articleText = articleContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (articleText.length > 100) {
+        return articleText;
+      }
+    }
+    
+    // Try h1 with dir="auto"
+    const h1Match = cleanHtml.match(/<h1[^>]*dir=["']auto["'][^>]*>([\s\S]*?)<\/h1>/i);
+    if (h1Match) {
+      const text = h1Match[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (text.length > 50) {
+        return text;
+      }
+    }
+  } catch (e) {
+    // Fall through
+  }
+  
+  return null;
 }
 
 /* -------- Generic JSON-LD caption finder (non-Recipe nodes) -------- */

@@ -37,6 +37,7 @@ import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Line, Circle } from "react-native-svg";
 import InstagramDomScraper from "@/components/InstagramDomScraper";
 import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata, extractRecipeFromHtml, discoverRecipeSiteIfNeeded } from "@/lib/recipeSiteHelpers";
+import { fetchMeta } from "@/lib/fetch_meta";
 import { parseSocialCaption } from "@/lib/parsers/instagram";
 import { dedupeNormalized } from "@/lib/parsers/types";
 import { extractTikTokTitleFromState } from "@/lib/extractTitle";
@@ -815,7 +816,18 @@ function findDishTitleFromText(source: string, url: string): string | null {
     }
 
     if (!ing && !steps) return { before, ing: "", steps: "" };
-    return { before: s.slice(0, Math.min(...[iIdx, sIdx].filter(x => x >= 0))).trim(), ing, steps };
+    
+    // Calculate before - everything before ingredients/steps, but stop at "Ingredients:" if it appears in the title area
+    const beforeEnd = Math.min(...[iIdx, sIdx].filter(x => x >= 0));
+    let beforeText = s.slice(0, beforeEnd).trim();
+    
+    // If "Ingredients:" appears in the before text, cut it off there (title shouldn't include ingredients)
+    const ingInBefore = beforeText.toLowerCase().search(/\bingredients?\s*:/);
+    if (ingInBefore >= 0) {
+      beforeText = beforeText.slice(0, ingInBefore).trim();
+    }
+    
+    return { before: beforeText, ing, steps };
   }
 
   // ≡ƒö¬ Turn "Ingredients 1 lb chicken 1 cup panko ..." into line items
@@ -1895,8 +1907,138 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
         if (siteType === "instagram") {
           dbg("[IG] Instagram path begins");
-          let igDom: any = null;
+          
+          let useWebViewScraper = true; // Flag to determine if we should use WebView scraper
+          
+          // FIRST: Try server-side HTML extraction (like TikTok) - this works even if Instagram redirects
           try {
+            bumpStage(1);
+            dbg("[IG] Attempting server-side HTML extraction via fetchMeta...");
+            const meta = await fetchMeta(url);
+            dbg("[IG] fetchMeta result:", {
+              hasTitle: !!meta.title,
+              ingredientsCount: meta.ingredients?.length || 0,
+              stepsCount: meta.steps?.length || 0,
+              hasImage: !!meta.image
+            });
+            
+            // If we got meaningful data from server-side extraction, use it!
+            if (meta.ingredients && meta.ingredients.length > 0) {
+              dbg("[IG] ✓ Server-side extraction successful! Using fetchMeta data.");
+              
+              // Clean the title - remove Instagram boilerplate
+              let cleanTitle = meta.title || "";
+              if (cleanTitle) {
+                // Remove "X likes, Y comments - username on date:" pattern
+                cleanTitle = cleanTitle.replace(/^\s*\d+[KkMm]?\s+likes?,?\s*\d+\s+comments?\s*-\s*[^:]+(?:\s+on\s+[^:]+)?:\s*/i, "");
+                // Remove quoted title wrapper if present
+                cleanTitle = cleanTitle.replace(/^[""']\s*([^""']+)\s*[""']$/i, "$1");
+                // Extract just the recipe name (before "Ingredients:" if present)
+                cleanTitle = cleanTitle.split(/\s+ingredients?\s*:/i)[0].trim();
+                if (cleanTitle && !isWeakTitle(cleanTitle)) {
+                  safeSetTitle(cleanTitle, url, title, dbg, "instagram:fetchMeta");
+                }
+              }
+              
+              // Parse the full recipe text - use rawCaption if available, otherwise combine ingredients and steps
+              // The rawCaption should contain the full recipe text from the meta description
+              let fullRecipeText = meta.rawCaption;
+              dbg("[IG] rawCaption available:", !!meta.rawCaption, "length:", meta.rawCaption?.length || 0);
+              if (!fullRecipeText || fullRecipeText.length < 200) {
+                dbg("[IG] rawCaption too short or missing, reconstructing from ingredients/steps");
+                // Fallback: try to reconstruct from ingredients and steps
+                fullRecipeText = meta.ingredients.join("\n") + "\n\n" + (meta.steps?.join("\n") || "");
+              }
+              
+              // Ensure HTML entities are fully decoded (rawCaption should already be decoded, but double-check)
+              // Replace emoji number patterns like "1&#xfe0f;&#x20e3;" with just "1. "
+              fullRecipeText = fullRecipeText.replace(/(\d+)&#xfe0f;&#x20e3;/g, "$1. ");
+              // Decode any remaining numeric entities
+              fullRecipeText = fullRecipeText.replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num, 10)));
+              fullRecipeText = fullRecipeText.replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+              
+              dbg("[IG] Final recipe text length:", fullRecipeText.length);
+              dbg("[IG] Final recipe text preview (first 500 chars):", fullRecipeText.slice(0, 500));
+              const parsed = parseRecipeText(fullRecipeText);
+              dbg("[IG] Parsed result - ingredients:", parsed.ingredients.length, "sections:", parsed.ingredientSections?.length || 0, "steps:", parsed.steps.length);
+              
+              if (parsed.ingredients.length > 0) {
+                setIngredients(parsed.ingredients);
+                if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
+                  setIngredientSections(parsed.ingredientSections);
+                } else {
+                  setIngredientSections(null);
+                }
+              }
+              
+              // Set steps - prefer parsed steps, fallback to meta.steps
+              // Note: steps state is string[], not objects
+              if (parsed.steps && parsed.steps.length > 0) {
+                dbg("[IG] Using parsed steps:", parsed.steps.length);
+                dbg("[IG] First 3 parsed steps:", parsed.steps.slice(0, 3));
+                const stepStrings = parsed.steps
+                  .filter(s => s && s.trim().length > 0)
+                  .map((s: string) => s.trim());
+                if (stepStrings.length > 0) {
+                  setSteps(stepStrings);
+                  dbg("[IG] Set", stepStrings.length, "steps");
+                } else {
+                  dbg("[IG] All parsed steps were empty after filtering");
+                }
+              } else if (meta.steps && meta.steps.length > 0) {
+                dbg("[IG] Using meta.steps as fallback:", meta.steps.length);
+                dbg("[IG] First 3 meta steps:", meta.steps.slice(0, 3));
+                const stepStrings = meta.steps
+                  .filter(s => s && s.trim().length > 0)
+                  .map((s: string) => s.trim());
+                if (stepStrings.length > 0) {
+                  setSteps(stepStrings);
+                  dbg("[IG] Set", stepStrings.length, "steps from meta");
+                } else {
+                  dbg("[IG] All meta steps were empty after filtering");
+                }
+              } else {
+                dbg("[IG] No steps found in parsed or meta");
+                dbg("[IG] parsed.steps:", parsed.steps?.length || 0, "meta.steps:", meta.steps?.length || 0);
+              }
+              
+              // Set image - try meta.image first, then fetch OG image
+              // Decode HTML entities in image URL (e.g., &amp; -> &)
+              if (meta.image) {
+                let imageUrl = meta.image;
+                // Decode HTML entities in the URL
+                imageUrl = imageUrl.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+                dbg("[IG] Setting image from meta.image (decoded):", imageUrl);
+                setImg({ kind: "url-og", url, resolvedImageUrl: imageUrl });
+              } else {
+                dbg("[IG] No image in meta, attempting to fetch OG image...");
+                try {
+                  const og = await fetchOgForUrl(url);
+                  if (og?.image) {
+                    dbg("[IG] Setting image from OG fetch:", og.image);
+                    setImg({ kind: "url-og", url, resolvedImageUrl: og.image });
+                  } else {
+                    dbg("[IG] No OG image found");
+                  }
+                } catch (imgErr: any) {
+                  dbg("[IG] Failed to fetch OG image:", safeErr(imgErr));
+                }
+              }
+              
+              gotSomethingForRunRef.current = true;
+              useWebViewScraper = false; // Skip WebView scraper
+            } else {
+              dbg("[IG] Server-side extraction found no ingredients, falling back to WebView scraper...");
+            }
+          } catch (metaErr: any) {
+            dbg("[IG] Server-side extraction failed:", safeErr(metaErr));
+            dbg("[IG] Falling back to WebView scraper...");
+          }
+          
+          // FALLBACK: Use WebView scraper (may fail due to redirects) - only if server-side extraction didn't work
+          if (useWebViewScraper) {
+            let igDom: any = null;
+            try {
             bumpStage(1);
             igDom = await scrapeInstagramDom(url);
             
@@ -2122,6 +2264,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           } catch (err) {
             dbg("[IG] Instagram scraper failed:", safeErr(err));
           }
+          } // End of useWebViewScraper conditional
 
           // STEP 4: OG metadata fallback
           if (!gotSomethingForRunRef.current) {
@@ -2337,11 +2480,19 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const dishTitleFromCaption = findDishTitleFromText(cap, url);
             // Only set title from caption if it's not junk and we don't already have a good title
             if (dishTitleFromCaption && !isTikTokJunkTitle(dishTitleFromCaption)) {
-              safeSetTitle(dishTitleFromCaption, url, title, dbg, "tiktok:caption-dish");
+              // Make sure title doesn't include ingredients
+              const cleanTitle = dishTitleFromCaption.split(/\bingredients?\s*:/i)[0].trim();
+              if (cleanTitle && !isTikTokJunkTitle(cleanTitle)) {
+                safeSetTitle(cleanTitle, url, title, dbg, "tiktok:caption-dish");
+              }
             }
             const captionFallbackTitle = normalizeDishTitle(cleanTitle(captionToNiceTitle(cap), url));
             if (captionFallbackTitle) {
-              safeSetTitle(captionFallbackTitle, url, title, dbg, "tiktok:caption-fallback");
+              // Make sure title doesn't include ingredients
+              const cleanFallback = captionFallbackTitle.split(/\bingredients?\s*:/i)[0].trim();
+              if (cleanFallback && !isTikTokJunkTitle(cleanFallback)) {
+                safeSetTitle(cleanFallback, url, title, dbg, "tiktok:caption-fallback");
+              }
             }
 
             // A) build clean recipe text from CAPTION
@@ -2769,7 +2920,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           <TextInput value={title} onChangeText={setTitle} placeholder="My Tasty Pizza" placeholderTextColor={COLORS.subtext} style={{ color: COLORS.text, backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, marginBottom: 12, fontSize: 16 }} />
 
           <View style={{ backgroundColor: COLORS.card, borderRadius: 14, borderColor: COLORS.border, borderWidth: 1, padding: 12, marginBottom: 12 }}>
-            <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Import from a link (YouTube/TikTok/blog)...</Text>
+            <Text style={{ color: COLORS.subtext, marginBottom: 6 }}>Import from a link (TikTok, Instagram, blog)...</Text>
             <View style={{ flexDirection: "row", alignItems: "center" }}>
               <TextInput
                 value={pastedUrl}

@@ -462,10 +462,30 @@ export default function TikTokSnap({
       clearTimeout(finalHide);
       if (attemptIdRef.current !== thisAttempt) { setIsCapturing(false); return; }
       try {
+        // For full snapshots, ensure we're at the top of the page and images are visible
+        if (fullSnapshot && webRef.current) {
+          webRef.current.injectJavaScript(`
+            (function() {
+              window.scrollTo(0, 0);
+              // Ensure images are visible
+              var images = document.querySelectorAll('img');
+              for (var i = 0; i < images.length; i++) {
+                var img = images[i];
+                if (img.style.display === 'none') img.style.display = '';
+                if (img.style.visibility === 'hidden') img.style.visibility = 'visible';
+                if (img.style.opacity === '0') img.style.opacity = '1';
+              }
+              return true;
+            })();
+          `);
+          // Small delay to let scroll and image visibility changes take effect
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
         const uri = await captureRef(shotRef, { format: "jpg", quality: 0.92, result: "tmpfile" });
         if (!sentForAttemptRef.current) { sentForAttemptRef.current = true; onFound(uri); }
       } catch {} finally { setIsCapturing(false); }
-    }, fullSnapshot ? 300 : 150); // Longer delay for full snapshot to ensure play buttons are hidden
+    }, fullSnapshot ? 600 : 150); // Reduced delay - capture before page changes too much
     return () => {
       clearTimeout(t);
       clearTimeout(finalHide);
