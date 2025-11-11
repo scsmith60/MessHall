@@ -275,13 +275,108 @@ function extractContinuationPrefix(line: string): { prefix: string; rest: string
 }
 
 function splitRunOnIngredients(line: string): string[] {
-  const protectedLine = protectMixedNumbers(line);
+  // First, split on bullet points if there are multiple ingredients on one line
+  // e.g., "tarch • 1 egg yolk • 1 tsp vanilla bean paste" should split into 3 ingredients
+  // But only if there are multiple quantities (numbers) - don't split if it's just one ingredient with notes
+  const bulletParts = line.split(/\s*[•]\s+/).map(s => s.trim()).filter(Boolean);
+  
+  // If we have multiple parts separated by bullets AND they each look like separate ingredients (have quantities),
+  // split them. Otherwise, treat as one ingredient with bullet-separated notes.
+  const hasMultipleQuantities = bulletParts.filter(p => {
+    const qtyMatch = p.match(/^(\d+(?:\s+\d+\/\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)/);
+    return qtyMatch !== null;
+  }).length;
+  
+  // If we have 2+ parts with quantities, split them
+  if (bulletParts.length > 1 && hasMultipleQuantities >= 2) {
+    const allParts: string[] = [];
+    for (const part of bulletParts) {
+      // Recursively split each part (in case it has other separators)
+      allParts.push(...splitRunOnIngredients(part));
+    }
+    return allParts;
+  }
+  
+  // Protect "OR" statements - don't split on them
+  // Replace " OR " with a placeholder, split, then restore
+  const OR_PLACEHOLDER = "@@OR@@";
+  const hasOr = /\b(or|OR)\b/i.test(line);
+  let protectedLine = protectMixedNumbers(line);
+  
+  if (hasOr) {
+    // Protect OR statements by replacing them with a placeholder
+    // Match patterns like "X OR Y" or "X, OR Y" or "X; OR Y" or "X (or Y)"
+    protectedLine = protectedLine.replace(/\s+(or|OR)\s+/gi, ` ${OR_PLACEHOLDER} `);
+    // Also handle parenthetical OR: "(or" -> "(OR_PLACEHOLDER"
+    protectedLine = protectedLine.replace(/\(\s*(or|OR)\s+/gi, `(${OR_PLACEHOLDER} `);
+  }
+  
   let parts: string[] = [protectedLine];
-  parts = parts.flatMap(p => p.split(ALT_ING_SPLIT)).map(s => s.trim()).filter(Boolean);
-  parts = parts.flatMap(p => p.split(AND_QTY_SPLIT)).map(s => s.trim()).filter(Boolean);
-  parts = parts.flatMap(p => p.split(INTERNAL_QTY_SPLIT)).map(s => s.trim()).filter(Boolean);
-  parts = parts.flatMap(p => p.split(PUNCT_THEN_CAP_SPLIT)).map(s => s.trim()).filter(Boolean);
-  return parts.map(restoreMixedNumbers);
+  
+  // Split on patterns, but be careful not to split OR statements
+  parts = parts.flatMap(p => {
+    // If this part contains OR placeholder, don't split it further
+    if (p.includes(OR_PLACEHOLDER)) {
+      return [p];
+    }
+    return p.split(ALT_ING_SPLIT);
+  }).map(s => s.trim()).filter(Boolean);
+  
+  parts = parts.flatMap(p => {
+    if (p.includes(OR_PLACEHOLDER)) {
+      return [p];
+    }
+    return p.split(AND_QTY_SPLIT);
+  }).map(s => s.trim()).filter(Boolean);
+  
+  parts = parts.flatMap(p => {
+    if (p.includes(OR_PLACEHOLDER)) {
+      return [p];
+    }
+    return p.split(INTERNAL_QTY_SPLIT);
+  }).map(s => s.trim()).filter(Boolean);
+  
+  parts = parts.flatMap(p => {
+    if (p.includes(OR_PLACEHOLDER)) {
+      return [p];
+    }
+    return p.split(PUNCT_THEN_CAP_SPLIT);
+  }).map(s => s.trim()).filter(Boolean);
+  
+  // Restore OR statements and mixed numbers
+  return parts.map(p => restoreMixedNumbers(p.replace(new RegExp(OR_PLACEHOLDER, "g"), " or ")));
+}
+
+// ---------- merge parenthetical OR statements split across lines ----------
+function mergeParentheticalOrLines(lines: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const cur = (lines[i] ?? "").trim();
+    const next = (lines[i + 1] ?? "").trim();
+    
+    // Check if current line has an opening parenthesis with "or" but no closing parenthesis
+    // e.g., "vanilla bean paste (or" or "1 tbsp vanilla bean paste (or •"
+    // Handle bullet points and other trailing characters - match "(or" or "(or •" at end
+    const hasOpenParenWithOr = /\([^)]*\b(or|OR)\s*[•\s]*$/i.test(cur);
+    
+    // Also check for cases where line ends with just "(or" (no text after)
+    const endsWithOpenParenOr = /\(\s*(or|OR)\s*[•\s]*$/i.test(cur);
+    
+    // Check if next line starts with something that could complete the parenthetical
+    // e.g., "2 tsp vanilla extract)" or "• 2 tsp vanilla extract)" or "7. 2 tsp vanilla extract)"
+    if ((hasOpenParenWithOr || endsWithOpenParenOr) && next) {
+      // Remove leading number/bullet from next line if present (e.g., "7. " or "• ")
+      const nextCleaned = next.replace(/^\d+\.\s*/, "").replace(/^[•\s]+/, "").trim();
+      // Remove trailing bullet from current line if present
+      const curCleaned = cur.replace(/[•\s]*$/, "").trim();
+      out.push(tidySpaces(`${curCleaned} ${nextCleaned}`));
+      i++; // skip next line since we merged it
+      continue;
+    }
+    
+    out.push(lines[i]);
+  }
+  return out;
 }
 
 // ---------- early glue of bare numbers with next line (ingredients area) ----------
@@ -292,7 +387,11 @@ function mergeOrphanQuantityLines(lines: string[]): string[] {
   for (let i = 0; i < lines.length; i++) {
     const cur = (lines[i] ?? "").trim();
     const next = (lines[i + 1] ?? "").trim();
-    if (cur && (BARE_WHOLE.test(cur) || BARE_QTY.test(cur)) && next) {
+    // Don't merge if current line ends with "OR" or next line starts with "OR"
+    // This prevents merging "vanilla extract) • 2" with the next line when it should stay with "vanilla bean paste OR"
+    const curEndsWithOr = /\b(or|OR)\s*[•)\]]?\s*$/i.test(cur);
+    const nextStartsWithOr = /^\s*[•(\[]?\s*(or|OR)\b/i.test(next);
+    if (cur && (BARE_WHOLE.test(cur) || BARE_QTY.test(cur)) && next && !curEndsWithOr && !nextStartsWithOr) {
       out.push(tidySpaces(`${cur} ${next}`)); i++; continue;
     }
     out.push(lines[i]);
@@ -306,7 +405,11 @@ function finalFixOrphanNumberIngredients(items: string[]): string[] {
   for (let i = 0; i < items.length; i++) {
     const cur = (items[i] ?? "").trim();
     const next = (items[i + 1] ?? "").trim();
-    if (cur && /^\d+$/.test(cur) && next) {
+    // Don't merge if current line ends with "OR" or next line starts with "OR"
+    // This prevents merging orphan numbers with OR statements
+    const curEndsWithOr = /\b(or|OR)\s*[•)\]]?\s*$/i.test(cur);
+    const nextStartsWithOr = /^\s*[•(\[]?\s*(or|OR)\b/i.test(next);
+    if (cur && /^\d+$/.test(cur) && next && !curEndsWithOr && !nextStartsWithOr) {
       out.push(tidySpaces(`${cur} ${next}`));
       i++; // skip the next one because we merged it
     } else {
@@ -403,6 +506,10 @@ export function parseRecipeText(input: string): ParseResult {
 
   // early glue like "1" newline "cup sugar"
   ingLinesRaw = mergeOrphanQuantityLines(ingLinesRaw);
+  
+  // Merge lines where parenthetical OR statements are split across lines
+  // e.g., "vanilla bean paste (or" on one line and "2 tsp vanilla extract)" on next
+  ingLinesRaw = mergeParentheticalOrLines(ingLinesRaw);
 
   // ✅ sanitizer bath (fixes headers, /2 → 1/2, bullets/dashes, etc.)
   const sanitizedPieces = sanitizeAndSplitIngredientCandidates(ingLinesRaw);

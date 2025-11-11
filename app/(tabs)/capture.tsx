@@ -30,6 +30,7 @@ import { recognizeImageText } from "@/lib/ocr";
 
 import TikTokSnap from "@/lib/tiktok";
 import TTDomScraper from "@/components/TTDomScraper";
+import ImageFocalPointEditor from "@/components/ImageFocalPointEditor";
 
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -1287,6 +1288,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
   const [snapFocusY, setSnapFocusY] = useState(FOCUS_Y_DEFAULT);
   const [snapZoom, setSnapZoom] = useState(1.4);
+  const [focalPointEditorVisible, setFocalPointEditorVisible] = useState(false);
+  const [focalPointEditorImageUri, setFocalPointEditorImageUri] = useState<string>("");
 
   const [pendingImportUrl, setPendingImportUrl] = useState<string | null>(null);
   const [abortVisible, setAbortVisible] = useState(false);
@@ -1369,6 +1372,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
     setTikTokShots([]);
     setAbortVisible(false);
     setStageIndex(0);
+    // Reset snapshot and focal point editor states
+    setSnapVisible(false);
+    setFocalPointEditorVisible(false);
+    setFocalPointEditorImageUri("");
+    // Reset snap keys to allow fresh snapshot
+    setSnapReloadKey((k) => k + 1);
+    setSnapResnapKey(0);
   }, []);
 
   useEffect(() => {
@@ -1687,7 +1697,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
   // ----------------- THE BOSS: unified import -----------------
   const startImport = useCallback(async (url: string) => {
     const runId = ++importRunIdRef.current;
-    gotSomethingForRunRef.current = false;
+    // Preserve existing image state - only reset if we don't have one
+    const hadExistingImage = img.kind !== "none";
+    if (!hadExistingImage) {
+      gotSomethingForRunRef.current = false;
+    }
 
     const watchdog = setTimeout(() => {
       if (importRunIdRef.current !== runId) return;
@@ -2321,7 +2335,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
       } catch (e: any) {
         const msg = safeErr(e);
         dbg("Γ¥î Import error:", msg);
-        if (!gotSomethingForRunRef.current) setImg({ kind: "none" });
+        // Only clear image if we got nothing in this run AND there was no existing image
+        // This preserves the image from a previous successful import when re-importing
+        if (!gotSomethingForRunRef.current && !hadExistingImage) {
+          setImg({ kind: "none" });
+        }
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         setNotice({ visible: true, title: "Mission Aborted", message: msg || "Could not read that webpage." });
       } finally {
@@ -2334,14 +2352,21 @@ function stitchBrokenSteps(lines: string[]): string[] {
         setHudVisible(false);
         setSnapVisible(false);
       }
-  }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport]);
+  }, [title, autoSnapTikTok, scrapeTikTokDom, tryImageUrl, ingredients, steps, dbg, safeErr, bumpStage, hardResetImport, img]);
 
   // -------------- import button flow --------------
   const resolveOg = useCallback(async () => {
+    // Store existing image state before resetting
+    const hadImage = img.kind !== "none";
+    const existingImage = hadImage ? img : null;
+    
+    // Reset all import-related state including snapshot and editor
     hardResetImport();
+    
     const candidateInput = (pastedUrl?.trim() || "") || (sharedRaw?.trim() || "");
     const url = extractFirstUrl(candidateInput);
     if (!url || !/^https?:\/\//i.test(url)) {
+      // Only reset image if URL is invalid
       setImg({ kind: "none" });
       return setNotice({ visible: true, title: "Mission Aborted", message: "Must paste a full link that starts with http(s)://" });
     }
@@ -2352,12 +2377,17 @@ function stitchBrokenSteps(lines: string[]): string[] {
       setTimeout(() => setAbortVisible(false), 1700);
       return;
     }
+    // Restore existing image temporarily - it will be replaced when new import succeeds
+    // This prevents the image from disappearing during re-import
+    if (existingImage) {
+      setImg(existingImage);
+    }
     setStageIndex(0);
     setHudPhase("scanning");
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setHudVisible(true);
     setPendingImportUrl(url);
-  }, [pastedUrl, sharedRaw, hardResetImport]);
+  }, [pastedUrl, sharedRaw, hardResetImport, img]);
 
   const onPaste = useCallback(async () => {
     const t = await Clipboard.getStringAsync();
@@ -2617,6 +2647,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           focusY={snapFocusY}
           focusCenter={0.2}
           captureDelayMs={CAPTURE_DELAY_MS}
+          fullSnapshot={true}
           onCancel={() => {
             snapCancelledRef.current = true;
             setSnapVisible(false);
@@ -2637,11 +2668,44 @@ function stitchBrokenSteps(lines: string[]): string[] {
               }
             } catch {}
 
+            // In full snapshot mode, show the focal point editor instead of directly setting preview
             const fixed = await validateOrRepairLocal(uri);
-            if (fixed) setGoodPreview(fixed, lastResolvedUrlRef.current);
-            else {
+            if (fixed) {
+              // Show the editor so user can adjust focal point
+              setFocalPointEditorImageUri(fixed);
+              setFocalPointEditorVisible(true);
+              setSnapVisible(false); // Hide the snapshot modal
+            } else {
               const test = await isValidCandidate(uri);
-              if (test.ok && test.useUri) setGoodPreview(test.useUri, lastResolvedUrlRef.current);
+              if (test.ok && test.useUri) {
+                setFocalPointEditorImageUri(test.useUri);
+                setFocalPointEditorVisible(true);
+                setSnapVisible(false);
+              }
+            }
+          }}
+        />
+
+        {/* Focal Point Editor - allows user to adjust the captured image */}
+        <ImageFocalPointEditor
+          visible={focalPointEditorVisible}
+          imageUri={focalPointEditorImageUri}
+          onCancel={() => {
+            setFocalPointEditorVisible(false);
+            setFocalPointEditorImageUri("");
+          }}
+          onConfirm={async (croppedUri) => {
+            setFocalPointEditorVisible(false);
+            setFocalPointEditorImageUri("");
+            // Use the cropped image as the preview
+            const fixed = await validateOrRepairLocal(croppedUri);
+            if (fixed) {
+              setGoodPreview(fixed, lastResolvedUrlRef.current);
+            } else {
+              const test = await isValidCandidate(croppedUri);
+              if (test.ok && test.useUri) {
+                setGoodPreview(test.useUri, lastResolvedUrlRef.current);
+              }
             }
           }}
         />

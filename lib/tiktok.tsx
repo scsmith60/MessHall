@@ -25,6 +25,7 @@ type TikTokSnapProps = {
   focusY?: number;             // 0..1 = where on the page we want to look
   focusCenter?: number;        // 0..1 = target spot inside viewport (0=top, 0.5=center)
   captureDelayMs?: number;     // wait INSIDE the page before each snap
+  fullSnapshot?: boolean;      // if true, take full snapshot without zoom/focus adjustments
   onCancel: () => void;
   onFound: (uri: string) => void; // tmpfile:// screenshot path
 };
@@ -65,12 +66,14 @@ export default function TikTokSnap({
   focusY,
   focusCenter = 0.45,     // keep target a bit above center (reads nicer)
   captureDelayMs = 700,
+  fullSnapshot = false,   // if true, skip zoom/focus and take full page snapshot
   onCancel,
   onFound,
 }: TikTokSnapProps) {
-  // clamp values safely
-  const fy = Math.min(1, Math.max(0, focusY ?? 0.60));
-  const fc = Math.min(1, Math.max(0, focusCenter));
+  // clamp values safely (but ignore if fullSnapshot mode)
+  const fy = fullSnapshot ? 0 : Math.min(1, Math.max(0, focusY ?? 0.60));
+  const fc = fullSnapshot ? 0 : Math.min(1, Math.max(0, focusCenter));
+  const effectiveZoom = fullSnapshot ? 1.0 : zoom;
 
   // refs to things we touch
   const shotRef = useRef<View>(null);    // the box we screenshot
@@ -151,6 +154,7 @@ export default function TikTokSnap({
   /* ----------------------- injected script (once per load) ------------------ */
   const injectedJavaScript = useMemo(() => {
     const safeDelay = Math.max(0, Math.floor(captureDelayMs));
+    const hideTimeout = fullSnapshot ? 8000 : 5000;
     return `
       (function () {
         function post(type, payload){ try{ window.ReactNativeWebView.postMessage(JSON.stringify({type, payload})); }catch(e){} }
@@ -163,24 +167,38 @@ export default function TikTokSnap({
             if (!document.getElementById(styleId)) {
               var style = document.createElement('style');
               style.id = styleId;
-              style.textContent = '[data-e2e="browse-play-button"], [data-e2e="video-play-button"], .play-button, .video-play-button, button[aria-label*="Play" i], button[aria-label*="play" i], [class*="PlayButton"], [class*="play-button"], svg[class*="play"], svg path[d*="M8"], svg path[d*="m8"], [class*="icon"][class*="play"], div[style*="triangle"] { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; width: 0 !important; height: 0 !important; }';
+              // More aggressive selectors for TikTok play buttons and triangles
+              style.textContent = '[data-e2e="browse-play-button"], [data-e2e="video-play-button"], [data-e2e*="play"], .play-button, .video-play-button, button[aria-label*="Play" i], button[aria-label*="play" i], [class*="PlayButton"], [class*="play-button"], [class*="Play"], [class*="play"], svg[class*="play"], svg path[d*="M8"], svg path[d*="m8"], svg path[d*="M 8"], svg path[d*="m 8"], svg[viewBox*="24"][viewBox*="24"], [class*="icon"][class*="play"], div[style*="triangle"], [role="button"][aria-label*="play" i], [role="button"][aria-label*="Play" i], button svg, [class*="VideoPlayer"] button, [class*="video-player"] button, [class*="VideoContainer"] button, [class*="video-container"] button, svg[width="24"][height="24"], svg[width="48"][height="48"], path[d*="M12"][d*="L20"], path[d*="m12"][d*="l20"] { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; width: 0 !important; height: 0 !important; position: absolute !important; left: -9999px !important; }';
               if (document.head) document.head.appendChild(style);
               else document.documentElement.appendChild(style);
             }
             
-            // Also directly hide elements
+            // Also directly hide elements - expanded selectors
             var selectors = [
               '[data-e2e="browse-play-button"]',
               '[data-e2e="video-play-button"]',
+              '[data-e2e*="play"]',
               '.play-button',
               '.video-play-button',
               'button[aria-label*="Play" i]',
               'button[aria-label*="play" i]',
               '[class*="PlayButton"]',
               '[class*="play-button"]',
+              '[class*="Play"]',
+              '[class*="play"]',
               'svg[class*="play"]',
               'svg path[d*="M8"]',
-              'svg path[d*="m8"]'
+              'svg path[d*="m8"]',
+              'svg path[d*="M 8"]',
+              'svg path[d*="m 8"]',
+              'svg[viewBox*="24"]',
+              '[role="button"][aria-label*="play" i]',
+              '[role="button"][aria-label*="Play" i]',
+              'button svg',
+              '[class*="VideoPlayer"] button',
+              '[class*="video-player"] button',
+              '[class*="VideoContainer"] button',
+              '[class*="video-container"] button'
             ];
             selectors.forEach(function(sel) {
               try {
@@ -213,24 +231,63 @@ export default function TikTokSnap({
               try{ var v=document.querySelector('video'); if(v && !v.paused) v.pause(); }catch(e){}
               // Aggressively hide play buttons before screenshot
               hidePlayButtons();
-              // Also hide by direct selector matching
+              // Also hide by direct selector matching - more aggressive
               try {
-                var allButtons = document.querySelectorAll('button, [role="button"], svg, div[class*="play"], div[class*="Play"]');
+                // Target all potential play button containers
+                var allButtons = document.querySelectorAll('button, [role="button"], svg, div[class*="play"], div[class*="Play"], [class*="VideoPlayer"], [class*="video-player"]');
                 for (var i = 0; i < allButtons.length; i++) {
                   var el = allButtons[i];
                   var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
                   var classes = (el.className || '').toLowerCase();
-                  if (text.includes('play') || classes.includes('play') || classes.includes('button')) {
+                  var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                  
+                  // Check if it's a play button by various criteria
+                  var isPlayButton = text.includes('play') || 
+                                     classes.includes('play') || 
+                                     classes.includes('button') ||
+                                     ariaLabel.includes('play') ||
+                                     (el.tagName === 'SVG' && (classes.includes('icon') || el.querySelector('path[d*="M8"]') || el.querySelector('path[d*="m8"]'))) ||
+                                     (el.tagName === 'BUTTON' && el.querySelector('svg'));
+                  
+                  if (isPlayButton) {
                     var style = window.getComputedStyle(el);
-                    if (style.cursor === 'pointer' || el.tagName === 'BUTTON' || el.tagName === 'SVG') {
+                    if (style.cursor === 'pointer' || el.tagName === 'BUTTON' || el.tagName === 'SVG' || el.querySelector('svg')) {
                       el.style.setProperty('display', 'none', 'important');
                       el.style.setProperty('visibility', 'hidden', 'important');
                       el.style.setProperty('opacity', '0', 'important');
+                      el.style.setProperty('width', '0', 'important');
+                      el.style.setProperty('height', '0', 'important');
+                      el.style.setProperty('position', 'absolute', 'important');
+                      el.style.setProperty('left', '-9999px', 'important');
+                    }
+                  }
+                }
+                
+                // Also target SVG paths that look like play triangles
+                var svgPaths = document.querySelectorAll('svg path');
+                for (var j = 0; j < svgPaths.length; j++) {
+                  var path = svgPaths[j];
+                  var pathData = (path.getAttribute('d') || '').toLowerCase();
+                  // Common play triangle path patterns: M8, M 8, m8, m 8, or paths with L20 (triangle shape)
+                  if (pathData.includes('m8') || pathData.includes('m 8') || 
+                      (pathData.includes('m12') && pathData.includes('l20')) ||
+                      (pathData.includes('m 12') && pathData.includes('l 20'))) {
+                    var parentSvg = path.closest('svg');
+                    if (parentSvg) {
+                      parentSvg.style.setProperty('display', 'none', 'important');
+                      parentSvg.style.setProperty('visibility', 'hidden', 'important');
+                      parentSvg.style.setProperty('opacity', '0', 'important');
                     }
                   }
                 }
               } catch(e) {}
-              setTimeout(function(){ post('waitDone'); }, ${safeDelay});
+              // Final aggressive pass right before delay
+              hidePlayButtons();
+              setTimeout(function(){ 
+                // One more pass just before we signal ready
+                hidePlayButtons();
+                post('waitDone'); 
+              }, ${safeDelay});
             });
           });
         }
@@ -247,26 +304,29 @@ export default function TikTokSnap({
         if (document.readyState === 'complete') { post('load'); twoFramesThenDelay(); }
         else { window.addEventListener('load', function(){ post('load'); twoFramesThenDelay(); }, {once:true}); }
         
-        // Hide play buttons periodically in case they re-appear (but stop after 5 seconds)
-        var hideInterval = setInterval(hidePlayButtons, 200);
-        setTimeout(function() { clearInterval(hideInterval); }, 5000);
+        // Hide play buttons periodically in case they re-appear (but stop after 8 seconds for full snapshot)
+        var hideInterval = setInterval(hidePlayButtons, 150);
+        var hideTimeout = ${hideTimeout};
+        setTimeout(function() { clearInterval(hideInterval); }, hideTimeout);
+        
+        // Use MutationObserver to catch play buttons that appear dynamically
+        var observer = new MutationObserver(function(mutations) {
+          hidePlayButtons();
+        });
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['class', 'style', 'data-e2e']
+        });
+        setTimeout(function() { observer.disconnect(); }, hideTimeout);
 
-        // initial scroll (with hard clamps)
-        try {
-          var H = Math.max(1, document.documentElement.scrollHeight);
-          var V = Math.max(1, window.innerHeight);
-          var f = ${fy};
-          var c = ${fc};
-          var t = (H * f) - (V * c);
-          if (t < 0) t = 0;
-          var max = Math.max(0, H - V);
-          if (t > max) t = max;
-          window.scrollTo(0, t);
-        } catch(e){}
+        // initial scroll (with hard clamps) - skip if fullSnapshot
+        ${fullSnapshot ? '' : 'try { var H = Math.max(1, document.documentElement.scrollHeight); var V = Math.max(1, window.innerHeight); var f = ' + fy + '; var c = ' + fc + '; var t = (H * f) - (V * c); if (t < 0) t = 0; var max = Math.max(0, H - V); if (t > max) t = max; window.scrollTo(0, t); } catch(e){}'}
       })();
       true;
     `;
-  }, [captureDelayMs, fy, fc]);
+  }, [captureDelayMs, fy, fc, fullSnapshot]);
 
   /* ----------------------- first attempt: HARD reload ----------------------- */
   useEffect(() => {
@@ -301,13 +361,29 @@ export default function TikTokSnap({
 
     const thisAttempt = attemptIdRef.current;
     setIsCapturing(true);
-    // Hide play button right before capture
+    // Hide play button right before capture - enhanced
     try {
       if (webRef.current) {
         webRef.current.injectJavaScript(`
           (function() {
             try {
-              var selectors = ['[data-e2e="browse-play-button"]', '[data-e2e="video-play-button"]', '.play-button', '.video-play-button', 'button', 'svg', '[class*="play"]', '[class*="Play"]'];
+              // Enhanced selectors
+              var selectors = [
+                '[data-e2e="browse-play-button"]', 
+                '[data-e2e="video-play-button"]', 
+                '[data-e2e*="play"]',
+                '.play-button', 
+                '.video-play-button', 
+                'button', 
+                'svg', 
+                '[class*="play"]', 
+                '[class*="Play"]',
+                '[class*="VideoPlayer"]',
+                '[class*="video-player"]',
+                'button svg',
+                'svg path[d*="M8"]',
+                'svg path[d*="m8"]'
+              ];
               selectors.forEach(function(sel) {
                 try {
                   var els = document.querySelectorAll(sel);
@@ -315,29 +391,86 @@ export default function TikTokSnap({
                     var el = els[i];
                     var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
                     var classes = (el.className || '').toLowerCase();
-                    if (text.includes('play') || classes.includes('play') || (el.tagName === 'SVG' && el.parentElement && el.parentElement.className && el.parentElement.className.toLowerCase().includes('play'))) {
+                    var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                    var isPlay = text.includes('play') || 
+                                  classes.includes('play') || 
+                                  ariaLabel.includes('play') ||
+                                  (el.tagName === 'SVG' && (el.querySelector('path[d*="M8"]') || el.querySelector('path[d*="m8"]'))) ||
+                                  (el.tagName === 'BUTTON' && el.querySelector('svg'));
+                    if (isPlay || (el.tagName === 'SVG' && el.parentElement && el.parentElement.className && el.parentElement.className.toLowerCase().includes('play'))) {
                       el.style.setProperty('display', 'none', 'important');
                       el.style.setProperty('visibility', 'hidden', 'important');
                       el.style.setProperty('opacity', '0', 'important');
+                      el.style.setProperty('width', '0', 'important');
+                      el.style.setProperty('height', '0', 'important');
                     }
                   }
                 } catch(e) {}
               });
+              // Also hide SVG paths that look like play triangles
+              try {
+                var paths = document.querySelectorAll('svg path');
+                for (var j = 0; j < paths.length; j++) {
+                  var path = paths[j];
+                  var pathData = (path.getAttribute('d') || '').toLowerCase();
+                  if (pathData.includes('m8') || pathData.includes('m 8') || 
+                      (pathData.includes('m12') && pathData.includes('l20'))) {
+                    var parentSvg = path.closest('svg');
+                    if (parentSvg) {
+                      parentSvg.style.setProperty('display', 'none', 'important');
+                      parentSvg.style.setProperty('visibility', 'hidden', 'important');
+                      parentSvg.style.setProperty('opacity', '0', 'important');
+                    }
+                  }
+                }
+              } catch(e) {}
             } catch(e) {}
           })();
           true;
         `);
       }
     } catch(e) {}
+    // Final aggressive pass right before capture
+    const finalHideDelay = fullSnapshot ? 250 : 100;
+    const finalHide = setTimeout(() => {
+      if (webRef.current) {
+        webRef.current.injectJavaScript(`
+          (function() {
+            try {
+              // Final aggressive pass - hide everything that could be a play button
+              var all = document.querySelectorAll('button, svg, [role="button"], [class*="play"], [class*="Play"], [data-e2e*="play"]');
+              for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                var text = (el.innerText || el.textContent || '').toLowerCase();
+                var classes = (el.className || '').toLowerCase();
+                if (text.includes('play') || classes.includes('play') || el.querySelector('svg path[d*="M8"]') || el.querySelector('svg path[d*="m8"]')) {
+                  el.style.setProperty('display', 'none', 'important');
+                  el.style.setProperty('visibility', 'hidden', 'important');
+                  el.style.setProperty('opacity', '0', 'important');
+                  el.style.setProperty('width', '0', 'important');
+                  el.style.setProperty('height', '0', 'important');
+                }
+              }
+            } catch(e) {}
+          })();
+          true;
+        `);
+      }
+    }, finalHideDelay);
+    
     const t = setTimeout(async () => {
+      clearTimeout(finalHide);
       if (attemptIdRef.current !== thisAttempt) { setIsCapturing(false); return; }
       try {
         const uri = await captureRef(shotRef, { format: "jpg", quality: 0.92, result: "tmpfile" });
         if (!sentForAttemptRef.current) { sentForAttemptRef.current = true; onFound(uri); }
       } catch {} finally { setIsCapturing(false); }
-    }, 100); // Small delay to let hide script execute
-    return () => clearTimeout(t);
-  }, [visible, readyDom, readyLoad, readyRaf2, readyDelay, isCapturing, onFound]);
+    }, fullSnapshot ? 300 : 150); // Longer delay for full snapshot to ensure play buttons are hidden
+    return () => {
+      clearTimeout(t);
+      clearTimeout(finalHide);
+    };
+  }, [visible, readyDom, readyLoad, readyRaf2, readyDelay, isCapturing, onFound, fullSnapshot]);
 
   /* ----------------- SOFT re-snap (retry without reloading) ----------------- */
   useEffect(() => {
@@ -347,18 +480,36 @@ export default function TikTokSnap({
     attemptIdRef.current += 1;
     sentForAttemptRef.current = false;
 
-    // scroll to the focus BEFORE snapping (with hard clamps)
-    scrollToFocus(fy, fc);
+    // scroll to the focus BEFORE snapping (with hard clamps) - skip if fullSnapshot
+    if (!fullSnapshot) {
+      scrollToFocus(fy, fc);
+    }
 
     const thisAttempt = attemptIdRef.current;
     setIsCapturing(true);
-    // Hide play button right before capture
+    // Hide play button right before capture - enhanced
     try {
       if (webRef.current) {
         webRef.current.injectJavaScript(`
           (function() {
             try {
-              var selectors = ['[data-e2e="browse-play-button"]', '[data-e2e="video-play-button"]', '.play-button', '.video-play-button', 'button', 'svg', '[class*="play"]', '[class*="Play"]'];
+              // Enhanced selectors
+              var selectors = [
+                '[data-e2e="browse-play-button"]', 
+                '[data-e2e="video-play-button"]', 
+                '[data-e2e*="play"]',
+                '.play-button', 
+                '.video-play-button', 
+                'button', 
+                'svg', 
+                '[class*="play"]', 
+                '[class*="Play"]',
+                '[class*="VideoPlayer"]',
+                '[class*="video-player"]',
+                'button svg',
+                'svg path[d*="M8"]',
+                'svg path[d*="m8"]'
+              ];
               selectors.forEach(function(sel) {
                 try {
                   var els = document.querySelectorAll(sel);
@@ -366,14 +517,39 @@ export default function TikTokSnap({
                     var el = els[i];
                     var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
                     var classes = (el.className || '').toLowerCase();
-                    if (text.includes('play') || classes.includes('play') || (el.tagName === 'SVG' && el.parentElement && el.parentElement.className && el.parentElement.className.toLowerCase().includes('play'))) {
+                    var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                    var isPlay = text.includes('play') || 
+                                  classes.includes('play') || 
+                                  ariaLabel.includes('play') ||
+                                  (el.tagName === 'SVG' && (el.querySelector('path[d*="M8"]') || el.querySelector('path[d*="m8"]'))) ||
+                                  (el.tagName === 'BUTTON' && el.querySelector('svg'));
+                    if (isPlay || (el.tagName === 'SVG' && el.parentElement && el.parentElement.className && el.parentElement.className.toLowerCase().includes('play'))) {
                       el.style.setProperty('display', 'none', 'important');
                       el.style.setProperty('visibility', 'hidden', 'important');
                       el.style.setProperty('opacity', '0', 'important');
+                      el.style.setProperty('width', '0', 'important');
+                      el.style.setProperty('height', '0', 'important');
                     }
                   }
                 } catch(e) {}
               });
+              // Also hide SVG paths that look like play triangles
+              try {
+                var paths = document.querySelectorAll('svg path');
+                for (var j = 0; j < paths.length; j++) {
+                  var path = paths[j];
+                  var pathData = (path.getAttribute('d') || '').toLowerCase();
+                  if (pathData.includes('m8') || pathData.includes('m 8') || 
+                      (pathData.includes('m12') && pathData.includes('l20'))) {
+                    var parentSvg = path.closest('svg');
+                    if (parentSvg) {
+                      parentSvg.style.setProperty('display', 'none', 'important');
+                      parentSvg.style.setProperty('visibility', 'hidden', 'important');
+                      parentSvg.style.setProperty('opacity', '0', 'important');
+                    }
+                  }
+                }
+              } catch(e) {}
             } catch(e) {}
           })();
           true;
@@ -386,13 +562,14 @@ export default function TikTokSnap({
         const uri = await captureRef(shotRef, { format: "jpg", quality: 0.92, result: "tmpfile" });
         if (!sentForAttemptRef.current) { sentForAttemptRef.current = true; onFound(uri); }
       } catch {} finally { setIsCapturing(false); }
-    }, Math.max(100, Math.floor(captureDelayMs))); // Small delay to let hide script execute
+    }, Math.max(fullSnapshot ? 300 : 150, Math.floor(captureDelayMs))); // Longer delay for full snapshot
     return () => clearTimeout(t);
-  }, [resnapKey, visible, captureDelayMs, fy, fc, scrollToFocus, onFound]);
+  }, [resnapKey, visible, captureDelayMs, fy, fc, scrollToFocus, onFound, fullSnapshot]);
 
   /* -------- react to focus changes while modal is open (auto re-snap) -------- */
   useEffect(() => {
     if (!visible) return;
+    if (fullSnapshot) return; // skip focus adjustments in full snapshot mode
     if (!hasPaintedRef.current) return;
     if (Math.abs(fy - lastFyRef.current) < 0.0001 && Math.abs(fc - lastFcRef.current) < 0.0001) return;
 
@@ -413,7 +590,7 @@ export default function TikTokSnap({
       } catch {} finally { setIsCapturing(false); }
     }, Math.max(0, Math.floor(captureDelayMs)));
     return () => clearTimeout(t);
-  }, [fy, fc, visible, captureDelayMs, scrollToFocus, onFound]);
+  }, [fy, fc, visible, captureDelayMs, scrollToFocus, onFound, fullSnapshot]);
 
   const shouldStart = useCallback((req: any) => allowHttpHttps(String(req?.url || "")), []);
   const startUrl = useMemo(() => sanitize(url), [url]);
@@ -421,7 +598,7 @@ export default function TikTokSnap({
   /* ------------------------------- The UI ----------------------------------- */
   // 👉 TOP-CENTER zoom: scale around the center, then push DOWN so the TOP edge
   // stays put. No horizontal shift, so content remains centered.
-  const shiftY = (zoom - 1) * boxH / 2;
+  const shiftY = (effectiveZoom - 1) * boxH / 2;
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onCancel}>
@@ -439,7 +616,7 @@ export default function TikTokSnap({
               styles.scaleWrap,
               {
                 transform: [
-                  { scale: zoom },
+                  { scale: effectiveZoom },
                   { translateY: shiftY }, // keep the TOP edge visually fixed
                 ],
               },
