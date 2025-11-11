@@ -19,14 +19,19 @@ const MARKUP = /[_`~]/g;                  // drop stray markdown marks
 // These words mean "this is a section title" like "For the Ganache:"
 const SECTION_HINTS = [
   "for the", "ganache", "filling", "topping", "frosting",
-  "assembly", "optional toppings", "to serve"
+  "assembly", "optional toppings", "to serve", "batter", "glaze",
+  "streusel", "crust", "dough", "sauce", "dressing", "marinade"
 ];
 
 // 👀 Does this look like a section header?
 function looksLikeSectionHeader(s: string): boolean {
   const plain = s.toLowerCase();
+  // Ends with colon - likely a header
   if (plain.endsWith(":")) return true;
-  return SECTION_HINTS.some(w => plain.includes(w) && /:|\bfor the\b/i.test(plain));
+  // Pattern like "For X:" or "For the X:"
+  if (/^for\s+(?:the\s+)?[^:]+:\s*$/i.test(s)) return true;
+  // Contains section hints and ends with colon or has "for" pattern
+  return SECTION_HINTS.some(w => plain.includes(w) && (plain.endsWith(":") || /\bfor\s+(?:the\s+)?/i.test(plain)));
 }
 
 // ✂️ Split glued-together items: "A - B -" -> ["A", "B"]

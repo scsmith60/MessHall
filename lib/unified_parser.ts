@@ -12,8 +12,14 @@
 
 import { sanitizeAndSplitIngredientCandidates } from "./ingredient_sanitizer"; // ✅ ingredient bath
 
+export type IngredientSection = {
+  name: string | null; // null means "ungrouped" or "main ingredients"
+  ingredients: string[];
+};
+
 export type ParseResult = {
   ingredients: string[];
+  ingredientSections?: IngredientSection[]; // Grouped by section if sections detected
   steps: string[];
   confidence: "low" | "medium" | "high";
   debug?: string;
@@ -518,26 +524,75 @@ export function parseRecipeText(input: string): ParseResult {
     .filter(p => !p.maybeHeader) // drop "For the Ganache:"-style headers
     .map(p => p.text);
   const strayStepSeedsRaw = ingLinesPrepped.filter(line => !looksLikeIngredient(line) && !isLikelyPromoLine(line));
-
-  // build ingredients from cleaned lines
-  const ingredientCandidates = ingLinesPrepped.filter(looksLikeIngredient);
-  const ingredientsBuilt: string[] = [];
-  for (let cand of ingredientCandidates) {
-    cand = cleanIngredientLine(cand);
-    const { prefix, rest } = extractContinuationPrefix(cand);
-    if (prefix && ingredientsBuilt.length) {
-      ingredientsBuilt[ingredientsBuilt.length - 1] =
-        ingredientsBuilt[ingredientsBuilt.length - 1].replace(/\s*,?\s*$/, "") + ", " + prefix;
-      if (!rest) continue;
-      cand = rest;
-    }
-    for (const p of splitRunOnIngredients(cand)) {
-      const t = tidySpaces(p); if (t) ingredientsBuilt.push(t);
+  
+  // Group ingredients by sections if headers are detected
+  const ingredientSections: IngredientSection[] = [];
+  let currentSection: IngredientSection | null = null;
+  const allIngredientsBuilt: string[] = [];
+  
+  for (const piece of sanitizedPieces) {
+    if (piece.maybeHeader) {
+      // This is a section header - start a new section
+      const sectionName = piece.text.replace(/[:•\s]+$/, "").trim();
+      if (currentSection && currentSection.ingredients.length > 0) {
+        ingredientSections.push(currentSection);
+      }
+      currentSection = { name: sectionName, ingredients: [] };
+    } else {
+      // This is an ingredient line
+      const line = piece.text;
+      if (!looksLikeIngredient(line) && !isLikelyPromoLine(line)) continue;
+      
+      let cand = cleanIngredientLine(line);
+      const { prefix, rest } = extractContinuationPrefix(cand);
+      const sectionIngredients: string[] = [];
+      
+      if (prefix && (currentSection?.ingredients.length || allIngredientsBuilt.length)) {
+        const target = currentSection?.ingredients || allIngredientsBuilt;
+        if (target.length > 0) {
+          target[target.length - 1] =
+            target[target.length - 1].replace(/\s*,?\s*$/, "") + ", " + prefix;
+        }
+        if (!rest) continue;
+        cand = rest;
+      }
+      
+      for (const p of splitRunOnIngredients(cand)) {
+        const t = tidySpaces(p);
+        if (t) {
+          sectionIngredients.push(t);
+          allIngredientsBuilt.push(t);
+        }
+      }
+      
+      if (currentSection) {
+        currentSection.ingredients.push(...sectionIngredients);
+      } else {
+        // No section header yet - add to ungrouped
+        allIngredientsBuilt.push(...sectionIngredients);
+      }
     }
   }
+  
+  // Add the last section if it exists
+  if (currentSection && currentSection.ingredients.length > 0) {
+    ingredientSections.push(currentSection);
+  }
+  
+  // Build flat list for backward compatibility
+  const ingredientsBuilt = allIngredientsBuilt;
+  
   // unique + final orphan-number glue
   const ingredientsPrepped = finalFixOrphanNumberIngredients(uniqueNonEmpty(ingredientsBuilt));
   let ingredients = dropJunkIngredientLines(ingredientsPrepped).slice(0, 60);
+  
+  // Also apply final fixes to section ingredients
+  if (ingredientSections.length > 0) {
+    for (const section of ingredientSections) {
+      const sectionPrepped = finalFixOrphanNumberIngredients(uniqueNonEmpty(section.ingredients));
+      section.ingredients = dropJunkIngredientLines(sectionPrepped).slice(0, 60);
+    }
+  }
   
   // Ensure "Salt and pepper to taste" is included if it appeared in the original text
   // Check if we have salt/pepper separately but missing the combined version
@@ -606,7 +661,13 @@ export function parseRecipeText(input: string): ParseResult {
   if (hadGuesses && confidence === "high") confidence = "medium"; // nudge down if sanitizer had to guess
 
   const dbg = `len:${raw.length} iIng:${iIng} iStep:${iStep} ing:${ingredients.length} steps:${steps.length} guessed:${hadGuesses}`;
-  return { ingredients, steps, confidence, debug: dbg };
+  
+  // Return with sections if we detected any, otherwise return flat list
+  const result: ParseResult = { ingredients, steps, confidence, debug: dbg };
+  if (ingredientSections.length > 0) {
+    result.ingredientSections = ingredientSections;
+  }
+  return result;
 }
 
 

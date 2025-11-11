@@ -25,7 +25,7 @@ import { Image } from "expo-image";
 import { supabase } from "@/lib/supabase";
 import { fetchOgForUrl } from "@/lib/og";
 import { uploadFromUri } from "@/lib/uploads";
-import { parseRecipeText } from "@/lib/unified_parser";
+import { parseRecipeText, type IngredientSection } from "@/lib/unified_parser";
 import { recognizeImageText } from "@/lib/ocr";
 
 import TikTokSnap from "@/lib/tiktok";
@@ -36,7 +36,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Line, Circle } from "react-native-svg";
 import InstagramDomScraper from "@/components/InstagramDomScraper";
-import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata, discoverRecipeSiteIfNeeded } from "@/lib/recipeSiteHelpers";
+import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata, extractRecipeFromHtml, discoverRecipeSiteIfNeeded } from "@/lib/recipeSiteHelpers";
 import { parseSocialCaption } from "@/lib/parsers/instagram";
 import { dedupeNormalized } from "@/lib/parsers/types";
 import { extractTikTokTitleFromState } from "@/lib/extractTitle";
@@ -1234,6 +1234,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const [timeMinutes, setTimeMinutes] = useState("");
   const [servings, setServings] = useState("");
   const [ingredients, setIngredients] = useState<string[]>([""]);
+  const [ingredientSections, setIngredientSections] = useState<IngredientSection[] | null>(null);
   const [steps, setSteps] = useState<string[]>([""]);
   const [img, setImg] = useState<ImageSourceState>({ kind: "none" });
   const ingredientSwipeRefs = useRef<Array<Swipeable | null>>([]);
@@ -1544,7 +1545,150 @@ function stitchBrokenSteps(lines: string[]): string[] {
             safeSetTitle(data.title, url, title, dbg, source);
           }
           if (data.ingredients && data.ingredients.length >= 2) {
-            setIngredients(data.ingredients);
+            // Handle ingredient sections - they might come from HTML extraction or JSON-LD
+            if (data.ingredientSections && data.ingredientSections.length > 0) {
+              // Sections already extracted (from HTML fallback)
+              setIngredients(data.ingredients);
+              setIngredientSections(data.ingredientSections);
+              dbg('[RECIPE] Using ingredient sections from', source, ':', data.ingredientSections.length, 'sections');
+            } else if (html && (source === 'jsonld' || source === 'microdata')) {
+              // Try to detect sections from HTML if we have it
+              // This helps preserve section headers like "For Muffin Batter:" that aren't in JSON-LD
+              // IMPORTANT: Use JSON-LD ingredients (they're correct), only use HTML to find section headers
+              try {
+                // Find section headers in HTML (like "For Muffin Batter:", "For Streusel Topping:")
+                const sectionHeaderRegex = /<(?:h[2-4]|p|div|strong|b|li|span)[^>]*>([^<]*(?:For\s+(?:the\s+)?[^:]+:|For\s+[^:]+:)[^<]*)<\/(?:h[2-4]|p|div|strong|b|li|span)>/gi;
+                const foundHeaders: Array<{text: string, index: number}> = [];
+                let headerMatch;
+                while ((headerMatch = sectionHeaderRegex.exec(html)) !== null) {
+                  const headerText = headerMatch[1].replace(/<[^>]+>/g, '').trim();
+                  if (headerText && /For\s+(?:the\s+)?[^:]+:/i.test(headerText)) {
+                    foundHeaders.push({ 
+                      text: headerText.replace(/:/g, '').trim(), 
+                      index: headerMatch.index || 0 
+                    });
+                  }
+                }
+                
+                dbg('[RECIPE] Found', foundHeaders.length, 'section headers in HTML:', foundHeaders.map(h => h.text));
+                
+                if (foundHeaders.length > 0) {
+                  // We found section headers! Now count how many list items are in each section
+                  // to divide the JSON-LD ingredients accordingly
+                  
+                  // Find list items between each section header
+                  const sectionCounts: number[] = [];
+                  
+                  for (let i = 0; i < foundHeaders.length; i++) {
+                    const headerStart = foundHeaders[i].index;
+                    const headerEnd = i < foundHeaders.length - 1 ? foundHeaders[i + 1].index : html.length;
+                    const sectionHtml = html.slice(headerStart, headerEnd);
+                    
+                    // Count list items in this section that look like ingredients
+                    const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+                    let count = 0;
+                    let liMatch;
+                    while ((liMatch = liPattern.exec(sectionHtml)) !== null) {
+                      const liText = liMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+                      // Only count if it looks like an ingredient (has quantity/unit)
+                      if (liText && /\d+\s*(cup|cups|tsp|tbsp|oz|lb|g|kg|ml|l|tablespoon|teaspoon|pound|ounce)/i.test(liText)) {
+                        count++;
+                      }
+                    }
+                    sectionCounts.push(count);
+                    dbg('[RECIPE] Section', foundHeaders[i].text, 'has', count, 'ingredients');
+                  }
+                  
+                  // Create sections and distribute JSON-LD ingredients
+                  const sections: IngredientSection[] = [];
+                  let ingredientIndex = 0;
+                  
+                  for (let i = 0; i < foundHeaders.length && ingredientIndex < data.ingredients.length; i++) {
+                    const sectionName = foundHeaders[i].text;
+                    const count = sectionCounts[i] || 0;
+                    const sectionIngredients: string[] = [];
+                    
+                    // Take the specified number of ingredients for this section
+                    const takeCount = count > 0 ? Math.min(count, data.ingredients.length - ingredientIndex) : 
+                                     (i === foundHeaders.length - 1 ? data.ingredients.length - ingredientIndex : 0);
+                    
+                    for (let j = 0; j < takeCount && ingredientIndex < data.ingredients.length; j++) {
+                      sectionIngredients.push(data.ingredients[ingredientIndex]);
+                      ingredientIndex++;
+                    }
+                    
+                    if (sectionIngredients.length > 0) {
+                      sections.push({ name: sectionName, ingredients: sectionIngredients });
+                    }
+                  }
+                  
+                  // Add any remaining ingredients to the last section
+                  if (ingredientIndex < data.ingredients.length && sections.length > 0) {
+                    while (ingredientIndex < data.ingredients.length) {
+                      sections[sections.length - 1].ingredients.push(data.ingredients[ingredientIndex]);
+                      ingredientIndex++;
+                    }
+                  } else if (ingredientIndex < data.ingredients.length) {
+                    // No sections created, create ungrouped
+                    sections.push({ name: null, ingredients: data.ingredients.slice(ingredientIndex) });
+                  }
+                  
+                  if (sections.length > 0) {
+                    // Verify we used all ingredients
+                    const totalInSections = sections.reduce((sum, s) => sum + s.ingredients.length, 0);
+                    
+                    // Determine if sections are actually useful:
+                    // 1. All ingredients must be accounted for
+                    // 2. We should have at least 2 sections (otherwise why group?)
+                    // 3. Each section should have at least 2 ingredients (or it's not really a "section")
+                    // 4. At least one section should have 3+ ingredients (shows meaningful grouping)
+                    const hasAllIngredients = totalInSections === data.ingredients.length;
+                    const hasMultipleSections = sections.length >= 2;
+                    const sectionsWithMultipleItems = sections.filter(s => s.ingredients.length >= 2).length;
+                    const hasSubstantialSection = sections.some(s => s.ingredients.length >= 3);
+                    
+                    const shouldUseSections = hasAllIngredients && 
+                                             hasMultipleSections && 
+                                             sectionsWithMultipleItems >= 2 &&
+                                             hasSubstantialSection;
+                    
+                    if (shouldUseSections) {
+                      setIngredients(data.ingredients);
+                      setIngredientSections(sections);
+                      dbg('[RECIPE] Using', sections.length, 'ingredient sections with', totalInSections, 'total ingredients');
+                      bumpStage(2);
+                      // Don't return early - continue to handle steps below
+                    } else {
+                      // Sections don't add value - use flat list
+                      const reason = !hasAllIngredients ? 'not all ingredients accounted for' :
+                                    !hasMultipleSections ? 'only one section found' :
+                                    sectionsWithMultipleItems < 2 ? 'sections too small' :
+                                    !hasSubstantialSection ? 'no substantial sections' : 'unknown';
+                      dbg('[RECIPE] Not using sections:', reason, '- using flat list');
+                      setIngredients(data.ingredients);
+                      setIngredientSections(null);
+                    }
+                  } else {
+                    // No sections created, use flat list
+                    setIngredients(data.ingredients);
+                    setIngredientSections(null);
+                  }
+                } else {
+                  // No sections found, use flat JSON-LD list
+                  setIngredients(data.ingredients);
+                  setIngredientSections(null);
+                }
+              } catch (e) {
+                dbg('[RECIPE] Error detecting sections from HTML:', safeErr(e));
+                // Fallback to flat list if parsing fails
+                setIngredients(data.ingredients);
+                setIngredientSections(null);
+              }
+            } else {
+              // Not JSON-LD/microdata or no HTML, use flat list
+              setIngredients(data.ingredients);
+              setIngredientSections(null);
+            }
             bumpStage(2);
           }
           if (data.steps && data.steps.length >= 1) {
@@ -1608,6 +1752,36 @@ function stitchBrokenSteps(lines: string[]): string[] {
           const hasMicroSteps = (microdata.steps?.length ?? 0) > 0;
           dbg('[RECIPE] Microdata extraction result:', { microApplied, hasMicroSteps });
           if (microApplied && (!isGordon || hasMicroSteps)) {
+            return true;
+          }
+        }
+
+        // Fallback: Try HTML parsing for sites without proper JSON-LD or microdata
+        // (e.g., girlcarnivore.com and similar sites)
+        // Note: HTML extraction doesn't return title - we use OG title instead
+        const htmlExtracted = extractRecipeFromHtml(html);
+        if (htmlExtracted) {
+          dbg('[RECIPE] HTML fallback extraction found');
+          dbg('[RECIPE] HTML extracted:', {
+            ingredientsCount: htmlExtracted.ingredients?.length ?? 0,
+            stepsCount: htmlExtracted.steps?.length ?? 0,
+            ingredients: htmlExtracted.ingredients?.slice(0, 3),
+            steps: htmlExtracted.steps?.slice(0, 2),
+          });
+          // Auto-discover this site if it's not in our list
+          await discoverRecipeSiteIfNeeded(url, html);
+          // Use OG for title/image, but HTML for ingredients/steps
+          const og = await fetchOgForUrl(url);
+          if (og?.title && isWeakTitle(title)) {
+            safeSetTitle(og.title, url, title, dbg, 'html-fallback:og');
+          }
+          if (og?.image) {
+            await tryImageUrl(og.image, url);
+          }
+          const htmlApplied = await applyExtraction(htmlExtracted, 'html-fallback', { includeMeta: false });
+          const hasHtmlSteps = (htmlExtracted.steps?.length ?? 0) > 0;
+          dbg('[RECIPE] HTML fallback extraction result:', { htmlApplied, hasHtmlSteps });
+          if (htmlApplied && (!isGordon || hasHtmlSteps)) {
             return true;
           }
         }
@@ -1980,7 +2154,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
               const parsed = parseRecipeText(og.description);
               dbg("≡ƒôè Facebook parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
               
-              if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
+              if (parsed.ingredients.length >= 2) {
+                setIngredients(parsed.ingredients);
+                if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
+                  setIngredientSections(parsed.ingredientSections);
+                } else {
+                  setIngredientSections(null);
+                }
+              }
               if (parsed.steps.length >= 1) setSteps(parsed.steps);
               
               if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
@@ -2033,11 +2214,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
           try {
             const html = await fetchWithUA(url, 12000, "text");
             
-            // Check if this generic site has recipe data
+            // Check if this generic site has recipe data (try all extraction methods)
             const jsonLd = extractRecipeFromJsonLd(html);
             const microdata = extractRecipeFromMicrodata(html);
+            const htmlExtracted = extractRecipeFromHtml(html);
             
-            if (jsonLd || microdata) {
+            if (jsonLd || microdata || htmlExtracted) {
               // Found recipe data! Auto-discover the site and process it
               dbg("≡ƒì│ Recipe data found on generic site - auto-discovering");
               await discoverRecipeSiteIfNeeded(url, html);
@@ -2207,7 +2389,15 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const normalizedSteps = mergeStepFragments(partitioned.steps);
 
             if (partitioned.ingredients.length >= 2 || normalizedSteps.length >= 1) {
-              if (partitioned.ingredients.length) setIngredients(partitioned.ingredients);
+              if (partitioned.ingredients.length) {
+                setIngredients(partitioned.ingredients);
+                // Use ingredient sections if available, otherwise use flat list
+                if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
+                  setIngredientSections(parsed.ingredientSections);
+                } else {
+                  setIngredientSections(null);
+                }
+              }
               if (normalizedSteps.length) setSteps(normalizedSteps);
               bumpStage(2);
               dbg("Γ£à STEP 2 caption-based parse worked");
@@ -2265,7 +2455,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   const parsed = parseRecipeText(ocrText);
                   dbg("≡ƒôè STEP 3 OCR parse conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
                   if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
-                    if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) setIngredients(parsed.ingredients);
+                    if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) {
+                      setIngredients(parsed.ingredients);
+                      if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
+                        setIngredientSections(parsed.ingredientSections);
+                      } else {
+                        setIngredientSections(null);
+                      }
+                    }
                     if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
                     bumpStage(3);
                     dbg("Γ£à STEP 3 OCR gave usable content");
@@ -2295,7 +2492,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 const parsed = parseRecipeText(og.description);
                 dbg("≡ƒôè STEP 4 OG parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
                 if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
-                  if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) setIngredients(parsed.ingredients);
+                  if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) {
+                    setIngredients(parsed.ingredients);
+                    if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
+                      setIngredientSections(parsed.ingredientSections);
+                    } else {
+                      setIngredientSections(null);
+                    }
+                  }
                   if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
                   dbg("Γ£à STEP 4 got usable content from OG description");
                   success = true;
@@ -2324,7 +2528,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
             if (og?.title && isWeakTitle(title)) safeSetTitle(og?.title ?? og.title, url, title, dbg, 'og:title');
             if (og?.description) {
               const parsed = parseRecipeText(og.description);
-              if (parsed.ingredients.length >= 2) setIngredients(parsed.ingredients);
+              if (parsed.ingredients.length >= 2) {
+                setIngredients(parsed.ingredients);
+                if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
+                  setIngredientSections(parsed.ingredientSections);
+                } else {
+                  setIngredientSections(null);
+                }
+              }
               if (parsed.steps.length >= 1) setSteps(parsed.steps);
             }
             if (og?.image) await tryImageUrl(og.image, url);
@@ -2457,7 +2668,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
         await supabase.from("recipes").update({ image_url: publicUrl }).eq("id", recipeId);
       }
 
-      const ing = ingredients.map((s) => (s || "").trim()).filter(Boolean);
+      // Use sections if available, otherwise use flat list
+      const ing = ingredientSections && ingredientSections.length > 0
+        ? ingredientSections.flatMap(s => s.ingredients).map((s) => (s || "").trim()).filter(Boolean)
+        : ingredients.map((s) => (s || "").trim()).filter(Boolean);
       if (ing.length) {
         await supabase.from("recipe_ingredients").insert(
           ing.map((text, i) => ({ recipe_id: recipeId, pos: i + 1, text }))
@@ -2513,13 +2727,28 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const resetForm = useCallback(() => {
     setPastedUrl(""); setTitle(""); setTimeMinutes(""); setServings("");
     setIngredients([""]);
+    setIngredientSections(null);
     setSteps([""]);
     ingredientSwipeRefs.current = [];
     stepSwipeRefs.current = [];
     setImg({ kind: "none" });
     hardResetImport();
   }, [hardResetImport]);
-  useFocusEffect(useCallback(() => { return () => { resetForm(); }; }, [resetForm]));
+  
+  // Reset form when screen comes into focus (when user navigates back)
+  // This ensures fields are cleared if user left without saving
+  useFocusEffect(
+    useCallback(() => {
+      // When screen comes into focus, always reset the form
+      // This gives user a clean slate when returning to capture screen
+      resetForm();
+      
+      // Cleanup when leaving screen - don't do anything on blur
+      return () => {
+        // No cleanup needed - we reset on next focus
+      };
+    }, [resetForm])
+  );
 
   // -------------- RENDER --------------
   return (
@@ -2583,23 +2812,71 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
           <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "900", marginBottom: 8 }}>Ingredients</Text>
           <View style={{ backgroundColor: COLORS.card, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, marginBottom: 12 }}>
-            {ingredients.map((ing, i) => (
-              <Swipeable
-                key={`ing-${i}`}
-                ref={(ref) => {
-                  ingredientSwipeRefs.current[i] = ref;
-                }}
-                renderRightActions={() => renderRightActions(() => handleDeleteIngredient(i))}
-                overshootRight={false}
-                friction={2}
-              >
-                <View style={styles.row}>
-                  <Text style={styles.rowIndex}>{i + 1}.</Text>
-                  <TextInput value={ing} onChangeText={(v) => setIngredients((a) => a.map((x, idx) => (idx === i ? v : x)))} placeholder="1 lb sausage..." placeholderTextColor="#64748b" style={styles.rowInput} />
+            {ingredientSections && ingredientSections.length > 0 ? (
+              // Display grouped by sections
+              ingredientSections.map((section, sectionIdx) => (
+                <View key={`section-${sectionIdx}`}>
+                  {section.name && (
+                    <View style={{ paddingHorizontal: 16, paddingTop: sectionIdx > 0 ? 16 : 12, paddingBottom: 8 }}>
+                      <Text style={{ color: COLORS.accent, fontSize: 16, fontWeight: "700" }}>{section.name}</Text>
+                    </View>
+                  )}
+                  {section.ingredients.map((ing, i) => {
+                    const globalIndex = ingredientSections.slice(0, sectionIdx).reduce((sum, s) => sum + s.ingredients.length, 0) + i;
+                    return (
+                      <Swipeable
+                        key={`ing-${sectionIdx}-${i}`}
+                        ref={(ref) => {
+                          ingredientSwipeRefs.current[globalIndex] = ref;
+                        }}
+                        renderRightActions={() => renderRightActions(() => handleDeleteIngredient(globalIndex))}
+                        overshootRight={false}
+                        friction={2}
+                      >
+                        <View style={styles.row}>
+                          <Text style={styles.rowIndex}>{globalIndex + 1}.</Text>
+                          <TextInput 
+                            value={ing} 
+                            onChangeText={(v) => {
+                              const newSections = [...ingredientSections];
+                              newSections[sectionIdx].ingredients[i] = v;
+                              setIngredientSections(newSections);
+                              // Also update flat list for backward compatibility
+                              const flatList: string[] = [];
+                              newSections.forEach(s => flatList.push(...s.ingredients));
+                              setIngredients(flatList);
+                            }} 
+                            placeholder="1 lb sausage..." 
+                            placeholderTextColor="#64748b" 
+                            style={styles.rowInput} 
+                          />
+                        </View>
+                        {(sectionIdx < ingredientSections.length - 1 || i < section.ingredients.length - 1) && <View style={styles.thinLine} />}
+                      </Swipeable>
+                    );
+                  })}
                 </View>
-                {i !== ingredients.length - 1 && <View style={styles.thinLine} />}
-              </Swipeable>
-            ))}
+              ))
+            ) : (
+              // Display flat list (backward compatibility)
+              ingredients.map((ing, i) => (
+                <Swipeable
+                  key={`ing-${i}`}
+                  ref={(ref) => {
+                    ingredientSwipeRefs.current[i] = ref;
+                  }}
+                  renderRightActions={() => renderRightActions(() => handleDeleteIngredient(i))}
+                  overshootRight={false}
+                  friction={2}
+                >
+                  <View style={styles.row}>
+                    <Text style={styles.rowIndex}>{i + 1}.</Text>
+                    <TextInput value={ing} onChangeText={(v) => setIngredients((a) => a.map((x, idx) => (idx === i ? v : x)))} placeholder="1 lb sausage..." placeholderTextColor="#64748b" style={styles.rowInput} />
+                  </View>
+                  {i !== ingredients.length - 1 && <View style={styles.thinLine} />}
+                </Swipeable>
+              ))
+            )}
           </View>
           <TouchableOpacity onPress={() => setIngredients((a) => [...a, ""])} style={{ marginTop: 6, backgroundColor: COLORS.card, paddingVertical: 12, borderRadius: 12, alignItems: "center", marginBottom: 16 }}>
             <Text style={{ color: COLORS.text, fontWeight: "800" }}>+ Add Ingredient</Text>

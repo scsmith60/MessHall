@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS discovered_recipe_sites (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   hostname TEXT NOT NULL UNIQUE, -- e.g., "example.com" (normalized, no www)
-  detection_method TEXT NOT NULL CHECK (detection_method IN ('jsonld', 'microdata')),
+  detection_method TEXT NOT NULL CHECK (detection_method IN ('jsonld', 'microdata', 'html')),
   first_discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   discovery_count INTEGER NOT NULL DEFAULT 1, -- How many times we've seen recipes from this site

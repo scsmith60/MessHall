@@ -220,16 +220,17 @@ export async function discoverRecipeSiteIfNeeded(
       return; // Already discovered
     }
 
-    // Try to detect recipe data in HTML
+    // Try to detect recipe data in HTML (try all extraction methods)
     const hasJsonLd = extractRecipeFromJsonLd(html);
     const hasMicrodata = extractRecipeFromMicrodata(html);
+    const hasHtml = extractRecipeFromHtml(html);
 
-    if (!hasJsonLd && !hasMicrodata) {
+    if (!hasJsonLd && !hasMicrodata && !hasHtml) {
       return; // No recipe data found, don't discover
     }
 
-    // Determine detection method
-    const detectionMethod = hasJsonLd ? "jsonld" : "microdata";
+    // Determine detection method (prefer structured data, but also accept HTML)
+    const detectionMethod = hasJsonLd ? "jsonld" : hasMicrodata ? "microdata" : "html";
 
     // Save to database using the upsert function
     const { error } = await supabase.rpc("upsert_discovered_recipe_site", {
@@ -570,6 +571,675 @@ export function extractRecipeFromMicrodata(html: string): {
     }
     
     return Object.keys(result).length ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+// Fallback HTML parser for sites that don't have proper JSON-LD or microdata
+// Extracts ingredients and steps from common HTML patterns
+export function extractRecipeFromHtml(html: string): {
+  title?: string;
+  ingredients?: string[];
+  steps?: string[];
+  ingredientSections?: Array<{ name: string | null; ingredients: string[] }>;
+} | null {
+  try {
+    const result: any = {};
+    let wprmResult: any = null; // Store wprm extraction separately
+    
+    // FIRST: Try to extract from WordPress Recipe Maker (wprm_recipes) if available
+    // This is more reliable than HTML parsing
+    // Find the start of window.wprm_recipes = { and then count braces to find the end
+    const wprmStartPattern = /window\.wprm_recipes\s*=\s*\{/;
+    const startMatch = html.match(wprmStartPattern);
+    
+    if (startMatch && startMatch.index !== undefined) {
+      try {
+        const startPos = startMatch.index + startMatch[0].length - 1; // Position of the opening {
+        
+        // Now count braces to find the matching closing brace
+        let braceCount = 0;
+        let inString = false;
+        let escapeNext = false;
+        let endPos = -1;
+        
+        for (let i = startPos; i < html.length && i < startPos + 500000; i++) { // Limit search to 500KB
+          const char = html[i];
+          
+          if (escapeNext) {
+            escapeNext = false;
+            continue;
+          }
+          
+          if (char === '\\') {
+            escapeNext = true;
+            continue;
+          }
+          
+          if ((char === '"' || char === "'") && !escapeNext) {
+            inString = !inString;
+            continue;
+          }
+          
+          if (!inString) {
+            if (char === '{') {
+              braceCount++;
+            } else if (char === '}') {
+              braceCount--;
+              if (braceCount === 0) {
+                endPos = i + 1;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (endPos > startPos) {
+          const jsonStr = html.substring(startPos, endPos).trim();
+          const wprmData = JSON.parse(jsonStr);
+          
+          // wprm_recipes is an object with recipe IDs as keys
+          const recipeIds = Object.keys(wprmData);
+          if (recipeIds.length > 0) {
+            const recipe = wprmData[recipeIds[0]]; // Get first recipe
+            
+            // Log all recipe keys to find instructions
+            console.log('[HTML-EXTRACT] Recipe keys:', Object.keys(recipe));
+            
+            if (recipe.name) result.title = recipe.name;
+            
+            // Extract ingredients - wprm has ingredients in recipe.ingredients array
+            if (recipe.ingredients && Array.isArray(recipe.ingredients)) {
+              const ingredients: string[] = [];
+              const ingredientSections: Array<{ name: string | null; ingredients: string[] }> = [];
+              let currentSection: { name: string | null; ingredients: string[] } | null = null;
+              
+              console.log('[HTML-EXTRACT] wprm ingredients array length:', recipe.ingredients.length);
+              
+              // Log first few ingredients to understand structure
+              if (recipe.ingredients.length > 0) {
+                console.log('[HTML-EXTRACT] First ingredient sample:', JSON.stringify(recipe.ingredients[0], null, 2));
+                if (recipe.ingredients.length > 1) {
+                  console.log('[HTML-EXTRACT] Second ingredient sample:', JSON.stringify(recipe.ingredients[1], null, 2));
+                }
+                // Log a few more to see if we can spot section headers
+                for (let i = 0; i < Math.min(10, recipe.ingredients.length); i++) {
+                  const ing = recipe.ingredients[i];
+                  const hasAmount = !!(ing.amount || ing.unit);
+                  const name = ing.name ? String(ing.name).trim() : '';
+                  console.log(`[HTML-EXTRACT] Ingredient ${i}: type="${ing.type}", name="${name}", hasAmount=${hasAmount}`);
+                }
+              }
+              
+              for (const ing of recipe.ingredients) {
+                // Check for section headers - wprm might use different field names
+                // Headers can be: type 'header'/'group', OR names matching patterns (with or without colons)
+                const nameTrimmed = ing.name ? String(ing.name).trim().replace(/[:：]$/, '') : '';
+                
+                // More flexible header pattern matching - check for common section header patterns
+                const matchesHeaderPattern = nameTrimmed && (
+                  /^(FOR\s+THE|FOR\s+|TO\s+SERVE|INGREDIENTS\s+FOR|COOK\s+THE|MAKE\s+)/i.test(nameTrimmed) ||
+                  /^[A-Z\s]{5,30}$/.test(nameTrimmed) // All caps, 5-30 chars (likely a section header)
+                );
+                
+                // Don't treat items with amounts/units as headers
+                const hasAmountOrUnit = !!(ing.amount || ing.unit);
+                
+                // Don't treat ingredient-like names as headers (even if they match patterns)
+                // If it has ingredient words but no amount/unit, it's probably still an ingredient
+                const looksLikeIngredient = nameTrimmed && /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|egg|eggs|oil|bread)\b/i.test(nameTrimmed);
+                
+                // Check if it's explicitly a header type OR matches header patterns
+                const isHeader = (ing.type === 'header' || ing.type === 'group') ||
+                                (matchesHeaderPattern && !hasAmountOrUnit && !looksLikeIngredient && nameTrimmed.length > 3);
+                
+                if (isHeader && ing.name) {
+                  // Save previous section if it exists
+                  if (currentSection && currentSection.ingredients.length > 0) {
+                    ingredientSections.push(currentSection);
+                  }
+                  // Start new section - remove trailing colon if present
+                  const sectionName = nameTrimmed;
+                  console.log('[HTML-EXTRACT] Found section header:', sectionName, 'type:', ing.type, 'original:', ing.name);
+                  currentSection = { name: sectionName, ingredients: [] };
+                } else if (ing.name && (ing.amount || ing.unit || ing.type === 'ingredient')) {
+                  // Build ingredient string with quantity
+                  let ingText = '';
+                  if (ing.amount) ingText += String(ing.amount).trim() + ' ';
+                  if (ing.unit) ingText += String(ing.unit).trim() + ' ';
+                  ingText += String(ing.name).trim();
+                  if (ing.notes) ingText += ' ' + String(ing.notes).trim();
+                  
+                  const cleaned = ingText.trim();
+                  if (cleaned) {
+                    ingredients.push(cleaned);
+                    if (currentSection) {
+                      currentSection.ingredients.push(cleaned);
+                    } else {
+                      // If no section yet, create a default one
+                      if (ingredientSections.length === 0) {
+                        currentSection = { name: null, ingredients: [] };
+                      }
+                    }
+                  }
+                }
+              }
+              
+              // Add last section
+              if (currentSection && currentSection.ingredients.length > 0) {
+                ingredientSections.push(currentSection);
+              }
+              
+              console.log('[HTML-EXTRACT] Extracted ingredients:', ingredients.length, 'sections:', ingredientSections.length);
+              if (ingredientSections.length > 0) {
+                console.log('[HTML-EXTRACT] Section names:', ingredientSections.map(s => s.name));
+              }
+              
+              if (ingredients.length >= 2) {
+                result.ingredients = ingredients;
+                if (ingredientSections.length > 0) {
+                  result.ingredientSections = ingredientSections;
+                }
+              }
+            }
+            
+            // Extract steps - wprm has instructions in recipe.instructions array
+            // Also check recipe.instructions_flat or other possible field names
+            const instructionsArray = recipe.instructions || 
+                                     recipe.instructions_flat || 
+                                     recipe.steps ||
+                                     recipe.directions ||
+                                     recipe.instructions_list;
+            
+            if (instructionsArray && Array.isArray(instructionsArray)) {
+              console.log('[HTML-EXTRACT] wprm instructions array length:', instructionsArray.length);
+              if (instructionsArray.length > 0) {
+                console.log('[HTML-EXTRACT] First instruction sample:', JSON.stringify(instructionsArray[0], null, 2));
+              }
+              const steps: string[] = [];
+              
+              for (const inst of instructionsArray) {
+                // Handle different instruction formats
+                let stepText = '';
+                
+                if (typeof inst === 'string') {
+                  stepText = inst;
+                } else if (inst.text) {
+                  stepText = inst.text;
+                } else if (inst.name) {
+                  stepText = inst.name;
+                } else if (inst.instruction) {
+                  stepText = inst.instruction;
+                } else if (inst.content) {
+                  stepText = inst.content;
+                }
+                
+                if (stepText) {
+                  // Clean HTML tags and normalize
+                  stepText = stepText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+                  // Decode HTML entities
+                  stepText = stepText
+                    .replace(/&nbsp;/g, ' ')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#39;/g, "'")
+                    .replace(/&rsquo;/g, "'")
+                    .replace(/&lsquo;/g, "'")
+                    .replace(/&rdquo;/g, '"')
+                    .replace(/&ldquo;/g, '"')
+                    .replace(/&eacute;/g, 'é')
+                    .replace(/&agrave;/g, 'à')
+                    .replace(/&egrave;/g, 'è')
+                    .replace(/&acirc;/g, 'â')
+                    .replace(/&ocirc;/g, 'ô')
+                    .replace(/&icirc;/g, 'î')
+                    .replace(/&ucirc;/g, 'û')
+                    .replace(/&ccedil;/g, 'ç')
+                    .trim();
+                  
+                  if (stepText && stepText.length > 10) {
+                    steps.push(stepText);
+                  }
+                }
+              }
+              
+              console.log('[HTML-EXTRACT] Extracted steps:', steps.length);
+              if (steps.length > 0) {
+                result.steps = steps;
+              }
+            } else {
+              // Log all keys to help debug
+              const allKeys = Object.keys(recipe);
+              console.log('[HTML-EXTRACT] No instructions array found. All recipe keys:', allKeys);
+              console.log('[HTML-EXTRACT] Recipe object sample (first 2000 chars):', JSON.stringify(recipe).substring(0, 2000));
+            }
+            
+            // Store wprm result for later merging
+            if (result.ingredients?.length || result.steps?.length) {
+              console.log('[HTML-EXTRACT] Extracted from wprm_recipes:', {
+                ingredientsCount: result.ingredients?.length,
+                stepsCount: result.steps?.length,
+                sectionsCount: result.ingredientSections?.length,
+              });
+              wprmResult = { ...result };
+              // If we have both ingredients and steps from wprm, we can return early
+              // Otherwise, continue to HTML fallback to fill in missing pieces
+              if (result.ingredients?.length && result.steps?.length) {
+                return result;
+              }
+              // Clear result to allow HTML fallback to run, we'll merge later
+              result.ingredients = undefined;
+              result.ingredientSections = undefined;
+              result.steps = undefined;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[HTML-EXTRACT] Failed to parse wprm_recipes:', e);
+        // Fall through to HTML parsing
+      }
+    }
+    
+    // Fallback to HTML parsing if wprm_recipes not available or failed
+    // First, remove all script and style tags to avoid extracting JavaScript/CSS
+    let cleanHtml = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+    
+    // Extract title from h1 or recipe title class (but don't use it - we'll use OG title)
+    // We're just checking if there's a recipe structure, not extracting the title
+    const titlePatterns = [
+      /<h1[^>]*class[^>]*recipe[^>]*>([\s\S]*?)<\/h1>/i,
+      /<h1[^>]*>([\s\S]*?)<\/h1>/i,
+      /<h2[^>]*class[^>]*recipe[^>]*title[^>]*>([\s\S]*?)<\/h2>/i,
+    ];
+    let hasTitle = false;
+    for (const pattern of titlePatterns) {
+      const match = cleanHtml.match(pattern);
+      if (match) {
+        const titleText = match[1].replace(/<[^>]*>/g, "").trim();
+        if (titleText && titleText.length > 5 && titleText.length < 200) {
+          hasTitle = true;
+          break;
+        }
+      }
+    }
+    
+    // Extract ingredients - try multiple patterns (using cleaned HTML)
+    const ingredients: string[] = [];
+    const ingredientSections: Array<{ name: string | null; ingredients: string[] }> = [];
+    
+    // Helper to decode HTML entities
+    const decodeHtmlEntities = (text: string): string => {
+      const entityMap: { [key: string]: string } = {
+        '&amp;': '&',
+        '&lt;': '<',
+        '&gt;': '>',
+        '&quot;': '"',
+        '&#39;': "'",
+        '&nbsp;': ' ',
+        '&#9634;': '', // Remove square character
+        '&#8203;': '', // Zero-width space
+        '&#160;': ' ',
+      };
+      // Decode numeric entities like &#9634;
+      let decoded = text.replace(/&#(\d+);/g, (match, num) => {
+        const code = parseInt(num, 10);
+        // Common ones we want to remove or replace
+        if (code === 9634) return ''; // Square
+        if (code === 8203) return ''; // Zero-width space
+        if (code === 160) return ' '; // Non-breaking space
+        // For other numeric entities, try to convert to character
+        return String.fromCharCode(code);
+      });
+      // Decode named entities
+      for (const [entity, replacement] of Object.entries(entityMap)) {
+        decoded = decoded.replace(new RegExp(entity, 'g'), replacement);
+      }
+      return decoded;
+    };
+    
+    // Helper to clean text and filter out JavaScript/noise
+    // For ingredients, we want to preserve quantities (like "6 tbsp butter")
+    const cleanText = (text: string): string | null => {
+      if (!text) return null;
+      // Decode HTML entities first
+      let cleaned = decodeHtmlEntities(text);
+      // Remove HTML tags but preserve spacing between quantity and ingredient
+      cleaned = cleaned.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      
+      // Remove only decorative bullets/squares at the start, but preserve ALL quantities and numbers
+      // Match patterns like "• ", "&#9634; ", "- ", "* " but NOT "6 tbsp" or "1/2 cup" or "1. 6 tbsp"
+      // We're very conservative here - only remove obvious decorative characters
+      cleaned = cleaned.replace(/^[\s\-•*&#9634;]+\s*/, "").trim();
+      
+      // For ingredients, we want to preserve quantities at all costs
+      // Don't remove list numbers (1., 2., etc.) as they might be part of the structure
+      // and removing them could accidentally remove quantities
+      // The unified_parser will handle cleaning these up later if needed
+      
+      // Filter out JavaScript patterns
+      if (/gtag|function|var\s+\w+\s*=|console\.|window\.|document\.|script|javascript:/i.test(cleaned)) {
+        return null; // Skip JavaScript
+      }
+      // Filter out URLs
+      if (/https?:\/\//i.test(cleaned)) {
+        return null;
+      }
+      // Filter out code-like patterns (quotes, semicolons, etc. that suggest code)
+      if (/['"]\s*[,;]\s*['"]|=>|\(\)\s*=>|function\s*\(/i.test(cleaned)) {
+        return null;
+      }
+      return cleaned;
+    };
+    
+    // Pattern 1: List items in ingredient sections (more flexible patterns)
+    // First, try to find the main ingredients section
+    const ingSectionPatterns = [
+      /<h[2-4][^>]*>\s*ingredients?\s*<\/h[2-4]>([\s\S]{0,20000}?)(?=<h[2-4][^>]*>\s*(?:instructions?|directions?|steps?|method)|<\/section|<\/div|$)/i,
+      /<div[^>]*class[^>]*ingredient[^>]*>([\s\S]{0,20000}?)(?=<\/div>)/i,
+      /<ul[^>]*class[^>]*ingredient[^>]*>([\s\S]{0,20000}?)(?=<\/ul>)/i,
+      // Also try finding ingredients list after "Ingredients" heading anywhere
+      /(?:^|>)\s*ingredients?\s*[:\-–—]?\s*([\s\S]{0,20000}?)(?=\s*(?:instructions?|directions?|steps?|method)|<h[2-4]|$)/i,
+      // Try uppercase INGREDIENTS
+      /<h[2-4][^>]*>\s*INGREDIENTS\s*<\/h[2-4]>([\s\S]{0,20000}?)(?=<h[2-4][^>]*>\s*(?:instructions?|directions?|steps?|method)|<\/section|<\/div|$)/i,
+    ];
+    
+    for (const pattern of ingSectionPatterns) {
+      const sectionMatch = cleanHtml.match(pattern);
+      if (sectionMatch) {
+        const mainSection = sectionMatch[1];
+        
+        // Try to detect subsections (like "FOR THE SHRIMP", "FOR THE SAUCE", etc.)
+        // Look for headings within the ingredients section - try multiple patterns
+        const subsectionPatterns = [
+          /<h[3-5][^>]*>([^<]+)<\/h[3-5]>([\s\S]*?)(?=<h[3-5][^>]*>|<\/ul>|<\/div>|$)/gi,
+          /<strong[^>]*>([^<]*(?:FOR\s+THE|FOR\s+)[^<]+)<\/strong>([\s\S]*?)(?=<strong[^>]*>|<\/ul>|<\/div>|$)/gi,
+          /<b[^>]*>([^<]*(?:FOR\s+THE|FOR\s+)[^<]+)<\/b>([\s\S]*?)(?=<b[^>]*>|<\/ul>|<\/div>|$)/gi,
+        ];
+        
+        let subsectionMatches: RegExpMatchArray[] = [];
+        for (const pattern of subsectionPatterns) {
+          const matches = [...mainSection.matchAll(pattern)];
+          if (matches.length > 0) {
+            subsectionMatches = matches;
+            break;
+          }
+        }
+        
+        if (subsectionMatches.length > 0) {
+          // We have subsections - extract each one
+          for (const subMatch of subsectionMatches) {
+            const sectionName = decodeHtmlEntities(subMatch[1]).replace(/<[^>]+>/g, '').trim();
+            const sectionContent = subMatch[2];
+            const sectionIngredients: string[] = [];
+            
+            // Extract list items from this subsection
+            const liMatches = [...sectionContent.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+            for (const liMatch of liMatches) {
+              // Get the RAW HTML first to see what we're working with
+              const rawHtml = liMatch[1];
+              let liContent = extractFullTextFromLi(rawHtml);
+              
+              // Debug: log first few ingredients to see what we're extracting
+              if (ingredients.length < 5) {
+                console.log('[HTML-EXTRACT] Raw HTML (first 300 chars):', rawHtml.substring(0, 300));
+                console.log('[HTML-EXTRACT] Extracted text:', liContent);
+              }
+              
+              if (liContent && liContent.length > 3 && liContent.length < 300) {
+                const hasQuantity = /(\d+\s+)?(\d+\/\d+|\d+)\s*(cup|cups|tsp|tbsp|oz|lb|g|kg|ml|l|tablespoon|teaspoon|pound|ounce|clove|cloves|sheet|sheets|large|small|medium|jumbo|head|heads|bunch|can|cans|package|packages)/i.test(liContent);
+                const hasIngredientWord = /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|hot\s+sauce|worcestershire|egg|eggs|oil|vegetable|canola|olive)\b/i.test(liContent);
+                if (hasQuantity || hasIngredientWord) {
+                  sectionIngredients.push(liContent);
+                  ingredients.push(liContent);
+                }
+              }
+            }
+            
+            if (sectionIngredients.length > 0) {
+              ingredientSections.push({ name: sectionName, ingredients: sectionIngredients });
+            }
+          }
+        }
+        
+        // If no subsections found, extract all ingredients from main section
+        if (ingredientSections.length === 0) {
+          const liMatches = [...mainSection.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+          for (const liMatch of liMatches) {
+            let liContent = extractFullTextFromLi(liMatch[1]);
+            if (liContent && liContent.length > 3 && liContent.length < 300) {
+              const hasQuantity = /(\d+\s+)?(\d+\/\d+|\d+)\s*(cup|cups|tsp|tbsp|oz|lb|g|kg|ml|l|tablespoon|teaspoon|pound|ounce|clove|cloves|sheet|sheets|large|small|medium|jumbo|head|heads|bunch|can|cans|package|packages)/i.test(liContent);
+              const hasIngredientWord = /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|hot\s+sauce|worcestershire|egg|eggs|oil|vegetable|canola|olive)\b/i.test(liContent);
+              if (hasQuantity || hasIngredientWord) {
+                ingredients.push(liContent);
+              }
+            }
+          }
+        }
+        
+        if (ingredients.length >= 2) break; // Need at least 2 to be valid
+      }
+    }
+    
+    // Helper function to extract full text from list item, preserving quantities
+    // This is critical - quantities might be in <strong>, <b>, <span> tags, so we need to preserve ALL text
+    function extractFullTextFromLi(htmlContent: string): string {
+      if (!htmlContent) return '';
+      
+      // Decode entities first - this handles &#9634; and other entities
+      let text = decodeHtmlEntities(htmlContent);
+      
+      // Remove script/style tags but keep everything else
+      text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
+      text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
+      
+      // IMPORTANT: Replace HTML tags with SINGLE spaces, not multiple
+      // This preserves spacing between quantity and unit
+      // Example: "<strong>6</strong> TBSP" becomes "6 TBSP" not "6TBSP"
+      text = text.replace(/<[^>]+>/g, ' ');
+      
+      // Normalize multiple spaces to single space, but preserve the content
+      text = text.replace(/\s+/g, ' ').trim();
+      
+      // Only remove decorative bullets/squares at the very start
+      // DO NOT remove numbers - they might be quantities!
+      // Match: •, -, *, &#9634;, but NOT digits
+      text = text.replace(/^[\s\-•*&#9634;]+\s*/, "").trim();
+      
+      // CRITICAL: Do NOT remove list item numbers automatically
+      // The HTML structure might have list numbers (1., 2., etc.) AND quantities (6 TBSP)
+      // We want to preserve everything and let the unified_parser handle cleanup
+      // Only remove list numbers if they're clearly NOT part of the ingredient
+      // Pattern: "1. " at start followed by something that doesn't look like a quantity
+      // But be VERY conservative - if in doubt, keep it
+      
+      // Check if it starts with a list number pattern (1-2 digits + . or ) + space)
+      const listNumPattern = /^(\d{1,2})[.)]\s+(.+)$/;
+      const match = text.match(listNumPattern);
+      if (match) {
+        const listNum = match[1];
+        const rest = match[2];
+        
+        // Only remove the list number if:
+        // 1. The rest does NOT start with a number (not a quantity)
+        // 2. AND the rest does NOT start with a fraction (not a quantity like "1/2")
+        // 3. AND the list number is small (1-9, not like "10" which could be "10 cups")
+        const startsWithNumber = /^\d/.test(rest);
+        const startsWithFraction = /^\d+\/\d+/.test(rest);
+        const isSmallListNum = parseInt(listNum) <= 9;
+        
+        if (!startsWithNumber && !startsWithFraction && isSmallListNum) {
+          // Probably a list marker, remove it
+          text = rest;
+        }
+        // Otherwise, keep the whole thing - the list number might be part of the structure
+      }
+      
+      return text;
+    }
+    
+    // Pattern 2: Direct list items with ingredient-like content (more lenient)
+    if (ingredients.length < 2) {
+      const allLiMatches = [...cleanHtml.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+      for (const liMatch of allLiMatches) {
+        let liContent = extractFullTextFromLi(liMatch[1]);
+        if (liContent && liContent.length > 5 && liContent.length < 300) {
+          // Strong ingredient indicators - handle complex quantities
+          const hasQuantity = /(\d+\s+)?(\d+\/\d+|\d+)\s*(cup|cups|tsp|tbsp|oz|lb|g|kg|ml|l|tablespoon|teaspoon|pound|ounce|sheet|sheets|large|small|medium|jumbo)/i.test(liContent);
+          const hasIngredientWord = /\b(jumbo|gulf|shrimp|butter|hot\s+sauce|cajun|seasoning|white\s+wine|chicken\s+broth|garlic|onion|lemon|parsley|worcestershire)\b/i.test(liContent);
+          if (hasQuantity || hasIngredientWord) {
+            ingredients.push(liContent);
+          }
+        }
+      }
+    }
+    
+    if (ingredients.length >= 2) {
+      result.ingredients = ingredients.slice(0, 30); // Limit to reasonable number
+      // If we found sections, include them
+      if (ingredientSections.length > 0) {
+        result.ingredientSections = ingredientSections;
+      }
+    }
+    
+    // Extract steps/instructions - try multiple patterns (using cleaned HTML)
+    const steps: string[] = [];
+    
+    // Helper to clean step text and filter out JavaScript/noise
+    const cleanStepText = (text: string, originalMatch?: string): string | null => {
+      if (!text) return null;
+      // Decode HTML entities first
+      let cleaned = decodeHtmlEntities(text);
+      // Remove HTML tags
+      cleaned = cleaned.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      // Remove leading numbers/bullets but preserve content
+      cleaned = cleaned.replace(/^[\d\s\-•*.)&#9634;]+\s*/, "").trim();
+      // Filter out non-step content (headings, section titles, etc.)
+      if (/^(what to serve|leftovers|reheating|notes|tips|faq|related|more like|nutrition|serving|calories|course|cuisine)/i.test(cleaned)) {
+        return null; // Skip section headings that aren't steps
+      }
+      // Filter out JavaScript patterns
+      if (/gtag|function|var\s+\w+\s*=|console\.|window\.|document\.|script|javascript:/i.test(cleaned)) {
+        return null; // Skip JavaScript
+      }
+      // Filter out URLs
+      if (/https?:\/\//i.test(cleaned)) {
+        return null;
+      }
+      // Filter out code-like patterns
+      if (/['"]\s*[,;]\s*['"]|=>|\(\)\s*=>|function\s*\(/i.test(cleaned)) {
+        return null;
+      }
+      // Filter out very short or very generic text
+      if (cleaned.length < 15) {
+        return null;
+      }
+      return cleaned;
+    };
+    
+    // Pattern 1: Instructions section (more flexible, stop before non-step sections)
+    const stepSectionPatterns = [
+      /<h[2-4][^>]*>\s*instructions?\s*<\/h[2-4]>([\s\S]{0,20000}?)(?=<h[2-4][^>]*>\s*(?:what to serve|leftovers|notes|tips|faq|nutrition|related|more like)|<\/section|<\/div|$)/i,
+      /<div[^>]*class[^>]*(?:instruction|direction|step|method)[^>]*>([\s\S]{0,20000}?)(?=<\/div>)/i,
+      /<ol[^>]*class[^>]*(?:instruction|direction|step)[^>]*>([\s\S]{0,20000}?)(?=<\/ol>)/i,
+      // Also try finding instructions after "Instructions" heading anywhere
+      /(?:^|>)\s*instructions?\s*[:\-–—]?\s*([\s\S]{0,20000}?)(?=<h[2-4][^>]*>\s*(?:what to serve|leftovers|notes|tips|faq|nutrition|related|more like)|<\/section|<\/div|$)/i,
+    ];
+    
+    for (const pattern of stepSectionPatterns) {
+      const sectionMatch = cleanHtml.match(pattern);
+      if (sectionMatch) {
+        const section = sectionMatch[1];
+        // First, try to find numbered steps (1., 2., etc.) in list items - these are most reliable
+        const numberedLiMatches = [...section.matchAll(/<li[^>]*>\s*(\d+[.)]\s+[^<]{20,600})/gi)];
+        for (const stepMatch of numberedLiMatches) {
+          const cleaned = cleanStepText(stepMatch[1], stepMatch[0]);
+          if (cleaned && cleaned.length > 15 && cleaned.length < 600) {
+            const hasCookingVerb = /\b(preheat|heat|melt|whisk|stir|mix|combine|add|pour|cook|bake|fry|simmer|boil|remove|transfer|serve|garnish|season|toss|flip|deglaze|bring|reduce|sauté|sautéed|start|working|wrap|set|allow|remove|garnish|using|caution|transfer|toss|coat|deglaze|scrape|whisk)\b/i.test(cleaned);
+            if (hasCookingVerb || cleaned.length > 30) {
+              steps.push(cleaned);
+            }
+          }
+        }
+        
+        // If we got numbered steps, use those. Otherwise try other patterns
+        if (steps.length === 0) {
+          const stepMatches = [
+            ...section.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi),
+            ...section.matchAll(/<p[^>]*>\s*(\d+[.)]\s+[^<]{20,600})/gi),
+            ...section.matchAll(/(?:^|\n)\s*(\d+[.)]\s+[^\n]{20,600})/gi),
+          ];
+          
+          for (const stepMatch of stepMatches) {
+            const cleaned = cleanStepText(stepMatch[1], stepMatch[0]);
+            if (cleaned && cleaned.length > 15 && cleaned.length < 600) {
+              const hasCookingVerb = /\b(preheat|heat|melt|whisk|stir|mix|combine|add|pour|cook|bake|fry|simmer|boil|remove|transfer|serve|garnish|season|toss|flip|deglaze|bring|reduce|sauté|sautéed|start|working|wrap|set|allow|remove|garnish|using|caution|transfer|toss|coat|deglaze|scrape|whisk)\b/i.test(cleaned);
+              const isNumbered = stepMatch[0] ? /^\d+[.)]\s+/.test(stepMatch[0]) : false;
+              if ((hasCookingVerb || isNumbered) && cleaned.length > 20) {
+                steps.push(cleaned);
+              }
+            }
+          }
+        }
+        
+        if (steps.length >= 1) break; // Need at least 1 step
+      }
+    }
+    
+    // Pattern 2: Direct numbered steps in HTML (more flexible)
+    if (steps.length < 1) {
+      // Look for numbered steps anywhere in the HTML
+      const numberedSteps = [
+        ...cleanHtml.matchAll(/<li[^>]*>\s*(\d+[.)]\s+[^<]{15,600})/gi),
+        ...cleanHtml.matchAll(/<p[^>]*>\s*(\d+[.)]\s+[^<]{15,600})/gi),
+        ...cleanHtml.matchAll(/(?:^|>)\s*(\d+[.)]\s+[^\n<]{15,600})/gi),
+      ];
+      for (const stepMatch of numberedSteps) {
+        const cleaned = cleanStepText(stepMatch[1], stepMatch[0]);
+        if (cleaned && cleaned.length > 10 && cleaned.length < 600) {
+          // More lenient - if it's numbered and has reasonable length, include it
+          const hasCookingVerb = /\b(preheat|heat|melt|whisk|stir|mix|combine|add|pour|cook|bake|fry|simmer|boil|remove|transfer|serve|garnish|season|toss|flip|deglaze|bring|reduce|sauté|sautéed|start|working|wrap|set|allow|remove|garnish|using|caution|transfer)\b/i.test(cleaned);
+          if (hasCookingVerb || cleaned.length > 30) { // Include if has verb OR is substantial
+            steps.push(cleaned);
+          }
+        }
+      }
+    }
+    
+    if (steps.length >= 1) {
+      result.steps = steps.slice(0, 30); // Limit to reasonable number
+    }
+    
+    // Merge wprm result with HTML fallback result
+    if (wprmResult) {
+      // Prefer wprm ingredients (they're more reliable), but use HTML steps if wprm didn't have them
+      if (wprmResult.ingredients?.length) {
+        result.ingredients = wprmResult.ingredients;
+        result.ingredientSections = wprmResult.ingredientSections;
+      }
+      // Use wprm steps if available, otherwise use HTML steps
+      if (wprmResult.steps?.length) {
+        result.steps = wprmResult.steps;
+      }
+      // Use wprm title if available
+      if (wprmResult.title && !result.title) {
+        result.title = wprmResult.title;
+      }
+      console.log('[HTML-EXTRACT] Merged wprm + HTML results:', {
+        ingredientsCount: result.ingredients?.length,
+        stepsCount: result.steps?.length,
+        sectionsCount: result.ingredientSections?.length,
+      });
+    }
+    
+    // Don't return title from HTML - we'll use OG title instead
+    // Only return if we have ingredients or steps
+    return (result.ingredients?.length || result.steps?.length) ? result : null;
   } catch {
     return null;
   }
