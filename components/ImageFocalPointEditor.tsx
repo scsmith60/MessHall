@@ -2,10 +2,10 @@
 // Allows user to pan/zoom an image and select the focal point area to crop
 
 import React, { useCallback, useState, useEffect } from 'react';
-import { View, StyleSheet, Modal, TouchableOpacity, Text, Dimensions, Platform } from 'react-native';
+import { View, StyleSheet, Modal, TouchableOpacity, Text, Dimensions } from 'react-native';
 import { Image } from 'expo-image';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { useSharedValue, useAnimatedStyle, clamp } from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import Animated, { useSharedValue, useAnimatedStyle, clamp, runOnJS } from 'react-native-reanimated';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { COLORS, RADIUS, SPACING } from '../lib/theme';
 import { tap, success } from '../lib/haptics';
@@ -31,6 +31,18 @@ export default function ImageFocalPointEditor({ visible, imageUri, onCancel, onC
   const savedScale = useSharedValue(1);
   const savedTranslateX = useSharedValue(0);
   const savedTranslateY = useSharedValue(0);
+
+  // Reset gesture values when modal opens
+  useEffect(() => {
+    if (visible) {
+      scale.value = 1;
+      translateX.value = 0;
+      translateY.value = 0;
+      savedScale.value = 1;
+      savedTranslateX.value = 0;
+      savedTranslateY.value = 0;
+    }
+  }, [visible]);
 
   // Load image dimensions
   useEffect(() => {
@@ -76,8 +88,9 @@ export default function ImageFocalPointEditor({ visible, imageUri, onCancel, onC
   const constrainTranslation = useCallback(() => {
     if (imageSize.width === 0 || imageSize.height === 0) return;
     
-    const scaledWidth = imageSize.width * scale.value;
-    const scaledHeight = imageSize.height * scale.value;
+    const currentScale = scale.value;
+    const scaledWidth = imageSize.width * currentScale;
+    const scaledHeight = imageSize.height * currentScale;
     
     const maxX = Math.max(0, (scaledWidth - EDITOR_WIDTH) / 2);
     const maxY = Math.max(0, (scaledHeight - EDITOR_HEIGHT) / 2);
@@ -89,32 +102,47 @@ export default function ImageFocalPointEditor({ visible, imageUri, onCancel, onC
   }, [imageSize]);
 
   // Combined gesture that handles both pinch and pan
-  const composedGesture = Gesture.Simultaneous(
-    // Pinch gesture for zoom (requires 2 fingers)
-    Gesture.Pinch()
-      .onUpdate((e) => {
-        const newScale = savedScale.value * e.scale;
-        scale.value = clamp(newScale, MIN_SCALE, MAX_SCALE);
-      })
-      .onEnd(() => {
-        savedScale.value = scale.value;
-        constrainTranslation();
-      }),
-    // Pan gesture for moving (single finger drag)
-    Gesture.Pan()
-      .onUpdate((e) => {
-        // Only pan if we have exactly 1 finger (not during pinch)
-        if (e.numberOfPointers === 1) {
-          translateX.value = savedTranslateX.value + e.translationX;
-          translateY.value = savedTranslateY.value + e.translationY;
-        }
-      })
-      .onEnd(() => {
-        savedTranslateX.value = translateX.value;
-        savedTranslateY.value = translateY.value;
-        constrainTranslation();
-      })
-  );
+  // Use Simultaneous so both can work together
+  const pinchGesture = Gesture.Pinch()
+    .onStart(() => {
+      'worklet';
+      // Save current scale when pinch starts
+      savedScale.value = scale.value;
+    })
+    .onUpdate((e) => {
+      'worklet';
+      const newScale = savedScale.value * e.scale;
+      scale.value = clamp(newScale, MIN_SCALE, MAX_SCALE);
+    })
+    .onEnd(() => {
+      'worklet';
+      savedScale.value = scale.value;
+      runOnJS(constrainTranslation)();
+    });
+
+  const panGesture = Gesture.Pan()
+    .minPointers(1)
+    .maxPointers(1)
+    .onStart(() => {
+      'worklet';
+      // Save current values when pan starts
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+    })
+    .onUpdate((e) => {
+      'worklet';
+      translateX.value = savedTranslateX.value + e.translationX;
+      translateY.value = savedTranslateY.value + e.translationY;
+    })
+    .onEnd(() => {
+      'worklet';
+      savedTranslateX.value = translateX.value;
+      savedTranslateY.value = translateY.value;
+      runOnJS(constrainTranslation)();
+    });
+
+  // Use Simultaneous so both gestures can work together
+  const composedGesture = Gesture.Simultaneous(pinchGesture, panGesture);
 
   const animatedStyle = useAnimatedStyle(() => {
     return {
@@ -231,36 +259,46 @@ export default function ImageFocalPointEditor({ visible, imageUri, onCancel, onC
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={handleCancel}>
-      <View style={styles.container}>
+      <GestureHandlerRootView style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Adjust Image</Text>
-          <Text style={styles.subtitle}>
-            {Platform.OS === 'web' || __DEV__ 
-              ? 'Drag to move • Ctrl+Scroll to zoom (or pinch on device)'
-              : 'Pinch to zoom, drag to move'}
-          </Text>
+          <Text style={styles.subtitle}>Pinch to zoom, drag to move</Text>
         </View>
         
         <View style={styles.editorContainer}>
-          <GestureDetector gesture={composedGesture}>
+          {/* Image layer - behind everything, no touch handling */}
+          {imageSize.width > 0 && imageUri ? (
             <Animated.View 
-              style={[styles.imageContainer, animatedStyle]}
+              style={[StyleSheet.absoluteFill, { zIndex: 1, justifyContent: 'center', alignItems: 'center' }]}
+              pointerEvents="none"
               collapsable={false}
             >
-              {imageSize.width > 0 && (
+              <Animated.View 
+                style={[styles.imageContainer, animatedStyle]}
+                collapsable={false}
+              >
                 <Image
                   source={{ uri: imageUri }}
                   style={{ width: imageSize.width, height: imageSize.height }}
                   contentFit="contain"
+                  pointerEvents="none"
                 />
-              )}
+              </Animated.View>
             </Animated.View>
-          </GestureDetector>
+          ) : null}
           
-          {/* Overlay frame to show crop area */}
-          <View style={styles.overlay} pointerEvents="none">
+          {/* Overlay frame to show crop area - behind gestures but visible */}
+          <View style={[styles.overlay, { zIndex: 2 }]} pointerEvents="none">
             <View style={styles.cropFrame} />
           </View>
+          
+          {/* GestureDetector MUST be on top to receive all touches */}
+          <GestureDetector gesture={composedGesture}>
+            <Animated.View 
+              style={[StyleSheet.absoluteFill, { zIndex: 10, backgroundColor: 'transparent' }]}
+              collapsable={false}
+            />
+          </GestureDetector>
         </View>
         
         <View style={styles.footer}>
@@ -271,7 +309,7 @@ export default function ImageFocalPointEditor({ visible, imageUri, onCancel, onC
             <Text style={styles.confirmButtonText}>Use This</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -312,8 +350,6 @@ const styles = StyleSheet.create({
   imageContainer: {
     justifyContent: 'center',
     alignItems: 'center',
-    width: '100%',
-    height: '100%',
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,

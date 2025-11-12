@@ -130,6 +130,7 @@ export default function FloatingBell() {
 
   const hasUnread = count > 0;
   const scale = pop.interpolate({ inputRange: [0, 1], outputRange: [1, 1.08] });
+  const topOffset = Math.max(8, insets.top + 8);
 
   return (
     <>
@@ -139,7 +140,7 @@ export default function FloatingBell() {
         style={{
           position: "absolute",
           right: 12,                      // move farther left if overlapping search
-          top: Math.max(8, insets.top + 8),
+          top: topOffset,
           zIndex: 9999,
         }}
       >

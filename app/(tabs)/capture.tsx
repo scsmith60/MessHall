@@ -1893,7 +1893,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
       if (importRunIdRef.current !== runId) return;
       if (!gotSomethingForRunRef.current) {
         hardResetImport();
-        setNotice({ visible: true, title: "Mission Timeout", message: "Import took too long. Try again." });
+        setNotice({ 
+          visible: true, 
+          title: "Mission Timeout", 
+          message: "Import took too long. The URL might be invalid or the site might be slow. Please check the URL and try again." 
+        });
       }
     }, IMPORT_HARD_TIMEOUT_MS);
 
@@ -2726,11 +2730,27 @@ function stitchBrokenSteps(lines: string[]): string[] {
     hardResetImport();
     
     const candidateInput = (pastedUrl?.trim() || "") || (sharedRaw?.trim() || "");
+    
+    // Check if it's just a TikTok video ID (like "_id=7542000795349976590")
+    const tiktokIdMatch = candidateInput.match(/(?:^|_id=)(\d{15,})/);
+    if (tiktokIdMatch && !candidateInput.includes('http')) {
+      setImg({ kind: "none" });
+      return setNotice({ 
+        visible: true, 
+        title: "Invalid URL", 
+        message: "Please paste the full TikTok URL (e.g., https://www.tiktok.com/@user/video/1234567890), not just the video ID." 
+      });
+    }
+    
     const url = extractFirstUrl(candidateInput);
     if (!url || !/^https?:\/\//i.test(url)) {
       // Only reset image if URL is invalid
       setImg({ kind: "none" });
-      return setNotice({ visible: true, title: "Mission Aborted", message: "Must paste a full link that starts with http(s)://" });
+      return setNotice({ 
+        visible: true, 
+        title: "Invalid URL", 
+        message: "Please paste a full link that starts with http:// or https://" 
+      });
     }
     const isDup = await checkDuplicateSourceUrl(url);
     if (isDup) {
@@ -2788,6 +2808,71 @@ function stitchBrokenSteps(lines: string[]): string[] {
       if (cleanedSourceUrl) {
         const { extractSourceUserFromUrl } = await import("@/lib/extractSourceUser");
         originalSourceUser = extractSourceUserFromUrl(cleanedSourceUrl);
+      }
+
+      // Check if recipe already exists (by source URL or title + first few ingredients)
+      const { data: auth } = await supabase.auth.getUser();
+      const userId = auth?.data?.user?.id;
+      
+      if (userId) {
+        // First check by source URL if available
+        if (cleanedSourceUrl) {
+          const { data: existingByUrl } = await supabase
+            .from("recipes")
+            .select("id, title")
+            .eq("user_id", userId)
+            .eq("source_url", cleanedSourceUrl)
+            .limit(1)
+            .single();
+          
+          if (existingByUrl) {
+            setSaving(false);
+            return setNotice({ 
+              visible: true, 
+              title: "Recipe Already Exists", 
+              message: `You already have a recipe "${existingByUrl.title}" from this URL.` 
+            });
+          }
+        }
+        
+        // Also check by title + first ingredient (fuzzy duplicate detection)
+        const trimmedTitle = title.trim().toLowerCase();
+        const firstIngredient = (ingredientSections && ingredientSections.length > 0
+          ? ingredientSections[0].ingredients[0]
+          : ingredients[0])?.toLowerCase().trim();
+        
+        if (trimmedTitle && firstIngredient) {
+          // First find recipes with matching title
+          const { data: recipesWithTitle } = await supabase
+            .from("recipes")
+            .select("id, title")
+            .eq("user_id", userId)
+            .ilike("title", trimmedTitle)
+            .limit(10);
+          
+          if (recipesWithTitle && recipesWithTitle.length > 0) {
+            // Check if any of these recipes have the same first ingredient
+            const recipeIds = recipesWithTitle.map(r => r.id);
+            const { data: matchingIngredients } = await supabase
+              .from("recipe_ingredients")
+              .select("recipe_id")
+              .in("recipe_id", recipeIds)
+              .eq("pos", 0)
+              .ilike("text", `%${firstIngredient.substring(0, 30)}%`)
+              .limit(1)
+              .single();
+            
+            if (matchingIngredients) {
+              const existingRecipe = recipesWithTitle.find(r => r.id === matchingIngredients.recipe_id);
+              setSaving(false);
+              return setNotice({ 
+                visible: true, 
+                title: "Similar Recipe Found", 
+                message: `You may already have a recipe "${existingRecipe?.title || 'with this title'}" with the same first ingredient.` 
+              });
+            }
+          }
+        }
       }
 
       const { data: created, error: createErr } = await supabase
@@ -2850,7 +2935,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     } finally {
       setSaving(false);
     }
-  }, [title, timeMinutes, servings, ingredients, steps, previewUri]);
+  }, [title, timeMinutes, servings, ingredients, steps, previewUri, ingredientSections]);
 
   // themed notice modal state
   const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>({ visible: false, title: "", message: "" });

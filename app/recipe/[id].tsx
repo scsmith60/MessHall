@@ -23,6 +23,9 @@ import RecipeComments from '../../components/RecipeComments';
 import { IngredientPicker } from '@/components/IngredientPicker';
 import { playDonutEasterEgg, playLambEasterEgg } from '@/lib/sounds';
 
+// Leave horizontal room for the floating notifications bell (40px button + spacing).
+const FLOATING_BELL_SAFE_OFFSET = 60;
+
 // Calories pill
 import { useRecipeCalories } from '@/lib/nutrition';
 import CaloriePill from '@/components/CaloriePill';
@@ -849,8 +852,8 @@ export default function RecipeDetail() {
             activeOpacity={0.85}
             style={{
               position: 'absolute',
-              top: Math.max(8, insets.top) + 4,
-              right: Math.max(8, insets.right) + 12,
+              top: Math.max(8, insets.top + 8),
+              right: Math.max(8, insets.right) + FLOATING_BELL_SAFE_OFFSET,
               width: 36,
               height: 36,
               borderRadius: 18,
