@@ -336,9 +336,16 @@ export default function HomeScreen() {
   const seenRailImpressions = useRef<Set<string>>(new Set());
   const listRef = useRef<FlatList>(null);
   const lastOffsetY = useRef(0);
-  const pendingRestoreY = useRef<number | null>(null);   // NEW
-  const restoreTries = useRef(0);                        // NEW
-  const restoreDeadlineAt = useRef<number>(0);           // NEW: hard deadline to stop trying
+  const lastSessionOffsetRef = useRef(0);
+  const lastSavedY = useRef(0);
+  const pendingRestoreY = useRef<number | null>(null);   // remember target offset to restore
+  const restoreTries = useRef(0);
+  const restoreDeadlineAt = useRef<number>(0);           // hard deadline to stop trying
+
+  const cancelPendingRestore = useCallback(() => {
+    pendingRestoreY.current = null;
+    restoreDeadlineAt.current = 0;
+  }, []);
 
   // privacy: only show your own private recipes
   const safetyFilter = useCallback(
@@ -675,7 +682,9 @@ export default function HomeScreen() {
         // placement-aware click for shelf (send shelf_id in meta, slot_id null to avoid FK fail)
         logAdEventV2({ placement: "rail", event_type: "click", slot_id: null, meta: { unit: "rail_shelf", where: "home_rail", recipe_id: it.id, shelf_id: railShelfId } });
       }
-      await persistScrollOffset(lastOffsetY.current);
+      const currentY = lastOffsetY.current;
+      lastSessionOffsetRef.current = currentY;
+      await persistScrollOffset(currentY);
       router.push(`/recipe/${it.id}`);
       return;
     }
@@ -1243,6 +1252,7 @@ export default function HomeScreen() {
     }
 
     // reset saved scroll on manual refresh so users see newest
+    lastSessionOffsetRef.current = 0;
     await persistScrollOffset(0);
     await loadPage(0, true);
     await success();
@@ -1266,51 +1276,135 @@ export default function HomeScreen() {
   }).current;
 
   // remember & restore scroll
-  const attemptRestoreScroll = () => {
+  const attemptRestoreScroll = useCallback(() => {
     if (pendingRestoreY.current == null) return;
-    const y = pendingRestoreY.current;
+    const targetY = pendingRestoreY.current;
+    if (targetY <= 1) {
+      cancelPendingRestore();
+      return;
+    }
     if (restoreDeadlineAt.current && Date.now() > restoreDeadlineAt.current) {
-      pendingRestoreY.current = null;
+      cancelPendingRestore();
       return;
     }
     InteractionManager.runAfterInteractions(() => {
-      setTimeout(() => {
-        listRef.current?.scrollToOffset({ offset: y, animated: false });
-        restoreTries.current += 1;
-        if (pendingRestoreY.current != null) {
-          setTimeout(() => attemptRestoreScroll(), 100);
+      requestAnimationFrame(() => {
+        if (listRef.current && pendingRestoreY.current != null) {
+          const currentY = pendingRestoreY.current;
+          listRef.current.scrollToOffset({ offset: currentY, animated: false });
+          // Update lastOffsetY to prevent handleScroll from canceling the restore
+          lastOffsetY.current = currentY;
+          restoreTries.current += 1;
+          if (pendingRestoreY.current != null && restoreTries.current < 10) {
+            setTimeout(() => attemptRestoreScroll(), 120);
+          } else {
+            cancelPendingRestore();
+          }
         }
-      }, 0);
+      });
     });
-  };
+  }, [cancelPendingRestore]);
   // Persist last known offset if this screen blurs or unmounts
   useEffect(() => {
-    return () => { persistScrollOffset(lastOffsetY.current); };
+    return () => {
+      // Use the larger of the two to ensure we don't lose scroll position
+      const y = Math.max(lastOffsetY.current, lastSessionOffsetRef.current);
+      if (y > 0) {
+        lastSessionOffsetRef.current = y;
+        persistScrollOffset(y);
+      }
+    };
   }, []);
   useFocusEffect(
     React.useCallback(() => {
       let alive = true;
-      (async () => {
-        const y = await loadScrollOffset();
-        if (!alive) return;
+      const kickRestore = (y: number) => {
+        if (!alive || y <= 1) return;
         pendingRestoreY.current = y;
         restoreTries.current = 0;
         restoreDeadlineAt.current = Date.now() + 6000; // try for up to 6s
         attemptRestoreScroll();
-      })();
-      return () => { alive = false; };
-    }, [])
+      };
+
+      // Save current scroll position when screen loses focus (navigating away)
+      const saveCurrentPosition = async () => {
+        const y = lastOffsetY.current || lastSessionOffsetRef.current;
+        if (y > 0) {
+          lastSessionOffsetRef.current = y;
+          await persistScrollOffset(y);
+        }
+      };
+
+      // Restore scroll position when screen gains focus (coming back)
+      // Wait a bit longer to ensure FlatList is fully mounted and ready
+      const restoreAfterDelay = () => {
+        if (!alive) return;
+        // Try in-memory value first
+        if (lastSessionOffsetRef.current > 1) {
+          setTimeout(() => {
+            if (alive) kickRestore(lastSessionOffsetRef.current);
+          }, 200);
+        }
+        // Also load from storage as backup
+        (async () => {
+          const y = await loadScrollOffset();
+          if (!alive) return;
+          if (y > 1) {
+            // Use the larger of the two values (in case one is stale)
+            const bestY = Math.max(y, lastSessionOffsetRef.current);
+            if (bestY > 1) {
+              lastSessionOffsetRef.current = bestY;
+              setTimeout(() => {
+                if (alive && pendingRestoreY.current == null) {
+                  kickRestore(bestY);
+                }
+              }, 250);
+            }
+          }
+        })();
+      };
+
+      // Delay restore to ensure FlatList is ready
+      restoreAfterDelay();
+
+      return () => { 
+        alive = false;
+        // Save scroll position when navigating away
+        saveCurrentPosition();
+      };
+    }, [attemptRestoreScroll])
   );
   const handleMomentumEnd = useCallback(async (e: any) => {
     const y = e?.nativeEvent?.contentOffset?.y ?? 0;
     lastOffsetY.current = y;
+    lastSessionOffsetRef.current = y;
     await persistScrollOffset(y);
   }, []);
   const handleEndDrag = useCallback(async (e: any) => {
     const y = e?.nativeEvent?.contentOffset?.y ?? 0;
     lastOffsetY.current = y;
+    lastSessionOffsetRef.current = y;
     await persistScrollOffset(y);
   }, []);
+
+  const handleScroll = useCallback((e: any) => {
+    const y = e?.nativeEvent?.contentOffset?.y ?? 0;
+    lastOffsetY.current = y;
+    lastSessionOffsetRef.current = y;
+    // Persist scroll position periodically (every 100px or so) to ensure we have latest position
+    if (Math.abs(y - lastSavedY.current) > 100) {
+      lastSavedY.current = y;
+      persistScrollOffset(y);
+    }
+    if (pendingRestoreY.current != null) {
+      const target = pendingRestoreY.current;
+      // Only cancel restore if we're very close to target (within 5px) or way past it (50px+)
+      // Give it more tolerance to account for layout changes and timing
+      if (target <= 1 || Math.abs(y - target) < 5 || y > target + 50) {
+        cancelPendingRestore();
+      }
+    }
+  }, [cancelPendingRestore]);
    
   // Open a creator profile safely (username OR userId).
 // - If profile is viewable (not blocked either way), navigate.
@@ -1372,7 +1466,15 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
   }
 }, []);
 
-  function renderItem({ item }: ListRenderItemInfo<FeedItem>) {
+  // Memoized handler for opening recipes (saves scroll position)
+  const handleOpenRecipe = useCallback((id: string) => {
+    const currentY = lastOffsetY.current;
+    lastSessionOffsetRef.current = currentY;
+    persistScrollOffset(currentY);
+    router.push(`/recipe/${id}`);
+  }, []);
+
+  const renderItem = useCallback(({ item }: ListRenderItemInfo<FeedItem>) => {
     if (item.type === "sponsored") {
       const slot = item.slot ?? {
         id: item.id,
@@ -1411,7 +1513,7 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
         isPrivate={isPrivateFlag(item.is_private)}
         sourceUrl={item.sourceUrl ?? null}
         originalSourceUser={item.originalSourceUser ?? null}
-        onOpen={(id: string) => { persistScrollOffset(lastOffsetY.current); router.push(`/recipe/${id}`); }}
+        onOpen={handleOpenRecipe}
         onOpenCreator={handleOpenCreator}
         onEdit={(id: string) => router.push({ pathname: "/recipe/edit/[id]", params: { id } })}
         onOpenComments={(id: string) => openComments(id)}
@@ -1420,7 +1522,7 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
         onSave={() => toggleSave(item.id)}
       />
     );
-  }
+  }, [savedSet, viewerId, handleOpenCreator, openComments, toggleSave, handleOpenRecipe]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -1437,7 +1539,7 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
         data={data}
         keyExtractor={(it) => `${it.type}_${(it as any).id}`}
         renderItem={renderItem}
-        ItemSeparatorComponent={() => <View style={{ height: SPACING.lg }} />}
+        ItemSeparatorComponent={React.memo(() => <View style={{ height: SPACING.lg }} />)}
         onEndReachedThreshold={0.4}
         onEndReached={onEndReached}
         refreshControl={<RefreshControl tintColor="#fff" refreshing={refreshing} onRefresh={onRefresh} />}
@@ -1479,9 +1581,12 @@ const handleOpenCreator = React.useCallback(async (usernameOrId: string) => {
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
         initialNumToRender={8}
-        windowSize={11}
+        windowSize={10}
+        removeClippedSubviews={true}
+        maxToRenderPerBatch={10}
+        updateCellsBatchingPeriod={50}
         // track position continuously so we always know latest offset
-        onScroll={(e) => { const y = e?.nativeEvent?.contentOffset?.y ?? 0; lastOffsetY.current = y; }}
+        onScroll={handleScroll}
         scrollEventThrottle={16}
         // remember place when the scroll stops
         onMomentumScrollEnd={handleMomentumEnd}
