@@ -14,3 +14,5 @@ CHECK (creator_status IS NULL OR creator_status IN ('none', 'eligible', 'applied
 COMMENT ON CONSTRAINT profiles_creator_status_check ON profiles IS 
 'Ensures creator_status is one of: none, eligible, applied, approved, rejected, or NULL';
 
+
+

@@ -54,3 +54,5 @@ ORDER BY n.created_at DESC;
 -- Go to: Dashboard -> Logs -> Postgres Logs
 -- Look for messages starting with "Trigger fired:" or "SUCCESS:" or "Failed to create notification"
 
+
+

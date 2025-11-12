@@ -798,6 +798,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
       const lines = after.split(/\n+/);
       const ingLines: string[] = [];
       let cut = lines.length;
+      let inIngredientSection = true;
       for (let i = 0; i < lines.length; i++) {
         const l = (lines[i] || '').trim();
         if (!l) { // blank line - check if next lines look like steps and cut
@@ -805,27 +806,107 @@ function findDishTitleFromText(source: string, url: string): string | null {
           if (/^(steps?|directions?|method|instructions?)\b/i.test(next) || /^(Melt|Add|Heat|Cook|Whisk|Stir|Bring|Simmer|Boil|Turn up|Combine|Once|Preheat|Mix)\b/i.test(next)) { cut = i+1; break; }
           continue;
         }
-        if (/^(?:[\-\*\u2022]\s+|\d+[\.)]\s+)/.test(l)) { ingLines.push(l); continue; }
-        if (/(cup|tsp|tbsp|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|salt|pepper)/i.test(l)) { ingLines.push(l); continue; }
-        cut = i; break;
+        // Check if this is a section header like "For the Cake:" - keep it but continue collecting ingredients
+        const isSectionHeader = /^For\s+(?:the\s+)?[^:]+:\s*$/i.test(l);
+        if (isSectionHeader) {
+          ingLines.push(l);
+          inIngredientSection = true;
+          continue;
+        }
+        // Check if line looks like an ingredient (has quantity/unit, or starts with bullet/number)
+        const hasQuantityUnit = /(\d+(?:\/\d+)?(?:\.\d+)?|(?:¼|½|¾))\s*(?:cup|cups|tsp|tsps|tbsp|tbsps|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks|slice|slices|can|cans|package|packages|bunch|bunches|head|heads|piece|pieces|fillet|fillets|strip|strips|stalk|stalks|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers)\b/i.test(l);
+        if (/^(?:[\-\*\u2022]\s+|\d+[\.)]\s+)/.test(l) || hasQuantityUnit) { 
+          ingLines.push(l); 
+          inIngredientSection = true;
+          continue; 
+        }
+        // If we're in an ingredient section and this line has common ingredient words, keep it
+        if (inIngredientSection && /(cup|tsp|tbsp|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|salt|pepper|cheese|butter|flour|sugar|vanilla|cream|mascarpone)/i.test(l)) { 
+          ingLines.push(l); 
+          continue; 
+        }
+        // If we've collected ingredients and this doesn't look like one, stop
+        if (ingLines.length > 0 && !isSectionHeader) {
+          cut = i;
+          break;
+        }
       }
       ing = ingLines.join("\n");
       steps = lines.slice(cut).join("\n");
     } else if (sIdx >= 0) {
       steps = s.slice(sIdx);
+    } else {
+      // No explicit headers found - try to detect ingredients by looking for quantity+unit patterns
+      // This handles cases like "See more\n1 lb beef 3 cups broth..."
+      const quantityUnitPattern = /(\d+(?:\/\d+)?(?:\.\d+)?|(?:¼|½|¾))\s*(?:cup|cups|tsp|tsps|tbsp|tbsps|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks|slice|slices|can|cans|package|packages|bunch|bunches|head|heads|piece|pieces|fillet|fillets|strip|strips|stalk|stalks|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers)\b/i;
+      const firstIngMatch = s.search(quantityUnitPattern);
+      
+      if (firstIngMatch >= 0) {
+        // Found a quantity+unit pattern - this likely starts the ingredients
+        // Look for where ingredients end (steps start or end of meaningful content)
+        const afterIng = s.slice(firstIngMatch);
+        const lines = afterIng.split(/\n+/);
+        const ingLines: string[] = [];
+        let cut = lines.length;
+        
+        // Also check for ingredients in the same line (space-separated)
+        const firstLine = lines[0] || '';
+        if (firstLine && quantityUnitPattern.test(firstLine)) {
+          // This line likely contains multiple ingredients separated by spaces
+          // We'll let explodeIngredientsBlock handle splitting them
+          ingLines.push(firstLine);
+        }
+        
+        for (let i = 1; i < lines.length; i++) {
+          const l = (lines[i] || '').trim();
+          if (!l) {
+            const next = (lines.slice(i+1).find(x => x.trim().length>0) || '').trim();
+            if (/^(steps?|directions?|method|instructions?)\b/i.test(next) || /^(Melt|Add|Heat|Cook|Whisk|Stir|Bring|Simmer|Boil|Turn up|Combine|Once|Preheat|Mix|Season|Place|Remove|Serve|Garnish)\b/i.test(next)) {
+              cut = i+1;
+              break;
+            }
+            continue;
+          }
+          // Check if this line looks like an ingredient (has quantity+unit or common ingredient words)
+          if (quantityUnitPattern.test(l) || /^(?:[\-\*\u2022]\s+|\d+[\.)]\s+)/.test(l) || 
+              /(cup|tsp|tbsp|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|salt|pepper|diced|sliced|minced|chopped|beef|chicken|pork|fish|onion|garlic|pepper|bell pepper|tomato|cheese|butter|oil|flour|sugar)/i.test(l)) {
+            ingLines.push(l);
+            continue;
+          }
+          // Check if this line looks like a step (action verbs)
+          if (/^(Melt|Add|Heat|Cook|Whisk|Stir|Bring|Simmer|Boil|Turn up|Combine|Once|Preheat|Mix|Season|Place|Remove|Serve|Garnish|In a|Pour|Drizzle|Sprinkle|Top|Layer)\b/i.test(l)) {
+            cut = i;
+            break;
+          }
+          // If we've collected some ingredients and this line doesn't look ingredient-like, stop
+          if (ingLines.length > 0) {
+            cut = i;
+            break;
+          }
+        }
+        
+        if (ingLines.length > 0) {
+          ing = ingLines.join("\n");
+          steps = lines.slice(cut).join("\n");
+          before = s.slice(0, firstIngMatch).trim();
+        }
+      }
     }
 
     if (!ing && !steps) return { before, ing: "", steps: "" };
     
     // Calculate before - everything before ingredients/steps, but stop at "Ingredients:" if it appears in the title area
     const beforeEnd = Math.min(...[iIdx, sIdx].filter(x => x >= 0));
-    let beforeText = s.slice(0, beforeEnd).trim();
+    let beforeText = before || (beforeEnd >= 0 ? s.slice(0, beforeEnd).trim() : s.trim());
     
     // If "Ingredients:" appears in the before text, cut it off there (title shouldn't include ingredients)
     const ingInBefore = beforeText.toLowerCase().search(/\bingredients?\s*:/);
     if (ingInBefore >= 0) {
       beforeText = beforeText.slice(0, ingInBefore).trim();
     }
+    
+    // Also remove "See more" and similar TikTok UI text from the beginning
+    beforeText = beforeText.replace(/^(see\s+more|less|more|show\s+more)\s*/i, "").trim();
     
     return { before: beforeText, ing, steps };
   }
@@ -837,21 +918,29 @@ function findDishTitleFromText(source: string, url: string): string | null {
     let txt = block
       .replace(/^\s*ingredients?:?/i, "")    // drop the heading
       .replace(/[\u2022\u25CF\u25CB]/g, "\u2022") // normalize bullets
+      .replace(/\u200B/g, "") // remove zero-width spaces
       .replace(/\s{2,}/g, " ")
       .trim();
+    
+    // Handle section headers like "For the Cake:" - split them onto separate lines
+    // so they don't get merged with ingredients
+    txt = txt.replace(/\b(For the [^:]+:)\s+/gi, "\n$1\n");
 
     // rule A: split on explicit bullets
     txt = txt.replace(/\s*\u2022\s*/g, "\n\u2022 ");
 
+    // Expanded unit pattern for better matching
+    const unitPattern = "(?:cup|cups|tsp|tsps|tbsp|tbsps|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks|slice|slices|can|cans|package|packages|bunch|bunches|head|heads|piece|pieces|fillet|fillets|strip|strips|stalk|stalks|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers)";
+
     // rule B: split on ", " || "; " **when** there's a quantity/unit before it
     txt = txt.replace(
-      /(\d+(?:\.\d+)?|(?:¼|½|¾))\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b\s*[,;]\s*/gi,
+      new RegExp(`(\\d+(?:\\.\\d+)?|(?:¼|½|¾))\\s*${unitPattern}\\b\\s*[,;]\\s*`, "gi"),
       "$&\n"
     );
 
     // rule C: split when a new quantity+unit appears without punctuation
     txt = txt.replace(
-      /\s(?=(\d+(?:\/\d+)?(?:\.\d+)?|(?:¼|½|¾))\s*(?:cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks)\b)/gi,
+      new RegExp(`\\s(?=(\\d+(?:\\/\\d+)?(?:\\.\\d+)?|(?:¼|½|¾))\\s*${unitPattern}\\b)`, "gi"),
       "\n"
     );
 
@@ -1071,6 +1160,128 @@ function stitchBrokenSteps(lines: string[]): string[] {
     const stepBlock = explodeStepsBlock(steps);
     const beforeBlock = before ? `Title/Captions:\n${before.trim()}` : "";
     return [beforeBlock, ingBlock, stepBlock].filter(Boolean).join("\n\n").trim();
+  }
+
+  // Extract full caption from TikTok SIGI_STATE JSON
+  function extractCaptionFromSigi(sigi: any, dbg?: (m: string) => void): string | null {
+    if (!sigi || typeof sigi !== 'object') {
+      dbg?.("extractCaptionFromSigi: sigi is null or not an object");
+      return null;
+    }
+    
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const push = (value: any, source?: string) => {
+      if (!value) return;
+      const str = Array.isArray(value) ? value : [value];
+      for (const entry of str) {
+        if (entry == null) continue;
+        const text =
+          typeof entry === 'string'
+            ? entry
+            : typeof entry === 'number'
+            ? String(entry)
+            : typeof entry === 'object' && entry !== null && typeof entry.desc === 'string'
+            ? entry.desc
+            : typeof entry === 'object' && entry !== null && typeof entry.caption === 'string'
+            ? entry.caption
+            : typeof entry === 'object' && entry !== null && typeof entry.title === 'string'
+            ? entry.title
+            : null;
+        if (!text) continue;
+        const cleaned = text.toString().trim();
+        if (!cleaned || seen.has(cleaned)) continue;
+        seen.add(cleaned);
+        candidates.push(cleaned);
+        dbg?.(`Found caption candidate from ${source || 'unknown'} (length: ${cleaned.length}): ${cleaned.slice(0, 100)}...`);
+      }
+    };
+
+    // classic module
+    const im = sigi?.ItemModule;
+    if (im && typeof im === 'object') {
+      dbg?.("Checking ItemModule...");
+      const first: any = Object.values(im)[0];
+      if (first && typeof first === 'object') {
+        push(first?.desc, "ItemModule.desc");
+        push(first?.shareInfo?.shareTitle, "ItemModule.shareInfo.shareTitle");
+        push(first?.title, "ItemModule.title");
+      }
+    }
+
+    // universal data scopes (photo mode etc.) - this is the most common structure
+    const scope = sigi?.__DEFAULT_SCOPE__;
+    if (scope && typeof scope === 'object') {
+      dbg?.(`Checking __DEFAULT_SCOPE__ with ${Object.keys(scope).length} keys...`);
+      const structs: any[] = [];
+      const visited = new Set<any>();
+      const collectStructs = (node: any, out: any[], seen: Set<any>, depth: number) => {
+        if (!node || typeof node !== 'object') return;
+        if (seen.has(node) || depth > 6) return;
+        seen.add(node);
+        if (node.itemStruct && typeof node.itemStruct === 'object') {
+          out.push(node.itemStruct);
+        }
+        if (node.itemInfo && typeof node.itemInfo === 'object') {
+          collectStructs(node.itemInfo, out, seen, depth + 1);
+        }
+        if (node.state && typeof node.state === 'object') {
+          collectStructs(node.state, out, seen, depth + 1);
+        }
+        if (node.preload && typeof node.preload === 'object') {
+          collectStructs(node.preload, out, seen, depth + 1);
+        }
+        // Also check for direct desc/caption fields
+        if (typeof node.desc === 'string') {
+          out.push({ desc: node.desc });
+        }
+        if (typeof node.caption === 'string') {
+          out.push({ caption: node.caption });
+        }
+        for (const val of Object.values(node)) {
+          if (val && typeof val === 'object') {
+            collectStructs(val, out, seen, depth + 1);
+          }
+        }
+      };
+      for (const [key, node] of Object.entries(scope)) {
+        dbg?.(`Processing __DEFAULT_SCOPE__ key: ${key}`);
+        collectStructs(node, structs, visited, 0);
+      }
+      dbg?.(`Found ${structs.length} itemStructs in __DEFAULT_SCOPE__`);
+      for (const itemStruct of structs) {
+        push(itemStruct?.desc, "itemStruct.desc");
+        push(itemStruct?.imagePost?.caption, "itemStruct.imagePost.caption");
+        push(itemStruct?.imagePost?.title, "itemStruct.imagePost.title");
+        push(itemStruct?.video?.desc, "itemStruct.video.desc");
+        push(itemStruct?.video?.title, "itemStruct.video.title");
+      }
+    }
+
+    // SEO/share spots (photo pages sometimes use these)
+    const metaSources = [sigi?.SEOState, sigi?.ShareMeta, sigi?.app, sigi?.SEOMeta];
+    for (const source of metaSources) {
+      if (!source || typeof source !== 'object') continue;
+      push(source?.metaParams?.title);
+      push(source?.metaParams?.description);
+      push(source?.shareMeta?.title);
+      push(source?.shareMeta?.description);
+    }
+
+    if (candidates.length) {
+      candidates.sort((a, b) => b.length - a.length);
+      return candidates[0];
+    }
+
+    // Generic hunt in the object
+    try {
+      const s = JSON.stringify(sigi);
+      const m = s.match(/"(?:description|desc)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/i);
+      if (m) {
+        return JSON.parse(`"${m[1]}"`);
+      }
+    } catch {}
+    return null;
   }
 
   async function fetchWithUA(url: string, ms = 7000, as: "json" | "text" = "text"): Promise<any> {
@@ -2479,8 +2690,67 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
           // STEP 2: PARSE - caption first (photos often hold full recipe here)
           try {
-            const cap = (domPayload?.caption || "").trim();
+            let cap = (domPayload?.caption || "").trim();
             const comments = (domPayload?.comments || []).map((s) => s.trim()).filter(Boolean);
+            
+            // If caption appears truncated (ends with "INGREDIENTS:" but has no actual ingredients, or ends mid-word),
+            // try to extract full caption from SIGI_STATE
+            const ingMatch = cap.match(/\bingredients?\s*:\s*(.*)$/i);
+            // Check if caption ends abruptly (mid-word, no punctuation, or very short word)
+            const endsAbruptly = /[a-z][A-Z]$/.test(cap) || // ends mid-word (lowercase followed by uppercase)
+                                 (/[a-z]\s*$/.test(cap) && !/[.!?]$/.test(cap)) || // ends with lowercase letter, no punctuation
+                                 /\b[a-z]{1,4}\s*$/i.test(cap); // ends with very short word (likely truncated, e.g. "Perf", "mak", etc.)
+            const isTruncated = 
+              /\bingredients?\s*:\s*$/i.test(cap) || // ends with "INGREDIENTS:" and nothing after
+              (ingMatch && ingMatch[1] && ingMatch[1].trim().length < 50) || // very short content after INGREDIENTS:
+              (/\bingredients?\s*:/i.test(cap) && cap.length < 500) || // caption with INGREDIENTS: but very short overall
+              endsAbruptly; // ends abruptly (mid-word or without punctuation)
+            
+            // Always try SIGI_STATE if available and caption mentions ingredients (might be truncated)
+            if (domPayload?.sigi && (isTruncated || /\bingredients?\s*:/i.test(cap))) {
+              dbg("≡ƒöì Caption mentions ingredients, trying SIGI_STATE extraction (truncated:", isTruncated, "endsAbruptly:", endsAbruptly, ")");
+              try {
+                const sigiCaption = extractCaptionFromSigi(domPayload.sigi, dbg);
+                if (sigiCaption) {
+                  dbg("≡ƒöì SIGI_STATE caption length:", sigiCaption.length, "vs DOM caption length:", cap.length);
+                  dbg("≡ƒöì SIGI_STATE caption preview:", sigiCaption.slice(0, 200));
+                  dbg("≡ƒöì DOM caption ends with:", cap.slice(-50));
+                  
+                  // Use SIGI_STATE caption if:
+                  // 1. It's longer, OR
+                  // 2. DOM caption is truncated AND SIGI_STATE has ingredients, OR
+                  // 3. DOM caption ends abruptly AND SIGI_STATE is close in length (within 5%) - prefer complete caption
+                  // 4. DOM caption mentions ingredients but SIGI_STATE is significantly longer (more complete)
+                  const sigiHasIngredients = sigiCaption.toLowerCase().includes('ingredients');
+                  const domHasIngredients = cap.toLowerCase().includes('ingredients');
+                  const lengthRatio = sigiCaption.length / cap.length;
+                  const shouldUseSigi = sigiCaption.length > cap.length || 
+                                        (isTruncated && sigiHasIngredients) ||
+                                        (endsAbruptly && lengthRatio >= 0.95) || // DOM ends abruptly, prefer SIGI_STATE if close in length
+                                        (domHasIngredients && !sigiHasIngredients && sigiCaption.length > cap.length * 1.1) || // SIGI_STATE much longer
+                                        (domHasIngredients && sigiHasIngredients && lengthRatio >= 0.98); // Both have ingredients, prefer longer if close
+                  
+                  if (shouldUseSigi) {
+                    dbg("≡ƒöì Using SIGI_STATE caption (length:", sigiCaption.length, "hasIngredients:", sigiHasIngredients, ")");
+                    // Log the section around INGREDIENTS: to debug parsing
+                    const ingIndex = sigiCaption.toLowerCase().indexOf('ingredients');
+                    if (ingIndex >= 0) {
+                      const start = Math.max(0, ingIndex - 50);
+                      const end = Math.min(sigiCaption.length, ingIndex + 300);
+                      dbg("≡ƒöì SIGI_STATE caption around INGREDIENTS:", sigiCaption.slice(start, end));
+                    }
+                    cap = sigiCaption;
+                  } else {
+                    dbg("≡ƒöì Keeping DOM caption (SIGI_STATE not better - length:", sigiCaption.length, "vs", cap.length, "hasIngredients:", sigiHasIngredients, ")");
+                  }
+                } else {
+                  dbg("≡ƒöì SIGI_STATE extraction returned null");
+                }
+              } catch (e) {
+                dbg("≡ƒöì SIGI_STATE extraction failed:", safeErr(e));
+              }
+            }
+            
             const dishTitleFromCaption = findDishTitleFromText(cap, url);
             // Only set title from caption if it's not junk and we don't already have a good title
             if (dishTitleFromCaption && !isTikTokJunkTitle(dishTitleFromCaption)) {
@@ -2501,10 +2771,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
             // A) build clean recipe text from CAPTION
             const capRecipe = captionToRecipeText(cap);
+            dbg("≡ƒöì capRecipe length:", capRecipe.length, "preview:", capRecipe.slice(0, 300));
 
             // B) parse caption text
             let parsed = parseRecipeText(capRecipe);
             dbg("≡ƒôè STEP 2A parse(CAPTION) conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+            if (parsed.ingredients.length === 0 && cap.toLowerCase().includes('ingredients')) {
+              dbg("≡ƒöì WARNING: Caption mentions ingredients but parser found 0. Full caption preview:", cap.slice(0, 500));
+            }
 
             // C) if still weak, fuse top comments and reparse
             if ((parsed.ingredients.length < 3 || parsed.steps.length < 1) && comments.length) {

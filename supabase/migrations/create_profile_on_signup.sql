@@ -27,3 +27,5 @@ GRANT ALL ON public.profiles TO postgres, anon, authenticated, service_role;
 COMMENT ON FUNCTION public.handle_new_user() IS 
 'Automatically creates a profile row when a new user signs up in auth.users';
 
+
+

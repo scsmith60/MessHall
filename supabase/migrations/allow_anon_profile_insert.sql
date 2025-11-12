@@ -17,3 +17,5 @@ WITH CHECK (id = auth.uid());
 COMMENT ON POLICY "anon can insert own profile during signup" ON public.profiles IS
 'Allows anonymous users to create their own profile during signup. The id must match auth.uid() which is set by Supabase auth.';
 
+
+

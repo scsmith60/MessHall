@@ -68,6 +68,7 @@ export default function TTDomScraper({
     (function(){
       try{
         function grabOnce(){
+          // Click "See more" button to expand truncated captions
           try{ Array.from(document.querySelectorAll('button')).forEach(b=>{ if(/see more/i.test(b.innerText||b.textContent||'')) try{ b.click(); }catch(e){} }); }catch(e){}
           var q = function(sel){ try{ var el=document.querySelector(sel); return el? (el.innerText||el.textContent||"").trim():""; }catch(e){ return "";} };
           var caption = q('[data-e2e="browse-video-desc"]') || q('[data-e2e="video-desc"]') || q('[data-e2e="new-desc-span"]') || q('[data-testid="post-caption"]') || q('[data-e2e="post-caption"]') || q('.tt-video-meta__desc') || q('.share-desc') || q('h1') || q('.video-meta-title') || q('.post-desc') || "";

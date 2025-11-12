@@ -52,3 +52,5 @@ GRANT EXECUTE ON FUNCTION admin_update_creator_status TO authenticated;
 COMMENT ON FUNCTION admin_update_creator_status IS 
 'Admin function to update creator_status and monetize_enabled_at. Bypasses RLS using SECURITY DEFINER.';
 
+
+

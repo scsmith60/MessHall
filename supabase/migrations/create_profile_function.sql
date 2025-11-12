@@ -47,3 +47,5 @@ GRANT EXECUTE ON FUNCTION public.create_or_update_profile(UUID, TEXT, TEXT) TO a
 COMMENT ON FUNCTION public.create_or_update_profile(UUID, TEXT, TEXT) IS 
 'Creates or updates a user profile. Uses SECURITY DEFINER to bypass RLS policies. Safe to call during signup.';
 
+
+

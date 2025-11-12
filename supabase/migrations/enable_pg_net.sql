@@ -13,3 +13,5 @@ WHERE extname = 'pg_net';
 -- If it returns no rows, you may need to contact Supabase support
 -- as some extensions require special permissions
 
+
+

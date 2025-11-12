@@ -19,3 +19,5 @@ CREATE POLICY "Only approved creators can create sessions" ON enlisted_club_sess
 COMMENT ON POLICY "Only approved creators can create sessions" ON enlisted_club_sessions IS
   'Only users with creator_status = ''approved'' can create new Enlisted Club sessions. This ensures quality control and that hosts can receive tips.';
 
+
+
