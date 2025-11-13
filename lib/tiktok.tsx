@@ -1,14 +1,14 @@
 // lib/tiktok.tsx
-// 🧒 like I'm 5:
+// ðŸ§’ like I'm 5:
 // - We open the TikTok page inside a tiny window.
 // - We wait for DOM + load + 2 frames + your delay.
 // - We take a picture of that window.
 // - resnapKey = take another picture without reloading (fast).
 // - focusY tells us where on the page to look; we scroll there and re-snap.
 // - SMART bits:
-//     • “Hard top” clamp: if the math goes above the very top, we use top=0.
-//     • Zoom is anchored to the TOP-CENTER (not top-left), so “Top” really
-//       shows the hero image and doesn’t shove content to the left.
+//     â€¢ â€œHard topâ€ clamp: if the math goes above the very top, we use top=0.
+//     â€¢ Zoom is anchored to the TOP-CENTER (not top-left), so â€œTopâ€ really
+//       shows the hero image and doesnâ€™t shove content to the left.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal, View, StyleSheet, ActivityIndicator, LayoutChangeEvent } from "react-native";
@@ -21,7 +21,7 @@ type TikTokSnapProps = {
   visible: boolean;            // show/hide modal
   reloadKey: number;           // HARD reload (first attempt)
   resnapKey?: number;          // SOFT re-snap (no reload) for retries or focus changes
-  zoom?: number;               // 1.0 normal, 1.5–2.0 closer
+  zoom?: number;               // 1.0 normal, 1.5â€“2.0 closer
   focusY?: number;             // 0..1 = where on the page we want to look
   focusCenter?: number;        // 0..1 = target spot inside viewport (0=top, 0.5=center)
   captureDelayMs?: number;     // wait INSIDE the page before each snap
@@ -87,7 +87,7 @@ export default function TikTokSnap({
     if (width && height) { setBoxW(width); setBoxH(height); }
   }, []);
 
-  // “ready?” flags for the HARD load
+  // â€œready?â€ flags for the HARD load
   const [readyDom, setReadyDom]     = useState(false);
   const [readyLoad, setReadyLoad]   = useState(false);
   const [readyRaf2, setReadyRaf2]   = useState(false);
@@ -159,70 +159,368 @@ export default function TikTokSnap({
       (function () {
         function post(type, payload){ try{ window.ReactNativeWebView.postMessage(JSON.stringify({type, payload})); }catch(e){} }
         
-        // Hide play buttons immediately when DOM is ready
-        function hidePlayButtons() {
+        function classStr(el){
+          if (!el) return '';
+          var cn = typeof el.className === 'string' ? el.className : (el.getAttribute && el.getAttribute('class')) || '';
+          return String(cn || '').toLowerCase();
+        }
+
+        function attrLower(el, name){
+          return el && el.getAttribute ? String(el.getAttribute(name) || '').toLowerCase() : '';
+        }
+
+        function innerTextLower(el){
+          return (el && (el.innerText || el.textContent) || '').trim().toLowerCase();
+        }
+
+        function isHugeContainer(el){
           try {
-            // Add CSS style
+            var rect = el.getBoundingClientRect();
+            return rect && rect.width > window.innerWidth * 0.9 && rect.height > window.innerHeight * 0.9;
+          } catch(e) { return false; }
+        }
+
+        function isAggressiveOverlay(el){
+          if (!el) return false;
+          var classes = classStr(el);
+          var dataE2e = attrLower(el, 'data-e2e');
+          var dataName = attrLower(el, 'data-name');
+          var text = innerTextLower(el);
+          if (/tux|popupopen|launch-popup|launchpopup|matrix-smart|matrixsmart|bottom-button|footerc|divbottombutton|divbuttonsection|divfootertxt|watchnowbtn|watch_btn|watchcta|open-btn|divplaybtnpos|playbtnpos|play-btn|playbtn/.test(classes)) return true;
+          if (dataE2e && /launch|popup|watch|open/.test(dataE2e)) return true;
+          if (dataName && /launch|popup|watch|open/.test(dataName)) return true;
+          if (/watch now|watch on|watch this video|open app|use the app|enjoy more content|global video community/.test(text)) return true;
+          return false;
+        }
+
+        function hidePlayElement(el) {
+          if (!el) return;
+          if (el === document.body || el === document.documentElement) return;
+          var tag = (el.tagName || '').toLowerCase();
+          var overlay = isAggressiveOverlay(el);
+          if (overlay) {
+            try { el.remove(); return; } catch(e) {}
+          } else {
+            if (tag === 'img' || tag === 'video' || tag === 'picture' || tag === 'canvas') return;
+            try {
+              if (!el.matches || !el.matches('svg, path, polygon')) {
+                if (el.querySelector && el.querySelector('video, picture, canvas')) return;
+                if (el.querySelector && el.querySelector('img')) {
+                  if (!/watch|tux|popup|launch|bottom|matrix|play/.test(classStr(el))) return;
+                }
+              }
+            } catch(e) {}
+          }
+          try {
+            el.style.setProperty('display', 'none', 'important');
+            el.style.setProperty('visibility', 'hidden', 'important');
+            el.style.setProperty('opacity', '0', 'important');
+            el.style.setProperty('pointer-events', 'none', 'important');
+            el.style.setProperty('width', '0', 'important');
+            el.style.setProperty('height', '0', 'important');
+            el.style.setProperty('position', 'absolute', 'important');
+            el.style.setProperty('left', '-9999px', 'important');
+          } catch(e) {}
+        }
+
+        function looksLikeTikTokPlayPath(path) {
+          if (!path) return false;
+          var data = (path.getAttribute('d') || '').trim();
+          if (!data) return false;
+          var normalized = data.replace(/\s+/g, ' ').toUpperCase();
+          if (!/M/.test(normalized) || !/L/.test(normalized) || !/Z/.test(normalized)) return false;
+          if (/[CQASTHV]/.test(normalized)) return false;
+          var lineCount = (normalized.match(/L/g) || []).length;
+          if (lineCount < 2 || lineCount > 3) return false;
+          try {
+            var box = path.getBBox();
+            var ratio = box.width / Math.max(1, box.height);
+            if (ratio < 0.35 || ratio > 0.95) return false;
+            if (box.width < 18 || box.height < 18) return false;
+          } catch(e) {}
+          return true;
+        }
+
+        function looksLikeTikTokPlayPolygon(poly) {
+          if (!poly) return false;
+          var points = (poly.getAttribute('points') || '').trim();
+          if (!points) return false;
+          var coords = points.split(/[ ,]+/).filter(Boolean);
+          if (coords.length < 6 || coords.length > 8) return false;
+          try {
+            var box = poly.getBBox();
+            var ratio = box.width / Math.max(1, box.height);
+            if (ratio < 0.3 || ratio > 1.05) return false;
+            if (box.width < 18 || box.height < 18) return false;
+          } catch(e) {}
+          return true;
+        }
+
+        function elementContainsTriangle(el) {
+          if (!el) return false;
+          var targets = [];
+          if (el.matches && el.matches('path,polygon')) targets.push(el);
+          if (el.querySelectorAll) {
+            var found = el.querySelectorAll('path, polygon');
+            for (var i = 0; i < found.length; i++) targets.push(found[i]);
+          }
+          for (var j = 0; j < targets.length; j++) {
+            var node = targets[j];
+            var tag = (node.tagName || '').toLowerCase();
+            if (tag === 'path' && looksLikeTikTokPlayPath(node)) return true;
+            if (tag === 'polygon' && looksLikeTikTokPlayPolygon(node)) return true;
+          }
+          return false;
+        }
+
+        function hideTriangleSvgs(root) {
+          try {
+            var scope = root && root.querySelectorAll ? root : document;
+            var svgPaths = scope.querySelectorAll('svg path, svg polygon');
+            for (var j = 0; j < svgPaths.length; j++) {
+              var path = svgPaths[j];
+              var tag = (path.tagName || '').toLowerCase();
+              var isTriangle = tag === 'path' ? looksLikeTikTokPlayPath(path) : looksLikeTikTokPlayPolygon(path);
+              if (!isTriangle) continue;
+              var svg = path.closest('svg') || path;
+              hidePlayElement(svg);
+              if (svg && svg.parentElement) {
+                var parent = svg.parentElement;
+                if (!parent.querySelector('video, picture, canvas')) {
+                  var parentClasses = (parent.className || '').toLowerCase();
+                  if (parentClasses.includes('play')) {
+                    hidePlayElement(parent);
+                  }
+                }
+              }
+            }
+          } catch(e) {}
+        }
+
+        function hideCenteredTriangle() {
+          try {
+            var centerEls = document.elementsFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+            for (var i = 0; i < centerEls.length; i++) {
+              var el = centerEls[i];
+              if (!el || el === document.body || el === document.documentElement) continue;
+              if (el.tagName && el.tagName.toLowerCase() === 'video') continue;
+              var classes = (el.className || '').toLowerCase();
+              var aria = (el.getAttribute && el.getAttribute('aria-label') || '').toLowerCase();
+              if (classes.includes('play') || aria.includes('play')) {
+                if (!el.querySelector || !el.querySelector('video, picture, canvas')) {
+                  hidePlayElement(el);
+                }
+                continue;
+              }
+              var svg = el.tagName && el.tagName.toLowerCase() === 'svg' ? el : (el.querySelector ? el.querySelector('svg') : null);
+              if (svg && elementContainsTriangle(svg)) {
+                hidePlayElement(svg);
+                hidePlayElement(el);
+              }
+            }
+          } catch(e) {}
+        }
+
+        function hideByCenterBounds() {
+          try {
+            var cx = window.innerWidth / 2;
+            var cy = window.innerHeight / 2;
+            var stack = document.elementsFromPoint(cx, cy) || [];
+            for (var i = 0; i < stack.length; i++) {
+              var el = stack[i];
+              if (!el || el === document.body || el === document.documentElement) continue;
+              if (el.tagName && el.tagName.toLowerCase() === 'video') continue;
+              var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+              if (!rect) continue;
+              var width = rect.width || 0;
+              var height = rect.height || 0;
+              if (width < 18 || height < 18) continue;
+              if (width > window.innerWidth * 0.6 || height > window.innerHeight * 0.6) continue;
+              var ratio = width / Math.max(1, height);
+              if (ratio < 0.3 || ratio > 3) continue;
+              var area = width * height;
+              if (area > 120000) continue;
+              hidePlayElement(el);
+              if (el.parentElement && !el.parentElement.querySelector('video, picture, canvas')) {
+                hidePlayElement(el.parentElement);
+              }
+            }
+          } catch(e) {}
+        }
+
+        function looksLikePlayButton(el) {
+          if (!el) return false;
+          var overlay = isAggressiveOverlay(el);
+          var text = innerTextLower(el);
+          var aria = attrLower(el, 'aria-label');
+          var title = attrLower(el, 'title');
+          var dataE2e = attrLower(el, 'data-e2e');
+          var dataLoc = attrLower(el, 'data-e2e-loc');
+          var classes = classStr(el);
+          var combined = text + ' ' + aria + ' ' + title + ' ' + dataE2e + ' ' + dataLoc + ' ' + classes;
+          if (overlay) return true;
+          if (/watch now|watch more|watch on|watch this|tap to watch|tap to play|open app|open in app|get the app|launch app|use the app|play video|resume|replay/.test(combined)) {
+            if (isHugeContainer(el)) return false;
+            return true;
+          }
+          if (/enjoy more content in the app|global video community/.test(combined)) {
+            if (isHugeContainer(el)) return false;
+            return true;
+          }
+          if (dataE2e.includes('watch') || dataE2e.includes('launch') || dataE2e.includes('popup') || dataE2e.includes('open')) {
+            if (isHugeContainer(el)) return false;
+            return true;
+          }
+          if (elementContainsTriangle(el)) return true;
+          if (el.tagName && el.tagName.toLowerCase() === 'button' && el.querySelector && el.querySelector('svg')) return true;
+          return false;
+        }
+
+        function hidePlayCandidatesInRoot(root) {
+          if (!root || !root.querySelectorAll) return;
+          var selectors = [
+            '[data-e2e="browse-play-button"]',
+            '[data-e2e="video-play-button"]',
+            '[data-e2e="player-play-button"]',
+            '[data-e2e="video-player-mask"]',
+            '[data-e2e*="play"]',
+            '.play-button',
+            '.video-play-button',
+            '[class*="playIcon"]',
+            '[class*="PlayIcon"]',
+            'button[aria-label*="Play" i]',
+            'button[aria-label*="play" i]',
+            '[class*="PlayButton"]',
+            '[class*="play-button"]',
+            '[class*="Play"]',
+            '[class*="play"]',
+            '[class*="xgplayer"] button',
+            '[class*="xgplayer"] [class*="play"]',
+            '[role="button"][aria-label*="play" i]',
+            '[role="button"][aria-label*="Play" i]',
+            'button svg',
+            '[class*="VideoPlayer"] button',
+            '[class*="video-player"] button',
+            '[class*="VideoContainer"] button',
+            '[class*="video-container"] button',
+            '.matrix-smart-wrapper',
+            '[class*="BottomButton"]',
+            '[class*="bottom-button"]',
+            '[class*="DivBottomButtonSection"]',
+            '[class*="DivButtonTxt"]',
+            '[class*="DivFooterCTA"]',
+            '[class*="FooterCTA"]',
+            '[class*="footer-cta"]',
+            '[class*="DivPlayBtnPos"]',
+            '[class*="PlayBtnPos"]',
+            '[class*="popup-open"]',
+            '[class*="PopupOpen"]',
+            '[class*="PopupOpenButton"]',
+            '[class*="popupopenbutton"]',
+            '[class*="tux-base-dialog"]',
+            '[class*="tux-dialog"]',
+            '[data-e2e*="launch"]',
+            '[data-e2e*="popup"]',
+            '[data-e2e*="open"]',
+            '[class*="LaunchPopup"]',
+            '[class*="launch-popup"]'
+          ];
+          selectors.forEach(function(sel) {
+            try {
+              var els = root.querySelectorAll(sel);
+              for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                hidePlayElement(el);
+                if (el.parentElement) {
+                  var parent = el.parentElement;
+                    if (parent.querySelector && parent.querySelector('video, picture, canvas')) continue;
+                  var parentClasses = (parent.className || '').toLowerCase();
+                  if (parentClasses.includes('play') || parentClasses.includes('button')) {
+                    hidePlayElement(parent);
+                  }
+                }
+              }
+            } catch(e) {}
+          });
+          try {
+            var candidates = root.querySelectorAll('button, [role="button"], svg, div[aria-label], span[aria-label]');
+            for (var j = 0; j < candidates.length; j++) {
+              var candidate = candidates[j];
+              if (looksLikePlayButton(candidate)) hidePlayElement(candidate);
+            }
+          } catch(e) {}
+          try {
+            var textNodes = root.querySelectorAll('div, span, button, a, section, header, footer');
+            var maxScan = 5000;
+            for (var k = 0; k < textNodes.length && k < maxScan; k++) {
+              var node = textNodes[k];
+              if (looksLikePlayButton(node)) {
+                hidePlayElement(node);
+                try {
+                  if (node.parentElement && !node.parentElement.querySelector('video, picture, canvas')) {
+                    hidePlayElement(node.parentElement);
+                  }
+                } catch(e) {}
+              }
+            }
+          } catch(e) {}
+          hideTriangleSvgs(root);
+        }
+
+        function hideShadowPlayButtons() {
+          try {
+            var nodes = document.querySelectorAll('*');
+            for (var i = 0; i < nodes.length; i++) {
+              var node = nodes[i];
+              if (node && node.shadowRoot) {
+                hidePlayCandidatesInRoot(node.shadowRoot);
+              }
+            }
+          } catch(e) {}
+        }
+
+        var lastFlashTs = 0;
+        function flashVideoPlayback(forceNow) {
+          try {
+            var now = Date.now();
+            if (!forceNow && now - lastFlashTs < 1200) return;
+            var video = document.querySelector('video');
+            if (!video) return;
+            lastFlashTs = now;
+            video.muted = true;
+            var request = video.play();
+            var pauseLater = function() {
+              setTimeout(function(){
+                try { video.pause(); } catch(e) {}
+              }, 350);
+            };
+            if (request && request.then) {
+              request.then(pauseLater).catch(function(){});
+            } else {
+              pauseLater();
+            }
+          } catch(e) {}
+        }
+
+        // Hide play buttons immediately when DOM is ready
+        function hidePlayButtons(opts) {
+          try {
             var styleId = 'hide-play-buttons-style';
             if (!document.getElementById(styleId)) {
               var style = document.createElement('style');
               style.id = styleId;
-              // More aggressive selectors for TikTok play buttons and triangles
-              style.textContent = '[data-e2e="browse-play-button"], [data-e2e="video-play-button"], [data-e2e*="play"], .play-button, .video-play-button, button[aria-label*="Play" i], button[aria-label*="play" i], [class*="PlayButton"], [class*="play-button"], [class*="Play"], [class*="play"], svg[class*="play"], svg path[d*="M8"], svg path[d*="m8"], svg path[d*="M 8"], svg path[d*="m 8"], svg[viewBox*="24"][viewBox*="24"], [class*="icon"][class*="play"], div[style*="triangle"], [role="button"][aria-label*="play" i], [role="button"][aria-label*="Play" i], button svg, [class*="VideoPlayer"] button, [class*="video-player"] button, [class*="VideoContainer"] button, [class*="video-container"] button, svg[width="24"][height="24"], svg[width="48"][height="48"], path[d*="M12"][d*="L20"], path[d*="m12"][d*="l20"] { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; width: 0 !important; height: 0 !important; position: absolute !important; left: -9999px !important; }';
+              style.textContent = '[data-e2e="browse-play-button"], [data-e2e="video-play-button"], [data-e2e="player-play-button"], [data-e2e="video-player-mask"], [data-e2e*="play"], .play-button, .video-play-button, button[aria-label*="Play" i], button[aria-label*="play" i], [class*="PlayButton"], [class*="play-button"], [class*="PlayIcon"], [class*="play-icon"], [class*="Play"], [class*="play"], [class*="xgplayer"] button, [class*="xgplayer"] [class*="play"], svg[class*="play"], [class*="VideoPlayer"] button, [class*="video-player"] button, [class*="VideoContainer"] button, [class*="video-container"] button, [class*="BottomButton"], [class*="bottom-button"], [class*="DivBottomButtonSection"], [class*="DivButtonTxt"], [class*="DivFooterCTA"], [class*="DivPlayBtnPos"], [class*="PlayBtnPos"], [class*="PopupOpen"], [class*="popup-open"], [class*="LaunchPopup"], [class*="launch-popup"], svg[width="24"][height="24"], svg[width="48"][height="48"] { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; width: 0 !important; height: 0 !important; position: absolute !important; left: -9999px !important; }';
               if (document.head) document.head.appendChild(style);
               else document.documentElement.appendChild(style);
             }
-            
-            // Also directly hide elements - expanded selectors
-            var selectors = [
-              '[data-e2e="browse-play-button"]',
-              '[data-e2e="video-play-button"]',
-              '[data-e2e*="play"]',
-              '.play-button',
-              '.video-play-button',
-              'button[aria-label*="Play" i]',
-              'button[aria-label*="play" i]',
-              '[class*="PlayButton"]',
-              '[class*="play-button"]',
-              '[class*="Play"]',
-              '[class*="play"]',
-              'svg[class*="play"]',
-              'svg path[d*="M8"]',
-              'svg path[d*="m8"]',
-              'svg path[d*="M 8"]',
-              'svg path[d*="m 8"]',
-              'svg[viewBox*="24"]',
-              '[role="button"][aria-label*="play" i]',
-              '[role="button"][aria-label*="Play" i]',
-              'button svg',
-              '[class*="VideoPlayer"] button',
-              '[class*="video-player"] button',
-              '[class*="VideoContainer"] button',
-              '[class*="video-container"] button'
-            ];
-            selectors.forEach(function(sel) {
-              try {
-                var els = document.querySelectorAll(sel);
-                for (var i = 0; i < els.length; i++) {
-                  var el = els[i];
-                  el.style.setProperty('display', 'none', 'important');
-                  el.style.setProperty('visibility', 'hidden', 'important');
-                  el.style.setProperty('opacity', '0', 'important');
-                  el.style.setProperty('width', '0', 'important');
-                  el.style.setProperty('height', '0', 'important');
-                  // Also hide parent if it's a container
-                  if (el.parentElement) {
-                    var parent = el.parentElement;
-                    var parentClasses = (parent.className || '').toLowerCase();
-                    if (parentClasses.includes('play') || parentClasses.includes('button')) {
-                      parent.style.setProperty('display', 'none', 'important');
-                    }
-                  }
-                }
-              } catch(e) {}
-            });
+            hidePlayCandidatesInRoot(document);
+            hideShadowPlayButtons();
+            hideCenteredTriangle();
+            hideByCenterBounds();
+            if (opts && opts.flashVideo) flashVideoPlayback(true);
           } catch(e) {}
         }
+        window.__messhallHideTikTokPlay = hidePlayButtons;
         
         function twoFramesThenDelay(){
           requestAnimationFrame(function(){
@@ -230,57 +528,7 @@ export default function TikTokSnap({
               post('raf2');
               try{ var v=document.querySelector('video'); if(v && !v.paused) v.pause(); }catch(e){}
               // Aggressively hide play buttons before screenshot
-              hidePlayButtons();
-              // Also hide by direct selector matching - more aggressive
-              try {
-                // Target all potential play button containers
-                var allButtons = document.querySelectorAll('button, [role="button"], svg, div[class*="play"], div[class*="Play"], [class*="VideoPlayer"], [class*="video-player"]');
-                for (var i = 0; i < allButtons.length; i++) {
-                  var el = allButtons[i];
-                  var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
-                  var classes = (el.className || '').toLowerCase();
-                  var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-                  
-                  // Check if it's a play button by various criteria
-                  var isPlayButton = text.includes('play') || 
-                                     classes.includes('play') || 
-                                     classes.includes('button') ||
-                                     ariaLabel.includes('play') ||
-                                     (el.tagName === 'SVG' && (classes.includes('icon') || el.querySelector('path[d*="M8"]') || el.querySelector('path[d*="m8"]'))) ||
-                                     (el.tagName === 'BUTTON' && el.querySelector('svg'));
-                  
-                  if (isPlayButton) {
-                    var style = window.getComputedStyle(el);
-                    if (style.cursor === 'pointer' || el.tagName === 'BUTTON' || el.tagName === 'SVG' || el.querySelector('svg')) {
-                      el.style.setProperty('display', 'none', 'important');
-                      el.style.setProperty('visibility', 'hidden', 'important');
-                      el.style.setProperty('opacity', '0', 'important');
-                      el.style.setProperty('width', '0', 'important');
-                      el.style.setProperty('height', '0', 'important');
-                      el.style.setProperty('position', 'absolute', 'important');
-                      el.style.setProperty('left', '-9999px', 'important');
-                    }
-                  }
-                }
-                
-                // Also target SVG paths that look like play triangles
-                var svgPaths = document.querySelectorAll('svg path');
-                for (var j = 0; j < svgPaths.length; j++) {
-                  var path = svgPaths[j];
-                  var pathData = (path.getAttribute('d') || '').toLowerCase();
-                  // Common play triangle path patterns: M8, M 8, m8, m 8, or paths with L20 (triangle shape)
-                  if (pathData.includes('m8') || pathData.includes('m 8') || 
-                      (pathData.includes('m12') && pathData.includes('l20')) ||
-                      (pathData.includes('m 12') && pathData.includes('l 20'))) {
-                    var parentSvg = path.closest('svg');
-                    if (parentSvg) {
-                      parentSvg.style.setProperty('display', 'none', 'important');
-                      parentSvg.style.setProperty('visibility', 'hidden', 'important');
-                      parentSvg.style.setProperty('opacity', '0', 'important');
-                    }
-                  }
-                }
-              } catch(e) {}
+              hidePlayButtons({ flashVideo: true });
               // Final aggressive pass right before delay
               hidePlayButtons();
               setTimeout(function(){ 
@@ -353,7 +601,7 @@ export default function TikTokSnap({
     return () => clearTimeout(safety);
   }, [visible, webKey, isCapturing, onFound]);
 
-  /* ---------- when ready (dom+load+2 frames+delay) → take the picture -------- */
+  /* ---------- when ready (dom+load+2 frames+delay) â†’ take the picture -------- */
   useEffect(() => {
     if (!visible) return;
     if (!(readyDom && readyLoad && readyRaf2 && readyDelay)) return;
@@ -361,69 +609,15 @@ export default function TikTokSnap({
 
     const thisAttempt = attemptIdRef.current;
     setIsCapturing(true);
-    // Hide play button right before capture - enhanced
+    // Hide play button right before capture - use shared helper
     try {
       if (webRef.current) {
         webRef.current.injectJavaScript(`
           (function() {
             try {
-              // Enhanced selectors
-              var selectors = [
-                '[data-e2e="browse-play-button"]', 
-                '[data-e2e="video-play-button"]', 
-                '[data-e2e*="play"]',
-                '.play-button', 
-                '.video-play-button', 
-                'button', 
-                'svg', 
-                '[class*="play"]', 
-                '[class*="Play"]',
-                '[class*="VideoPlayer"]',
-                '[class*="video-player"]',
-                'button svg',
-                'svg path[d*="M8"]',
-                'svg path[d*="m8"]'
-              ];
-              selectors.forEach(function(sel) {
-                try {
-                  var els = document.querySelectorAll(sel);
-                  for (var i = 0; i < els.length; i++) {
-                    var el = els[i];
-                    var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
-                    var classes = (el.className || '').toLowerCase();
-                    var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-                    var isPlay = text.includes('play') || 
-                                  classes.includes('play') || 
-                                  ariaLabel.includes('play') ||
-                                  (el.tagName === 'SVG' && (el.querySelector('path[d*="M8"]') || el.querySelector('path[d*="m8"]'))) ||
-                                  (el.tagName === 'BUTTON' && el.querySelector('svg'));
-                    if (isPlay || (el.tagName === 'SVG' && el.parentElement && el.parentElement.className && el.parentElement.className.toLowerCase().includes('play'))) {
-                      el.style.setProperty('display', 'none', 'important');
-                      el.style.setProperty('visibility', 'hidden', 'important');
-                      el.style.setProperty('opacity', '0', 'important');
-                      el.style.setProperty('width', '0', 'important');
-                      el.style.setProperty('height', '0', 'important');
-                    }
-                  }
-                } catch(e) {}
-              });
-              // Also hide SVG paths that look like play triangles
-              try {
-                var paths = document.querySelectorAll('svg path');
-                for (var j = 0; j < paths.length; j++) {
-                  var path = paths[j];
-                  var pathData = (path.getAttribute('d') || '').toLowerCase();
-                  if (pathData.includes('m8') || pathData.includes('m 8') || 
-                      (pathData.includes('m12') && pathData.includes('l20'))) {
-                    var parentSvg = path.closest('svg');
-                    if (parentSvg) {
-                      parentSvg.style.setProperty('display', 'none', 'important');
-                      parentSvg.style.setProperty('visibility', 'hidden', 'important');
-                      parentSvg.style.setProperty('opacity', '0', 'important');
-                    }
-                  }
-                }
-              } catch(e) {}
+              if (window.__messhallHideTikTokPlay) {
+                window.__messhallHideTikTokPlay({ flashVideo: true });
+              }
             } catch(e) {}
           })();
           true;
@@ -437,19 +631,8 @@ export default function TikTokSnap({
         webRef.current.injectJavaScript(`
           (function() {
             try {
-              // Final aggressive pass - hide everything that could be a play button
-              var all = document.querySelectorAll('button, svg, [role="button"], [class*="play"], [class*="Play"], [data-e2e*="play"]');
-              for (var i = 0; i < all.length; i++) {
-                var el = all[i];
-                var text = (el.innerText || el.textContent || '').toLowerCase();
-                var classes = (el.className || '').toLowerCase();
-                if (text.includes('play') || classes.includes('play') || el.querySelector('svg path[d*="M8"]') || el.querySelector('svg path[d*="m8"]')) {
-                  el.style.setProperty('display', 'none', 'important');
-                  el.style.setProperty('visibility', 'hidden', 'important');
-                  el.style.setProperty('opacity', '0', 'important');
-                  el.style.setProperty('width', '0', 'important');
-                  el.style.setProperty('height', '0', 'important');
-                }
+              if (window.__messhallHideTikTokPlay) {
+                window.__messhallHideTikTokPlay({ flashVideo: true });
               }
             } catch(e) {}
           })();
@@ -507,69 +690,15 @@ export default function TikTokSnap({
 
     const thisAttempt = attemptIdRef.current;
     setIsCapturing(true);
-    // Hide play button right before capture - enhanced
+    // Hide play button right before capture - use shared helper
     try {
       if (webRef.current) {
         webRef.current.injectJavaScript(`
           (function() {
             try {
-              // Enhanced selectors
-              var selectors = [
-                '[data-e2e="browse-play-button"]', 
-                '[data-e2e="video-play-button"]', 
-                '[data-e2e*="play"]',
-                '.play-button', 
-                '.video-play-button', 
-                'button', 
-                'svg', 
-                '[class*="play"]', 
-                '[class*="Play"]',
-                '[class*="VideoPlayer"]',
-                '[class*="video-player"]',
-                'button svg',
-                'svg path[d*="M8"]',
-                'svg path[d*="m8"]'
-              ];
-              selectors.forEach(function(sel) {
-                try {
-                  var els = document.querySelectorAll(sel);
-                  for (var i = 0; i < els.length; i++) {
-                    var el = els[i];
-                    var text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
-                    var classes = (el.className || '').toLowerCase();
-                    var ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-                    var isPlay = text.includes('play') || 
-                                  classes.includes('play') || 
-                                  ariaLabel.includes('play') ||
-                                  (el.tagName === 'SVG' && (el.querySelector('path[d*="M8"]') || el.querySelector('path[d*="m8"]'))) ||
-                                  (el.tagName === 'BUTTON' && el.querySelector('svg'));
-                    if (isPlay || (el.tagName === 'SVG' && el.parentElement && el.parentElement.className && el.parentElement.className.toLowerCase().includes('play'))) {
-                      el.style.setProperty('display', 'none', 'important');
-                      el.style.setProperty('visibility', 'hidden', 'important');
-                      el.style.setProperty('opacity', '0', 'important');
-                      el.style.setProperty('width', '0', 'important');
-                      el.style.setProperty('height', '0', 'important');
-                    }
-                  }
-                } catch(e) {}
-              });
-              // Also hide SVG paths that look like play triangles
-              try {
-                var paths = document.querySelectorAll('svg path');
-                for (var j = 0; j < paths.length; j++) {
-                  var path = paths[j];
-                  var pathData = (path.getAttribute('d') || '').toLowerCase();
-                  if (pathData.includes('m8') || pathData.includes('m 8') || 
-                      (pathData.includes('m12') && pathData.includes('l20'))) {
-                    var parentSvg = path.closest('svg');
-                    if (parentSvg) {
-                      parentSvg.style.setProperty('display', 'none', 'important');
-                      parentSvg.style.setProperty('visibility', 'hidden', 'important');
-                      parentSvg.style.setProperty('opacity', '0', 'important');
-                    }
-                  }
-                }
-              } catch(e) {}
+              if (window.__messhallHideTikTokPlay) {
+                window.__messhallHideTikTokPlay({ flashVideo: true });
+              }
             } catch(e) {}
           })();
           true;
@@ -616,14 +745,14 @@ export default function TikTokSnap({
   const startUrl = useMemo(() => sanitize(url), [url]);
 
   /* ------------------------------- The UI ----------------------------------- */
-  // 👉 TOP-CENTER zoom: scale around the center, then push DOWN so the TOP edge
+  // ðŸ‘‰ TOP-CENTER zoom: scale around the center, then push DOWN so the TOP edge
   // stays put. No horizontal shift, so content remains centered.
   const shiftY = (effectiveZoom - 1) * boxH / 2;
 
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onCancel}>
       <View style={styles.backdrop}>
-        {/* 👇 this box is what we screenshot */}
+        {/* ðŸ‘‡ this box is what we screenshot */}
         <ViewShot
           ref={shotRef}
           style={styles.shotArea}
@@ -653,7 +782,7 @@ export default function TikTokSnap({
                 // Inject CSS early to hide play buttons
                 (function() {
                   var style = document.createElement('style');
-                  style.textContent = '[data-e2e="browse-play-button"], [data-e2e="video-play-button"], .play-button, .video-play-button, button[aria-label*="Play" i], button[aria-label*="play" i], [class*="PlayButton"], [class*="play-button"], svg[class*="play"] { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }';
+                  style.textContent = '[data-e2e="browse-play-button"], [data-e2e="video-play-button"], .play-button, .video-play-button, button[aria-label*="Play" i], button[aria-label*="play" i], [class*="PlayButton"], [class*="play-button"], [class*="PlayIcon"], [class*="play-icon"], [class*="DivPlayBtnPos"], [class*="PlayBtnPos"], [class*="BottomButton"], [class*="bottom-button"], [class*="DivBottomButtonSection"], [class*="DivButtonTxt"], [class*="DivFooterCTA"], [class*="PopupOpen"], [class*="popup-open"], [class*="LaunchPopup"], [class*="launch-popup"], svg[class*="play"] { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }';
                   if (document.head) document.head.appendChild(style);
                   else if (document.documentElement) document.documentElement.appendChild(style);
                 })();
