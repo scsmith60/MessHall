@@ -1,6 +1,6 @@
-// lib/unified_parser.ts
+﻿// lib/unified_parser.ts
 //
-// 🧒 what this file does (like I'm 5):
+// ðŸ§’ what this file does (like I'm 5):
 // - We find Ingredients and Steps in a messy recipe.
 // - We wash lines so they are clean and tidy.
 // - We glue broken numbers together (like 1 + 1/2).
@@ -10,7 +10,7 @@
 // - We split steps on semicolons/pipes and inline numbers (like "2." "3)") so big blobs
 //   become many tiny steps that your UI can list one-by-one.
 
-import { sanitizeAndSplitIngredientCandidates } from "./ingredient_sanitizer"; // ✅ ingredient bath
+import { sanitizeAndSplitIngredientCandidates } from "./ingredient_sanitizer"; // âœ… ingredient bath
 
 export type IngredientSection = {
   name: string | null; // null means "ungrouped" or "main ingredients"
@@ -30,7 +30,7 @@ const NBSP_RE = /\u00A0/g;
 const MULT_SIGN_RE = /\u00D7/g;
 const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu;
 
-const LEAD_BULLET_RE = /^\s*(?:[•\-*]\s+)+/;
+const LEAD_BULLET_RE = /^\s*(?:[â€¢\-*]\s+)+/;
 const LEAD_NUM_RE = /^\s*\d{1,2}[.)]\s+/;
 const TRAIL_HASHTAGS_RE = /\s*(?:#[\p{L}\p{N}_-]+(?:\s+#[\p{L}\p{N}_-]+)*)\s*$/u;
 
@@ -47,7 +47,7 @@ function stripLeadNumbers(s: string) { return s.replace(LEAD_NUM_RE, ""); }
 function stripTrailHashtags(s: string) { return s.replace(TRAIL_HASHTAGS_RE, ""); }
 function tidySpaces(s: string) { return s.replace(/\s+/g, " ").trim(); }
 
-// 🧹 cut off tail noise like “#hashtag” blobs a site may add at the end
+// ðŸ§¹ cut off tail noise like â€œ#hashtagâ€ blobs a site may add at the end
 function stripTailNoise(s: string): string {
   const m = s.match(/(\n\s*#|\n\s*less\b)/i);
   return m ? s.slice(0, m.index) : s;
@@ -67,7 +67,7 @@ function fixWrappedPanSizes(text: string): string {
     const next = lines[i + 1] ?? "";
     const endsWithLooseX = /\b\d+\s*x\s*$/i.test(cur);
     const nextLooksLikeDimension =
-      /^(?:[-–—]?\s*)?(?:inch|in\.)\b/i.test(next) || /^\s*\d+\s*x\s*\d+/i.test(next);
+      /^(?:[-â€“â€”]?\s*)?(?:inch|in\.)\b/i.test(next) || /^\s*\d+\s*x\s*\d+/i.test(next);
     if (endsWithLooseX && nextLooksLikeDimension) { fixed.push(cur.trimEnd() + " " + next.trimStart()); i++; continue; }
     fixed.push(cur);
   }
@@ -75,8 +75,8 @@ function fixWrappedPanSizes(text: string): string {
 }
 
 // ---------- section slicer (find "Ingredients" and "Steps" areas) ----------
-const ING_RE = /\b(ingredients?|what you need|you(?:'|')ll need)\b[:\-–—]?\s*/i;
-const STEP_HDR_RE = /\b(instructions?|directions?|steps?|method|how\s+to\s+make\s+it)\b[:\-–—]?\s*/i;
+const ING_RE = /\b(ingredients?|what you need|you(?:'|')ll need)\b[:\-â€“â€”]?\s*/i;
+const STEP_HDR_RE = /\b(instructions?|directions?|steps?|method|how\s+to\s+make\s+it)\b[:\-â€“â€”]?\s*/i;
 
 function sliceSectionsSmart(raw: string) {
   const lower = raw.toLowerCase();
@@ -101,10 +101,10 @@ function sliceSectionsSmart(raw: string) {
 
 // ---------- step normalization (make splitting easier) ----------
 const INLINE_NUM = /(\s)(\d{1,2}[.)]\s+)/g;
-const INLINE_BULLET = /(\s)([-*•]\s+)/g;
+const INLINE_BULLET = /(\s)([-*â€¢]\s+)/g;
 
 /**
- * 🧱 forceInlineStepBreaks:
+ * ðŸ§± forceInlineStepBreaks:
  * - puts a NEW LINE before any " 2. " or " 2) " that appears mid-sentence
  * - turns semicolons `;` and pipes `|` into step separators (new lines)
  * - collapses extra blank lines
@@ -117,7 +117,7 @@ function forceInlineStepBreaks(s: string): string {
     .replace(INLINE_BULLET, "\n$2")
     // split on semicolons and pipes (common makeshift separators)
     .replace(/[;|]+\s*/g, "\n")
-    // be gentler about breaking on periods — only break when the next word looks like a new step cue
+    // be gentler about breaking on periods â€” only break when the next word looks like a new step cue
     .replace(/(?<=\.)\s+(?=(?:Step\b|STEP\b|Add\b|Then\b|Next\b|Now\b|Once\b|After\b|Meanwhile\b|When\b|If\b|Bake\b|Cook\b|Serve\b|Let\b))/g, "\n")
     .replace(/\n{2,}/g, "\n")
     .trim();
@@ -129,7 +129,7 @@ function normalizeStepArea(s: string): string {
 }
 
 /**
- * 🪚 splitMixedStepLine:
+ * ðŸªš splitMixedStepLine:
  * final safeguard to break a single line into multiple steps.
  * We split on:
  *  - semicolons/pipes
@@ -153,27 +153,31 @@ function splitMixedStepLine(line: string): string[] {
 function glueSplitMixedNumbersAcrossNewlines(text: string): string {
   if (!text) return text;
   // "1" newline "1/2"
-  text = text.replace(/(\b\d+)\s*[\r\n]+\s*(?:[-*•]\s*)?(\d+\s*\/\s*\d+)/gm, (_m, w, f) => `${w} ${f}`);
-  // "1" newline "½"
-  text = text.replace(/(\b\d+)\s*[\r\n]+\s*(?:[-*•]\s*)?([¼½¾⅓⅔⅛⅜⅝⅞])/gm, (_m, w, f) => `${w} ${f}`);
+  text = text.replace(/(\b\d+)\s*[\r\n]+\s*(?:[-*â€¢]\s*)?(\d+\s*\/\s*\d+)/gm, (_m, w, f) => `${w} ${f}`);
+  // "1" newline "Â½"
+  text = text.replace(/(\b\d+)\s*[\r\n]+\s*(?:[-*â€¢]\s*)?([Â¼Â½Â¾â…“â…”â…›â…œâ…â…ž])/gm, (_m, w, f) => `${w} ${f}`);
   return text;
 }
 
 // ---------- detectors for ingredients/steps ----------
 const UNIT_WORD = /(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|ml|l|g|gram|kg|lb|lbs|pound|pounds|stick|clove|cloves|pinch|pinches|dash|dashes|bunch|can|cans|package|packages|head|heads)\b/i;
-const FRACTIONS = /[¼½¾⅓⅔⅛⅜⅝⅞]/;
-const QTY_START = /\d+(?![.)])(?:\s*[-–]\s*\d+)?/;
+const LOOSE_INGREDIENT_HINT = /\b(chuck|roast|short\s*ribs?|ribs?|tortilla|tortillas|cilantro|oregano|cinnamon|salt|peppers?|sugar|flour|butter|oil|olive|vegetable|garlic|onion|bay\s+leaves?|parsley|basil|thyme|rosemary|sage|tomato|paste|yogurt|sour\s+cream|cheese|mozzarella|oaxaca|taco|lettuce|ginger|sesame|soy\s+sauce|coconut\s+aminos|lime|lemon|avocado|ground\s+chicken|chicken|beef|pork|shrimp|salmon|fish|egg|eggs|chile|chiles|chili|chilies|guajillo|pasilla)\b/i;
+const STEP_CLUE_RE = /\bstep\s*\d+/i;
+const FRACTIONS = /[Â¼Â½Â¾â…“â…”â…›â…œâ…â…ž]/;
+const QTY_START = /\d+(?![.)])(?:\s*[-â€“â€”]\s*\d+)?/;
 
 function looksLikeIngredientShape(t: string): boolean {
   return (
-    new RegExp(`^(${QTY_START.source}|\\d+\\s*\\/\\s*\\d+|[¼½¾⅓⅔⅛⅜⅝⅞])`).test(t) ||
+    new RegExp(`^(${QTY_START.source}|\\d+\\s*\\/\\s*\\d+|[Â¼Â½Â¾â…“â…”â…›â…œâ…â…ž])`).test(t) ||
     UNIT_WORD.test(t) || FRACTIONS.test(t)
   );
 }
 function looksLikeIngredient(line: string): boolean {
   const t = line.trim(); if (!t) return false;
+  if (STEP_CLUE_RE.test(t)) return false;
   if (LEAD_NUM_RE.test(t)) return false;
-  const qty = new RegExp(`^(${QTY_START.source}|\\d+\\s*\\/\\s*\\d+|[¼½¾⅓⅔⅛⅜⅝⅞])`).test(t);
+  const qtyTarget = t.replace(/^\((\d+)\)/, '$1');
+  const qty = new RegExp(`^(${QTY_START.source}|\\d+\\s*\\/\\s*\\d+|[¼½¾⅓⅔⅛⅜⅝⅞])`).test(qtyTarget);
   // Special case: "to taste" ingredients (e.g., "Salt and pepper to taste", "Salt to taste")
   if (/\bto taste\b/i.test(t) || /\b(salt|pepper)\s+(and|&)\s+(pepper|salt)\b/i.test(t)) {
     return true;
@@ -183,12 +187,18 @@ function looksLikeIngredient(line: string): boolean {
   if (/\b(pinch|pinches|dash|dashes)(\s+of)?\s+[a-z]/i.test(t)) {
     return true;
   }
-  return qty || UNIT_WORD.test(t) || FRACTIONS.test(t);
+  if (qty || UNIT_WORD.test(t) || FRACTIONS.test(t)) {
+    return true;
+  }
+  if (LOOSE_INGREDIENT_HINT.test(t) && !/[.!?]$/.test(t) && t.length <= 80) {
+    return true;
+  }
+  return false;
 }
 function looksLikeStep(line: string): boolean {
   const t = line.trim(); if (!t) return false;
   if (/^\d{1,2}[.)]\s+/.test(t)) return true;
-  if (/^\s*[-*•]\s+/.test(t)) return true;
+  if (/^\s*[-*â€¢]\s+/.test(t)) return true;
   if (looksLikeIngredientShape(t)) return false;
   if (/^(preheat|heat|melt|whisk|stir|mix|combine|bring|simmer|boil|reduce|add|fold|pour|spread|sprinkle|season|coat|cook|bake|fry|air\s*fry|remove|transfer|let\s+sit|rest|chill|refrigerate|cool|cut|slice|serve|garnish|line|mince|dice|chop|peel|seed|core|marinate|prepare|mix the|make|fill|assemble)\b/i.test(t)) return true;
   if (/\.\s*$/.test(t) && /\b(preheat|heat|melt|whisk|stir|mix|combine|bring|pour|spread|sprinkle|season|bake|cook|chill|cut|slice|serve|garnish|marinate|prepare|make|fill|assemble)\b/i.test(t)) return true;
@@ -197,7 +207,9 @@ function looksLikeStep(line: string): boolean {
 
 // ---------- UI line cleaners ----------
 function cleanIngredientLine(line: string): string {
-  const stripped = tidySpaces(stripLeadBullets(stripEmojis(line)));
+  let stripped = tidySpaces(stripLeadBullets(stripEmojis(line)));
+  // Remove leading "Ingredients:" labels that often remain from captions
+  stripped = stripped.replace(/^(?:ingredients?|ingredient\s+list)\s*[:\-]?\s*/i, "");
   // trim punctuation that often trails after copying from captions ("Add salt.")
   const withoutTrail = stripped.replace(/[.,!?;:]+$/g, "").trim();
   return withoutTrail;
@@ -227,7 +239,7 @@ const COOKING_CUES = [
   "Add","Fold","Pour","Spread","Sprinkle","Season","Coat","Cook","Bake","Fry","Air fry",
   "Remove","Transfer","Let sit","Rest","Chill","Refrigerate","Cool","Cut","Slice","Serve",
   "Garnish","Line","Mince","Dice","Chop","Peel","Seed","Core","Marinate","Prepare","Mix the",
-  "Make","Fill","Assemble" // ✅ add here too for splitting help
+  "Make","Fill","Assemble" // âœ… add here too for splitting help
 ];
 const cueRegex = new RegExp(
   String.raw`(?<=\.)\s+(?=(?:${COOKING_CUES.join("|")})\b)`,
@@ -257,19 +269,19 @@ function explodeCompoundSteps(steps: string[]): string[] {
 const MIXED_NUMBER_MARK = "@@MN@@";
 function protectMixedNumbers(s: string): string {
   s = s.replace(/(\b\d+)\s+(\d+\s*\/\s*\d+\b)/g, `$1${MIXED_NUMBER_MARK}$2`);
-  s = s.replace(/(\b\d+)\s+([¼½¾⅓⅔⅛⅜⅝⅞]\b)/g, `$1${MIXED_NUMBER_MARK}$2`);
+  s = s.replace(/(\b\d+)\s+([Â¼Â½Â¾â…“â…”â…›â…œâ…â…ž]\b)/g, `$1${MIXED_NUMBER_MARK}$2`);
   return s;
 }
 function restoreMixedNumbers(s: string): string {
   return s.replace(new RegExp(MIXED_NUMBER_MARK, "g"), " ");
 }
-const INTERNAL_QTY_SPLIT = new RegExp(String.raw`\s+(?=(?:\d+\s*(?:\/\s*\d+)?|[¼½¾⅓⅔⅛⅜⅝⅞])\s*(?:[a-zA-Z(]|$))`, "g");
+const INTERNAL_QTY_SPLIT = new RegExp(String.raw`\s+(?=(?:\d+\s*(?:\/\s*\d+)?|[Â¼Â½Â¾â…“â…”â…›â…œâ…â…ž])\s*(?:[a-zA-Z(Â°]|$))`, "g");
 const AND_QTY_SPLIT = /\s+(?=(?:and|&)\s+\d)/i;
 const PUNCT_THEN_CAP_SPLIT = /\s*[,;]\s+(?=[A-Z])/;
-const CONTINUATION_PREP = /^(?:and\s+)?(?:peeled|deveined|seeded|pitted|minced|chopped|diced|sliced|shredded|rinsed|drained|cored|crushed)\b/i;
+const CONTINUATION_PREP = /^(?:and\s+)?(?:peeled|deveined|seeded|pitted|minced|chopped|diced|sliced|shredded|rinsed|drained|cored|crushed|warmed|heated|cooled)\b/i;
 const ALT_ING_SPLIT = new RegExp(
   String.raw`[,;]\s+(?=(?:` +
-  `${QTY_START.source}|\\d+\\s*\\/\\s*\\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|` +
+  `${QTY_START.source}|\\d+\\s*\\/\\s*\\d+|[Â¼Â½Â¾â…“â…”â…›â…œâ…â…ž]|` +
   `(?:Sea|Kosher|Table)\\s+salt|Black\\s+pepper|White\\s+pepper|Red\\s+pepper\\s+flakes|Olive\\s+oil|Vegetable\\s+oil|Cooking\\s+spray|` +
   `(?:and|&)\\s+\\d` + `))`, "i"
 );
@@ -282,14 +294,14 @@ function extractContinuationPrefix(line: string): { prefix: string; rest: string
 
 function splitRunOnIngredients(line: string): string[] {
   // First, split on bullet points if there are multiple ingredients on one line
-  // e.g., "tarch • 1 egg yolk • 1 tsp vanilla bean paste" should split into 3 ingredients
+  // e.g., "tarch â€¢ 1 egg yolk â€¢ 1 tsp vanilla bean paste" should split into 3 ingredients
   // But only if there are multiple quantities (numbers) - don't split if it's just one ingredient with notes
-  const bulletParts = line.split(/\s*[•]\s+/).map(s => s.trim()).filter(Boolean);
+  const bulletParts = line.split(/\s*[â€¢]\s+/).map(s => s.trim()).filter(Boolean);
   
   // If we have multiple parts separated by bullets AND they each look like separate ingredients (have quantities),
   // split them. Otherwise, treat as one ingredient with bullet-separated notes.
   const hasMultipleQuantities = bulletParts.filter(p => {
-    const qtyMatch = p.match(/^(\d+(?:\s+\d+\/\d+)?|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:\.\d+)?\s*[-–—]\s*\d+(?:\.\d+)?)/);
+    const qtyMatch = p.match(/^(\d+(?:\s+\d+\/\d+)?|\d+\/\d+|[Â¼Â½Â¾â…“â…”â…›â…œâ…â…ž]|\d+(?:\.\d+)?\s*[-â€“â€”]\s*\d+(?:\.\d+)?)/);
     return qtyMatch !== null;
   }).length;
   
@@ -320,85 +332,169 @@ function splitRunOnIngredients(line: string): string[] {
   let parts: string[] = [protectedLine];
   
   // Split on patterns, but be careful not to split OR statements
-  parts = parts.flatMap(p => {
-    // If this part contains OR placeholder, don't split it further
-    if (p.includes(OR_PLACEHOLDER)) {
-      return [p];
-    }
-    return p.split(ALT_ING_SPLIT);
-  }).map(s => s.trim()).filter(Boolean);
+  parts = parts.flatMap(p => p.split(ALT_ING_SPLIT)).map(s => s.trim()).filter(Boolean);
+  parts = parts.flatMap(p => p.split(AND_QTY_SPLIT)).map(s => s.trim()).filter(Boolean);
+  parts = parts.flatMap(p => p.split(INTERNAL_QTY_SPLIT)).map(s => s.trim()).filter(Boolean);
+  parts = parts.flatMap(p => p.split(PUNCT_THEN_CAP_SPLIT)).map(s => s.trim()).filter(Boolean);
   
-  parts = parts.flatMap(p => {
-    if (p.includes(OR_PLACEHOLDER)) {
-      return [p];
+  let finalParts = parts
+    .map(p => restoreMixedNumbers(p.replace(new RegExp(OR_PLACEHOLDER, "g"), " or ")))
+    .map(s => tidySpaces(s))
+    .filter(Boolean);
+
+  if (finalParts.length <= 1) {
+    const restored = restoreMixedNumbers(protectedLine).replace(new RegExp(OR_PLACEHOLDER, "g"), " or ");
+    const qtyToken = new RegExp(`(\\d+\\s*\\/\\s*\\d+|${QTY_START.source}|${FRACTIONS.source})`, "gi");
+    const boundaries: number[] = [0];
+    let depth = 0;
+    let scanPos = 0;
+    qtyToken.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = qtyToken.exec(restored)) !== null) {
+      const idx = match.index ?? 0;
+      for (let c = scanPos; c < idx; c++) {
+        const ch = restored[c];
+        if (ch === "(" || ch === "[" || ch === "{") depth++;
+        else if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+      }
+      scanPos = idx;
+      if (depth > 0) continue;
+      if (idx === 0) continue;
+      const prevChar = restored[idx - 1] || "";
+      if (idx > 0 && /[\(\-â€“â€”]/.test(prevChar)) continue;
+      const lastBoundary = boundaries[boundaries.length - 1] ?? 0;
+      const span = restored.slice(lastBoundary, idx);
+      if (!/[-â€¢\n\r]/.test(span)) continue;
+      boundaries.push(idx);
     }
-    return p.split(AND_QTY_SPLIT);
-  }).map(s => s.trim()).filter(Boolean);
-  
-  parts = parts.flatMap(p => {
-    if (p.includes(OR_PLACEHOLDER)) {
-      return [p];
+    if (boundaries.length >= 2) {
+      const fallback: string[] = [];
+      for (let i = 0; i < boundaries.length; i++) {
+        const startIdx = boundaries[i];
+        const endIdx = boundaries[i + 1] ?? restored.length;
+        const chunk = restored.slice(startIdx, endIdx).trim();
+        if (chunk) fallback.push(chunk);
+      }
+      if (fallback.length > 1) finalParts = fallback;
     }
-    return p.split(INTERNAL_QTY_SPLIT);
-  }).map(s => s.trim()).filter(Boolean);
+  }
   
-  parts = parts.flatMap(p => {
-    if (p.includes(OR_PLACEHOLDER)) {
-      return [p];
-    }
-    return p.split(PUNCT_THEN_CAP_SPLIT);
-  }).map(s => s.trim()).filter(Boolean);
-  
-  // Restore OR statements and mixed numbers
-  return parts.map(p => restoreMixedNumbers(p.replace(new RegExp(OR_PLACEHOLDER, "g"), " or ")));
+  return finalParts;
 }
 
-// ---------- merge parenthetical OR statements split across lines ----------
+// ---------- merge parenthetical statements split across lines ----------
 function mergeParentheticalOrLines(lines: string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const cur = (lines[i] ?? "").trim();
-    const next = (lines[i + 1] ?? "").trim();
+  // Run multiple passes until no more changes (handles nested or complex cases)
+  let result = [...lines];
+  let changed = true;
+  let maxPasses = 10; // Safety limit
+  
+  while (changed && maxPasses > 0) {
+    changed = false;
+    const out: string[] = [];
     
-    // Check if current line has an opening parenthesis with "or" but no closing parenthesis
-    // e.g., "vanilla bean paste (or" or "1 tbsp vanilla bean paste (or •"
-    // Handle bullet points and other trailing characters - match "(or" or "(or •" at end
-    const hasOpenParenWithOr = /\([^)]*\b(or|OR)\s*[•\s]*$/i.test(cur);
-    
-    // Also check for cases where line ends with just "(or" (no text after)
-    const endsWithOpenParenOr = /\(\s*(or|OR)\s*[•\s]*$/i.test(cur);
-    
-    // Check if next line starts with something that could complete the parenthetical
-    // e.g., "2 tsp vanilla extract)" or "• 2 tsp vanilla extract)" or "7. 2 tsp vanilla extract)"
-    if ((hasOpenParenWithOr || endsWithOpenParenOr) && next) {
-      // Remove leading number/bullet from next line if present (e.g., "7. " or "• ")
-      const nextCleaned = next.replace(/^\d+\.\s*/, "").replace(/^[•\s]+/, "").trim();
-      // Remove trailing bullet from current line if present
-      const curCleaned = cur.replace(/[•\s]*$/, "").trim();
-      out.push(tidySpaces(`${curCleaned} ${nextCleaned}`));
-      i++; // skip next line since we merged it
-      continue;
+    for (let i = 0; i < result.length; i++) {
+      const cur = (result[i] ?? "").trim();
+      
+      if (!cur) {
+        out.push(result[i]);
+        continue;
+      }
+      
+      // Count opening and closing parentheses in current line
+      const openParens = (cur.match(/\(/g) || []).length;
+      const closeParens = (cur.match(/\)/g) || []).length;
+      const hasUnclosedParen = openParens > closeParens;
+      
+      // Simple rule: if line has unclosed parentheses, merge with next lines until balanced
+      if (hasUnclosedParen && i + 1 < result.length) {
+        // Preserve line number from current line if present (e.g., "6. " or "6.")
+        const curNumberMatch = cur.match(/^(\d+\.?\s*)/);
+        const curNumber = curNumberMatch ? curNumberMatch[1] : "";
+        
+        // Remove ONLY the number prefix and trailing bullets/whitespace from current line
+        // Keep all the actual content (like "1 tbsp vanilla bean paste ( or")
+        const curWithoutNumber = cur.replace(/^\d+\.?\s*/, "").replace(/[â€¢•\s]*$/, "").trim();
+        let accumulated = curWithoutNumber;
+        let skipCount = 0;
+        
+        // Keep merging with next lines until parentheses are balanced
+        for (let j = i + 1; j < result.length; j++) {
+          const nextLineRaw = (result[j] ?? "").trim();
+          if (!nextLineRaw) {
+            skipCount++;
+            continue;
+          }
+          
+          // Remove ONLY the leading line number prefix (e.g., "7. " or "7.") and bullets from next line
+          // Preserve all the actual content (like "2 tsp vanilla extract)")
+          // Match pattern: number + period + optional space at the very start
+          // This ensures we only remove "7. " or "7." not "2" from "2 tsp"
+          let nextLine = nextLineRaw;
+          // Remove line number pattern: "7. " or "7." at start
+          if (/^\d+\./.test(nextLine)) {
+            nextLine = nextLine.replace(/^\d+\.\s*/, "");
+          }
+          // Remove leading bullets
+          nextLine = nextLine.replace(/^[â€¢•\s]+/, "").trim();
+          if (!nextLine) {
+            skipCount++;
+            continue;
+          }
+          
+          // Merge: just add a space and the next line content
+          accumulated = tidySpaces(`${accumulated} ${nextLine}`);
+          skipCount++;
+          
+          // Check if parentheses are now balanced
+          const accOpen = (accumulated.match(/\(/g) || []).length;
+          const accClose = (accumulated.match(/\)/g) || []).length;
+          if (accOpen <= accClose) {
+            break; // Balanced now, stop merging
+          }
+        }
+        
+        // Build final merged line with preserved line number
+        const merged = curNumber ? `${curNumber}${accumulated}` : accumulated;
+        out.push(merged);
+        i += skipCount; // skip all merged lines
+        changed = true; // Mark that we made a change
+        continue;
+      }
+      
+      out.push(result[i]);
     }
     
-    out.push(lines[i]);
+    result = out;
+    maxPasses--;
   }
-  return out;
+  
+  return result;
 }
 
 // ---------- early glue of bare numbers with next line (ingredients area) ----------
 const BARE_WHOLE = /^\s*\d+\s*$/;
 const BARE_QTY = new RegExp(`^\\s*(?:${QTY_START.source})\\s*$`);
+const TEMP_LINE = /^\s*[-~]?\s*\d+\s*(?:°|º|Â°|\bdeg\b|\bdeg\.)?\s*(?:f|c)\b/i;
 function mergeOrphanQuantityLines(lines: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const cur = (lines[i] ?? "").trim();
     const next = (lines[i + 1] ?? "").trim();
     // Don't merge if current line ends with "OR" or next line starts with "OR"
-    // This prevents merging "vanilla extract) • 2" with the next line when it should stay with "vanilla bean paste OR"
-    const curEndsWithOr = /\b(or|OR)\s*[•)\]]?\s*$/i.test(cur);
-    const nextStartsWithOr = /^\s*[•(\[]?\s*(or|OR)\b/i.test(next);
-    if (cur && (BARE_WHOLE.test(cur) || BARE_QTY.test(cur)) && next && !curEndsWithOr && !nextStartsWithOr) {
-      out.push(tidySpaces(`${cur} ${next}`)); i++; continue;
+    // This prevents merging "vanilla extract) â€¢ 2" with the next line when it should stay with "vanilla bean paste OR"
+    const curEndsWithOr = /\b(or|OR)\s*[â€¢)\]]?\s*$/i.test(cur);
+    const nextStartsWithOr = /^\s*[â€¢(\[]?\s*(or|OR)\b/i.test(next);
+    const nextIsTemp = TEMP_LINE.test(next);
+    if (cur && next && !curEndsWithOr && !nextStartsWithOr) {
+      const shouldGlue = (BARE_WHOLE.test(cur) || BARE_QTY.test(cur)) ||
+        nextIsTemp ||
+        /\b(?:warm|warmed|heat|heated|cool|cooled)\s+to\s*$/i.test(cur);
+      if (shouldGlue) {
+        out.push(tidySpaces(`${cur} ${next}`));
+        i++;
+        continue;
+      }
     }
     out.push(lines[i]);
   }
@@ -413,13 +509,30 @@ function finalFixOrphanNumberIngredients(items: string[]): string[] {
     const next = (items[i + 1] ?? "").trim();
     // Don't merge if current line ends with "OR" or next line starts with "OR"
     // This prevents merging orphan numbers with OR statements
-    const curEndsWithOr = /\b(or|OR)\s*[•)\]]?\s*$/i.test(cur);
-    const nextStartsWithOr = /^\s*[•(\[]?\s*(or|OR)\b/i.test(next);
+    const curEndsWithOr = /\b(or|OR)\s*[â€¢)\]]?\s*$/i.test(cur);
+    const nextStartsWithOr = /^\s*[â€¢(\[]?\s*(or|OR)\b/i.test(next);
     if (cur && /^\d+$/.test(cur) && next && !curEndsWithOr && !nextStartsWithOr) {
       out.push(tidySpaces(`${cur} ${next}`));
       i++; // skip the next one because we merged it
     } else {
-      out.push(items[i]);
+      if (cur && TEMP_LINE.test(cur) && out.length) {
+        out[out.length - 1] = tidySpaces(`${out[out.length - 1]} ${cur}`);
+        continue;
+      } else {
+        out.push(items[i]);
+      }
+    }
+  }
+  return out;
+}
+
+function mergeTempLines(items: string[]): string[] {
+  const out: string[] = [];
+  for (const line of items) {
+    if (TEMP_LINE.test(line) && out.length) {
+      out[out.length - 1] = tidySpaces(`${out[out.length - 1]} ${line}`);
+    } else {
+      out.push(line);
     }
   }
   return out;
@@ -434,7 +547,7 @@ function stripEditorArtifacts(s: string): string {
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
     // 2) kill numeric zero-width/bidi entities even if spaced weird:
-    //    & # 8203 ;  or &#8203;  → remove
+    //    & # 8203 ;  or &#8203;  â†’ remove
     .replace(/&\s*#\s*(?:8203|8204|8205|8232|8233|8234|8235|8236|8237|8238|65279)\s*;?/gi, "")
     // 3) also remove the actual unicode chars if already decoded
     .replace(/[\u200B\u200C\u200D\u2028\u2029\u202A-\u202E\uFEFF]/g, "")
@@ -454,7 +567,7 @@ function stripEditorArtifacts(s: string): string {
 }
 
 // ---------- meta detector for steps (gentle filtering) ----------
-// 🏷️ meta lines: "Servings: 4", "Prep Time: 10 minutes", "4 croissants" (no period)
+// ðŸ·ï¸ meta lines: "Servings: 4", "Prep Time: 10 minutes", "4 croissants" (no period)
 function isMetaLine(s: string): boolean {
   const t = (s || "").trim();
   if (!t) return true;
@@ -472,7 +585,7 @@ function isMetaLine(s: string): boolean {
   return false;
 }
 
-// ✅ verb-anywhere detector so we keep instruction lines even if they don't start with a number/bullet
+// âœ… verb-anywhere detector so we keep instruction lines even if they don't start with a number/bullet
 const COOKING_VERBS = [
   "preheat","heat","melt","whisk","stir","mix","combine","bring","simmer","boil","reduce",
   "add","fold","pour","spread","sprinkle","season","coat","cook","bake","fry","air\\s*fry",
@@ -480,7 +593,7 @@ const COOKING_VERBS = [
   "garnish","line","mince","dice","chop","peel","seed","core","marinate","prepare","beat",
   "blend","pulse","knead","roll","press","grease","butter","measure","rinse","drain","pat\\s+dry",
   "toast","grate","zest","steam","microwave","warm",
-  // ✅ NEW verbs so we keep these lines as steps:
+  // âœ… NEW verbs so we keep these lines as steps:
   "make","fill","assemble"
 ];
 const VERB_ANYWHERE_RE = new RegExp(`\\b(?:${COOKING_VERBS.join("|")})\\b`, "i");
@@ -495,8 +608,9 @@ export function parseRecipeText(input: string): ParseResult {
 
   let { ingBlob, stepBlob, iIng, iStep } = sliceSectionsSmart(raw);
 
-  // glue "1" + newline + "½/1/2"
+  // glue "1" + newline + "Â½/1/2"
   ingBlob = glueSplitMixedNumbersAcrossNewlines(ingBlob);
+  ingBlob = ingBlob.replace(/\s+-\s+(?=\d)/g, "\n- ");
 
   // make step area friendlier (now also splits on ; and |)
   stepBlob = normalizeStepArea(stepBlob);
@@ -517,12 +631,15 @@ export function parseRecipeText(input: string): ParseResult {
   // e.g., "vanilla bean paste (or" on one line and "2 tsp vanilla extract)" on next
   ingLinesRaw = mergeParentheticalOrLines(ingLinesRaw);
 
-  // ✅ sanitizer bath (fixes headers, /2 → 1/2, bullets/dashes, etc.)
+  // âœ… sanitizer bath (fixes headers, /2 â†' 1/2, bullets/dashes, etc.)
   const sanitizedPieces = sanitizeAndSplitIngredientCandidates(ingLinesRaw);
   const hadGuesses = sanitizedPieces.some(p => p.lowConfidence);
-  const ingLinesPrepped = sanitizedPieces
+  let ingLinesPrepped = sanitizedPieces
     .filter(p => !p.maybeHeader) // drop "For the Ganache:"-style headers
     .map(p => p.text);
+  
+  // Merge parenthetical statements again after sanitization (in case sanitizer split them)
+  ingLinesPrepped = mergeParentheticalOrLines(ingLinesPrepped);
   const strayStepSeedsRaw = ingLinesPrepped.filter(line => !looksLikeIngredient(line) && !isLikelyPromoLine(line));
   
   // Group ingredients by sections if headers are detected
@@ -533,7 +650,7 @@ export function parseRecipeText(input: string): ParseResult {
   for (const piece of sanitizedPieces) {
     if (piece.maybeHeader) {
       // This is a section header - start a new section
-      const sectionName = piece.text.replace(/[:•\s]+$/, "").trim();
+      const sectionName = piece.text.replace(/[:â€¢\s]+$/, "").trim();
       if (currentSection && currentSection.ingredients.length > 0) {
         ingredientSections.push(currentSection);
       }
@@ -584,13 +701,18 @@ export function parseRecipeText(input: string): ParseResult {
   
   // unique + final orphan-number glue
   const ingredientsPrepped = finalFixOrphanNumberIngredients(uniqueNonEmpty(ingredientsBuilt));
-  let ingredients = dropJunkIngredientLines(ingredientsPrepped).slice(0, 60);
+  let ingredients = mergeTempLines(dropJunkIngredientLines(ingredientsPrepped));
+  
+  // Final pass: merge any parenthetical statements that might have been split
+  ingredients = mergeParentheticalOrLines(ingredients).slice(0, 60);
   
   // Also apply final fixes to section ingredients
   if (ingredientSections.length > 0) {
     for (const section of ingredientSections) {
       const sectionPrepped = finalFixOrphanNumberIngredients(uniqueNonEmpty(section.ingredients));
-      section.ingredients = dropJunkIngredientLines(sectionPrepped).slice(0, 60);
+      let sectionIngs = mergeTempLines(dropJunkIngredientLines(sectionPrepped));
+      // Final pass: merge any parenthetical statements
+      section.ingredients = mergeParentheticalOrLines(sectionIngs).slice(0, 60);
     }
   }
   
@@ -671,14 +793,14 @@ export function parseRecipeText(input: string): ParseResult {
 }
 
 
-// ─────────────────────────────────────────────────────────────
-// Quantity normalizers (handle 1½, 1 1/2lb → 1 1/2 lb, etc.)
-// ─────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Quantity normalizers (handle 1Â½, 1 1/2lb â†’ 1 1/2 lb, etc.)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function normalizeUnicodeFractions(s: string): string {
   // Map common unicode fractions to ascii
-  return s.replace(/¼/g, " 1/4")
-          .replace(/½/g, " 1/2")
-          .replace(/¾/g, " 3/4");
+  return s.replace(/Â¼/g, " 1/4")
+          .replace(/Â½/g, " 1/2")
+          .replace(/Â¾/g, " 3/4");
 }
 function fixStuckQtyUnitsAll(s: string): string {
   // Add a space between quantity (with optional mixed fraction) and unit
@@ -697,6 +819,7 @@ const PROMO_CLUE_RE = /\b(follow|subscribe|newsletter|link\s+(?:in|on)\s+bio|vis
 
 function isLikelyPromoLine(line: string): boolean {
   const t = (line || "").trim();
+  if (looksLikeIngredient(t)) return false;
   if (!t) return true;
   if (/https?:\/\//i.test(t)) return true;
   if (INLINE_HASHTAG_RE.test(t)) return true;
@@ -713,3 +836,5 @@ function dropJunkIngredientLines(lines: string[]): string[] {
     .filter((l) => !/^\s*\d[\d,.\s]*\s+(likes?|comments?)\b/i.test(l))
     .filter((l) => !isLikelyPromoLine(l));
 }
+
+

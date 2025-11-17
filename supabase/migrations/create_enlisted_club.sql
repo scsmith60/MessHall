@@ -178,3 +178,6 @@ CREATE POLICY "Service role can update tips" ON enlisted_club_tips
 
 
 
+
+
+

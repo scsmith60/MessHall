@@ -1,5 +1,5 @@
 // app/(tabs)/capture.tsx
-// ≡ƒºÆ ELI5: We paste a TikTok link, our robot opens it,
+// =��� ELI5: We paste a TikTok link, our robot opens it,
 // reads the caption + lots of comments, builds a recipe-looking text,
 // and gives that to the parser. If still weak, we OCR screenshots.
 
@@ -49,7 +49,7 @@ import { logDebug } from "@/lib/logger";
 const CAPTURE_DELAY_MS = 700;
 const BETWEEN_SHOTS_MS = 120;
 const SNAP_ATTEMPTS = 2;
-const IMPORT_HARD_TIMEOUT_MS = 35000;
+const IMPORT_HARD_TIMEOUT_MS = 60000; // Increased to 60 seconds to allow time for image capture
 const ATTEMPT_TIMEOUT_FIRST_MS = 8000;
 const ATTEMPT_TIMEOUT_SOFT_MS = 2200;
 const MIN_IMG_W = 600, MIN_IMG_H = 600;
@@ -230,7 +230,7 @@ function parseAroundMyFamilyTableRecipe(html: string, url: string): RecipeExtrac
     if (allListItems.length > 0) {
       const allTexts = allListItems.map(item => {
         let text = clean(item[1]);
-        text = text.replace(/^[•\-*]\s+/, "").replace(/^\d+[.)]\s+/, "").trim();
+        text = text.replace(/^[�\-*]\s+/, "").replace(/^\d+[.)]\s+/, "").trim();
         return text;
       }).filter(t => t.length > 3);
 
@@ -290,7 +290,7 @@ function parseCopyKatRecipe(html: string, url: string): RecipeExtraction | null 
     
     for (const item of listItems) {
       let text = clean(item[1]);
-      text = text.replace(/^[•\-*]\s+/, "").replace(/^\d+[.)]\s+/, "").trim();
+      text = text.replace(/^[�\-*]\s+/, "").replace(/^\d+[.)]\s+/, "").trim();
       if (text && text.length > 2 && !/^(servings?|yield|prep time|cook time|total time)/i.test(text)) {
         ingredients.push(text);
       }
@@ -324,7 +324,7 @@ function parseCopyKatRecipe(html: string, url: string): RecipeExtraction | null 
     
     for (const item of stepListItems) {
       let text = clean(item[1]);
-      text = text.replace(/^\d+[.)]\s+/, "").replace(/^[•\-*]\s+/, "").trim();
+      text = text.replace(/^\d+[.)]\s+/, "").replace(/^[�\-*]\s+/, "").trim();
       if (text && text.length > 5 && !/^(servings?|yield|prep time|cook time|total time|notes?)/i.test(text)) {
         steps.push(text);
       }
@@ -420,7 +420,7 @@ export default function CaptureScreen() {
   }
   function ensureHttps(u: string) { return /^[a-z]+:\/\//i.test(u) ? u : `https://${u}`; }
   async function resolveFinalUrl(u: string) {
-    try { const r = await fetch(u); if ((r as any)?.url) return (r as any).url as string; } catch (e) { try { dbg('Γ¥î try-block failed:', safeErr(e));  } catch {} }
+    try { const r = await fetch(u); if ((r as any)?.url) return (r as any).url as string; } catch (e) { try { dbg('G�� try-block failed:', safeErr(e));  } catch {} }
     return u;
   }
   function canonicalizeUrl(u: string): string {
@@ -433,7 +433,7 @@ export default function CaptureScreen() {
       url.search = url.searchParams.toString() ? `?${url.searchParams.toString()}` : "";
       if (url.pathname !== "/" && url.pathname.endsWith("/")) url.pathname = url.pathname.slice(0, -1);
       return url.toString();
-    } catch (e) { return u.trim(); try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+    } catch (e) { return u.trim(); try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
   }
   function isTikTokLike(url: string): boolean {
     try { const h = new URL(url).hostname.toLowerCase(); return h === "www.tiktok.com" || h.endsWith(".tiktok.com") || h === "tiktok.com" || h === "vm.tiktok.com"; } catch (e) { return /tiktok\.com/i.test(url); }
@@ -454,7 +454,7 @@ export default function CaptureScreen() {
           html.match(/"itemId"\s*:\s*"(\d{6,})"/) ||
           html.match(/<link\s+rel="canonical"\s+href="https?:\/\/www\.tiktok\.com\/@[^\/]+\/(?:video|photo)\/(\d{6,})"/i);
         if (m) id = m[1];
-      } catch (e) { try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+      } catch (e) { try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
     }
     return { embedUrl: id ? `https://www.tiktok.com/embed/v2/${id}` : null, finalUrl: final, id };
   }
@@ -496,7 +496,7 @@ export default function CaptureScreen() {
     return s;
   }
   // ------------------------------
-  // ≡ƒì¡ Title helpers (fixed)
+  // =�� Title helpers (fixed)
   // ------------------------------
 
   /** Turn a TikTok caption into a short, pretty recipe title */
@@ -584,11 +584,11 @@ function findDishTitleFromText(source: string, url: string): string | null {
         .trim();
     const stripCountPrefix = (value: string) =>
       value
-        .replace(/^\s*\d[\d,.\s]*\s+likes?,?\s*\d[\d,.\s]*\s+comments?\s*[-–:]?\s*/i, "")
-        .replace(/^\s*\d[\d,.\s]*\s+likes?\s*[-–:]?\s*/i, "")
-        .replace(/^\s*\d[\d,.\s]*\s+comments?\s*[-–:]?\s*/i, "");
+        .replace(/^\s*\d[\d,.\s]*\s+likes?,?\s*\d[\d,.\s]*\s+comments?\s*[-�:]?\s*/i, "")
+        .replace(/^\s*\d[\d,.\s]*\s+likes?\s*[-�:]?\s*/i, "")
+        .replace(/^\s*\d[\d,.\s]*\s+comments?\s*[-�:]?\s*/i, "");
     const stripAuthorPrefix = (value: string) =>
-      value.replace(/^[^:]*\d[^:]*:\s*(?=["“']|$)/, "");
+      value.replace(/^[^:]*\d[^:]*:\s*(?=["�']|$)/, "");
 
     let s = stripCountPrefix(stripUiPrompts(original)).replace(/^[\s\n\r]+/, "");
 
@@ -644,14 +644,14 @@ function findDishTitleFromText(source: string, url: string): string | null {
         )
       )
     )
-      .replace(/^[\"“']+/, "")
-      .replace(/[\"”']+$/, "");
+      .replace(/^[\"�']+/, "")
+      .replace(/[\"�']+$/, "");
 
     if (/^ingredients?\b/i.test(s) || isBadTitleCandidate(s)) return "";
 
     return s;
   }
-  /** ≡ƒº╝ normalizeDishTitle: trim hype and keep only the dish name.
+  /** =��+ normalizeDishTitle: trim hype and keep only the dish name.
    *  Example: "Smoky Poblano Chicken & Black Bean Soup Dive into..." 
    *           -> "Smoky Poblano Chicken and Black Bean Soup"
    */
@@ -688,7 +688,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     return s;
   }
-  /** ≡ƒ¢í∩╕Å safeSetTitle: only accept strong, cleaned titles and remember strongest. */
+  /** =���n+� safeSetTitle: only accept strong, cleaned titles and remember strongest. */
   function safeSetTitle(
     candidate: string | null | undefined,
     url: string,
@@ -699,24 +699,24 @@ function findDishTitleFromText(source: string, url: string): string | null {
     const raw = (candidate ?? "").trim();
     if (!raw) return;
     const cleaned = normalizeDishTitle(cleanTitle(raw, url));
-    if (isWeakTitle(cleaned)) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
+    if (isWeakTitle(cleaned)) { dbg?.("=���n+� TITLE rejected (weak):", source, JSON.stringify(cleaned)); return; }
     // Don't allow junk TikTok titles to override good ones
-    if (isTikTokJunkTitle(cleaned)) { dbg?.("≡ƒ¢í∩╕Å TITLE rejected (junk):", source, JSON.stringify(cleaned)); return; }
+    if (isTikTokJunkTitle(cleaned)) { dbg?.("=���n+� TITLE rejected (junk):", source, JSON.stringify(cleaned)); return; }
     const prev = (strongTitleRef.current || "").trim();
     if (!prev || cleaned.length > prev.length) {
       strongTitleRef.current = cleaned;
-      dbg?.("≡ƒ¢í∩╕Å TITLE strongest updated:", source, JSON.stringify(cleaned));
+      dbg?.("=���n+� TITLE strongest updated:", source, JSON.stringify(cleaned));
     }
     // If we already have a good title, don't let weaker/later ones override it
     if (!isWeakTitle(current) && !isTikTokJunkTitle(current) && current.trim().length > 0) {
       // Only override if the new title is significantly better (longer and not junk)
       if (!(cleaned.length > current.length * 1.2 && !isTikTokJunkTitle(cleaned))) {
-        dbg?.("≡ƒ¢í∩╕Å TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
+        dbg?.("=���n+� TITLE kept existing:", JSON.stringify(current), "over", JSON.stringify(cleaned), "from", source);
         return;
       }
     }
     setTitle(cleaned);
-    dbg?.("≡ƒ¢í∩╕Å TITLE set:", source, JSON.stringify(cleaned));
+    dbg?.("=���n+� TITLE set:", source, JSON.stringify(cleaned));
   }
 
 
@@ -729,7 +729,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (t === "tiktok") return true;
     if (t === "make your day") return true;
     if (t === "tiktok - make your day" || t === "tiktok | make your day") return true;
-    if (t.startsWith("tiktok -") || t.startsWith("tiktok |") || t.startsWith("tiktok –")) return true;
+    if (t.startsWith("tiktok -") || t.startsWith("tiktok |") || t.startsWith("tiktok �")) return true;
     if (t.includes("tiktok") && t.includes("make your day")) return true;
     if (/^original (sound|audio)\b/.test(t)) return true;
     if (/today'?s top videos?/.test(t)) return true;
@@ -743,7 +743,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     if (isTikTokJunkTitle(s)) return true;
     const lower = s.toLowerCase();
     if (lower === "instagram" || lower === "see more" || lower === "global video community" || lower === "continue on web") return true;
-    if (/^(?:\d+|[¼½¾⅛⅜⅝⅞⅓⅔⅙⅚⅕⅖⅗⅘])/.test(s.trim())) return true;
+    if (/^(?:\d+|[���????????????])/.test(s.trim())) return true;
     if (/\b(likes?|views?|comments?|followers?|shares?)\b/.test(lower)) return true;
     if (/@/.test(s)) return true;
     if (/\b on (jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/.test(lower)) return true;
@@ -774,7 +774,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     return false;
   }
 
-  // ≡ƒºá Find "Ingredients" and "Steps" inside one long TikTok caption
+  // =��� Find "Ingredients" and "Steps" inside one long TikTok caption
   function sectionizeCaption(raw: string) {
     const s = (raw || "").replace(/\r/g, "\n");
     const low = s.toLowerCase();
@@ -814,7 +814,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
           continue;
         }
         // Check if line looks like an ingredient (has quantity/unit, or starts with bullet/number)
-        const hasQuantityUnit = /(\d+(?:\/\d+)?(?:\.\d+)?|(?:¼|½|¾))\s*(?:cup|cups|tsp|tsps|tbsp|tbsps|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks|slice|slices|can|cans|package|packages|bunch|bunches|head|heads|piece|pieces|fillet|fillets|strip|strips|stalk|stalks|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers)\b/i.test(l);
+        const hasQuantityUnit = /(\d+(?:\/\d+)?(?:\.\d+)?|(?:�|�|�))\s*(?:cup|cups|tsp|tsps|tbsp|tbsps|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks|slice|slices|can|cans|package|packages|bunch|bunches|head|heads|piece|pieces|fillet|fillets|strip|strips|stalk|stalks|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers)\b/i.test(l);
         if (/^(?:[\-\*\u2022]\s+|\d+[\.)]\s+)/.test(l) || hasQuantityUnit) { 
           ingLines.push(l); 
           inIngredientSection = true;
@@ -838,7 +838,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     } else {
       // No explicit headers found - try to detect ingredients by looking for quantity+unit patterns
       // This handles cases like "See more\n1 lb beef 3 cups broth..."
-      const quantityUnitPattern = /(\d+(?:\/\d+)?(?:\.\d+)?|(?:¼|½|¾))\s*(?:cup|cups|tsp|tsps|tbsp|tbsps|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks|slice|slices|can|cans|package|packages|bunch|bunches|head|heads|piece|pieces|fillet|fillets|strip|strips|stalk|stalks|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers)\b/i;
+      const quantityUnitPattern = /(\d+(?:\/\d+)?(?:\.\d+)?|(?:�|�|�))\s*(?:cup|cups|tsp|tsps|tbsp|tbsps|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks|slice|slices|can|cans|package|packages|bunch|bunches|head|heads|piece|pieces|fillet|fillets|strip|strips|stalk|stalks|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers)\b/i;
       const firstIngMatch = s.search(quantityUnitPattern);
       
       if (firstIngMatch >= 0) {
@@ -911,7 +911,7 @@ function findDishTitleFromText(source: string, url: string): string | null {
     return { before: beforeText, ing, steps };
   }
 
-  // ≡ƒö¬ Turn "Ingredients 1 lb chicken 1 cup panko ..." into line items
+  // =��� Turn "Ingredients 1 lb chicken 1 cup panko ..." into line items
   function explodeIngredientsBlock(block: string) {
     if (!block) return "";
 
@@ -934,13 +934,13 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     // rule B: split on ", " || "; " **when** there's a quantity/unit before it
     txt = txt.replace(
-      new RegExp(`(\\d+(?:\\.\\d+)?|(?:¼|½|¾))\\s*${unitPattern}\\b\\s*[,;]\\s*`, "gi"),
+      new RegExp(`(\\d+(?:\\.\\d+)?|(?:�|�|�))\\s*${unitPattern}\\b\\s*[,;]\\s*`, "gi"),
       "$&\n"
     );
 
     // rule C: split when a new quantity+unit appears without punctuation
     txt = txt.replace(
-      new RegExp(`\\s(?=(\\d+(?:\\/\\d+)?(?:\\.\\d+)?|(?:¼|½|¾))\\s*${unitPattern}\\b)`, "gi"),
+      new RegExp(`\\s(?=(\\d+(?:\\/\\d+)?(?:\\.\\d+)?|(?:�|�|�))\\s*${unitPattern}\\b)`, "gi"),
       "\n"
     );
 
@@ -952,18 +952,18 @@ function findDishTitleFromText(source: string, url: string): string | null {
 
     return ["Ingredients:", ...lines].join("\n");
   }
-  // ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  // G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��
 // ELI5: make the words easy for our parser
-// - turn fancy fractions (┬╜) into normal " 1/2"
+// - turn fancy fractions (-+) into normal " 1/2"
 // - put a space between numbers and units ("1lb" -> "1 lb", "1 1/2lb" -> "1 1/2 lb")
 // - we do this BEFORE we call parseRecipeText
-// ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+// G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��G��
 
 function normalizeUnicodeFractions(s: string): string {
   return (s || "")
-    .replace(/┬╝/g, " 1/4")
-    .replace(/┬╜/g, " 1/2")
-    .replace(/┬╛/g, " 3/4");
+    .replace(/-+/g, " 1/4")
+    .replace(/-+/g, " 1/2")
+    .replace(/-+/g, " 3/4");
 }
 
 function preCleanIgCaptionForParsing(s: string): string {
@@ -995,8 +995,8 @@ function preCleanIgCaptionForParsing(s: string): string {
 }
 
 const TEXT_NUMBER_PATTERN = /\b(one|two|three|four|five|six|seven|eight|nine|ten|half|quarter|third|couple|few|handful)\b/i;
-const STEP_INSTRUCTION_VERB = /^(add|mix|combine|stir|whisk|fold|pour|drizzle|layer|spread|cook|bake|heat|preheat|melt|fry|pan\s*fry|air\s*fry|saute|saut[ée]|sear|brown|season|toss|press|arrange|place|roll|wrap|serve|garnish|top|spoon|transfer|beat|blend|chop|mince|dice|slice|toast|grill|broil|roast|simmer|boil|knead|marinate|let|allow|rest|cover|refrigerate|chill)/i;
-const STEP_INSTRUCTION_ANYWHERE = /\b(add|mix|combine|stir|whisk|fold|pour|drizzle|layer|spread|cook|bake|heat|preheat|melt|fry|pan\s*fry|air\s*fry|saute|saut[ée]|sear|brown|season|toss|press|arrange|place|roll|wrap|serve|garnish|top|spoon|transfer|beat|blend|chop|mince|dice|slice|toast|grill|broil|roast|simmer|boil|knead|marinate|enjoy|garnish|sprinkle)\b/i;
+const STEP_INSTRUCTION_VERB = /^(add|mix|combine|stir|whisk|fold|pour|drizzle|layer|spread|cook|bake|heat|preheat|melt|fry|pan\s*fry|air\s*fry|saute|saut[�e]|sear|brown|season|toss|press|arrange|place|roll|wrap|serve|garnish|top|spoon|transfer|beat|blend|chop|mince|dice|slice|toast|grill|broil|roast|simmer|boil|knead|marinate|let|allow|rest|cover|refrigerate|chill)/i;
+const STEP_INSTRUCTION_ANYWHERE = /\b(add|mix|combine|stir|whisk|fold|pour|drizzle|layer|spread|cook|bake|heat|preheat|melt|fry|pan\s*fry|air\s*fry|saute|saut[�e]|sear|brown|season|toss|press|arrange|place|roll|wrap|serve|garnish|top|spoon|transfer|beat|blend|chop|mince|dice|slice|toast|grill|broil|roast|simmer|boil|knead|marinate|enjoy|garnish|sprinkle)\b/i;
 const STEP_INSTRUCTION_CUE = /\b(minutes?|seconds?|hour|hours|until|meanwhile|once|then|next|after|before|finally|gradually|cook|bake|stir)\b/i;
 const ING_AMOUNT_CLUE = /(\d+(?:\s+\d+\/\d+)?|\d+\/\d+|[\u00BC-\u00BE\u2150-\u215E])/i;
 const ING_UNIT_CLUE = /\b(cups?|cup|tsp|teaspoon|teaspoons|tbsp|tablespoon|tablespoons|oz|ounce|ounces|lb|pound|pounds|g|gram|grams|kg|ml|milliliter|milliliters|l|liter|litre|pinch|dash|clove|cloves|stick|sticks|sprig|sprigs|can|cans|head|heads|slice|slices|package|pack|packs|sheet|sheets|bag|bags|bunch|bunches|egg|eggs)\b/i;
@@ -1129,7 +1129,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
 }
 
 
-  // ≡ƒöº Turn "Steps 1. Mix 2. Bake ..." into numbered lines
+  // =��� Turn "Steps 1. Mix 2. Bake ..." into numbered lines
   function explodeStepsBlock(block: string) {
     if (!block) return "";
 
@@ -1153,7 +1153,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     return ["Steps:", ...lines].join("\n");
   }
 
-  // ≡ƒº¬ Build a recipe-looking text purely from CAPTION
+  // =��� Build a recipe-looking text purely from CAPTION
   function captionToRecipeText(caption: string) {
     const { before, ing, steps } = sectionizeCaption(caption);
     const ingBlock = explodeIngredientsBlock(ing);
@@ -1299,7 +1299,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       const j: any = await fetchWithUA(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, 7000, "json");
       const t = j?.title && String(j.title).trim();
       return t && !isTikTokJunkTitle(t) ? t : null;
-    } catch (e) { return null; try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+    } catch (e) { return null; try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
   }
 
   // -------------- image helpers --------------
@@ -1315,7 +1315,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       }
       const base = new URL(ensureHttps(pageUrl));
       return new URL(candidate, base).toString();
-    } catch (e) { return null; try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+    } catch (e) { return null; try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
   }
   async function getAnyImageFromPage(url: string): Promise<string | null> {
     try {
@@ -1323,10 +1323,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
       const og = extractMetaContent(html, "og:image") || extractMetaContent(html, "twitter:image");
       if (og) return absolutizeImageUrl(og, url);
       return null;
-    } catch (e) { return null; try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+    } catch (e) { return null; try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
   }
   async function getLocalDimensions(uri: string): Promise<{ w: number; h: number }> {
-    try { const r = await ImageManipulator.manipulateAsync(uri, [], { compress: 0, format: ImageManipulator.SaveFormat.JPEG }); return { w: r.width ?? 0, h: r.height ?? 0 }; } catch (e) { return { w: 0, h: 0 }; }
+    return await new Promise((resolve) => {
+      RNImage.getSize(
+        uri,
+        (w, h) => resolve({ w: w ?? 0, h: h ?? 0 }),
+        () => resolve({ w: 0, h: 0 })
+      );
+    });
   }
   async function ensureMinLocalImage(uri: string): Promise<string | null> {
     const { w, h } = await getLocalDimensions(uri);
@@ -1338,7 +1344,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       try {
         const out = await ImageManipulator.manipulateAsync(uri, [{ resize: { width: newW, height: newH } }], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG });
         return out.uri || null;
-      } catch (e) { return null; try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+      } catch (e) { return null; try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
     }
     return null;
   }
@@ -1360,8 +1366,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const ok = await ensureMinLocalImage(out.uri);
             return ok || out.uri;
           }
-        } catch (e) { try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
-        try { await FileSystem.deleteAsync(dst, { idempotent: true }); } catch (e) { try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+        } catch (e) { try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
+        try { await FileSystem.deleteAsync(dst, { idempotent: true }); } catch (e) { try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
       }
     }
     return null;
@@ -1386,20 +1392,20 @@ function stitchBrokenSteps(lines: string[]): string[] {
   }
 
   // -------------- NEW: comment scoring & fusion --------------
-  // ≡ƒºá score how "ingredienty/stepy" a comment looks
+  // =��� score how "ingredienty/stepy" a comment looks
   function scoreRecipeComment(s: string) {
     let sc = 0;
     const low = s.toLowerCase();
     if (/ingredients?|what you need|for the (?:dough|sauce|filling)|shopping list/.test(low)) sc += 600;
     if (/directions?|steps?|method|how to/.test(low)) sc += 320;
-    if (/[0-9┬╜┬╝┬╛]/.test(s)) sc += 160;
+    if (/[0-9-+-+-+]/.test(s)) sc += 160;
     if (/(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|lb|pound|g|gram|kg|ml|l|liter|litre)/i.test(s)) sc += 220;
     if (/^(\s*[-*\u2022]|\s*\d+\.)/m.test(s)) sc += 120;
     const lines = s.split(/\r?\n/).length; sc += Math.min(lines, 40) * 6;
     const L = s.length; if (L > 80) sc += 40; if (L > 240) sc += 30; if (L > 900) sc -= 120;
     return sc;
   }
-  // ≡ƒÜ┐ clean up comments (strip "log in/open app" cruft)
+  // =��+ clean up comments (strip "log in/open app" cruft)
   function isJunkComment(s: string) {
     const low = s.toLowerCase();
     if (low.length < 8) return true;
@@ -1417,7 +1423,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       .trim();
     return t;
   }
-  // ≡ƒì▒ build a "recipe-like" text from caption + top comments
+  // =�� build a "recipe-like" text from caption + top comments
   function fuseCaptionAndComments(caption: string, comments: string[], topN = 5) {
     const good = comments.filter((c) => c && !isJunkComment(c)).map((c) => normalizeLines(c));
     const ranked = good.sort((a, b) => scoreRecipeComment(b) - scoreRecipeComment(a));
@@ -1452,7 +1458,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const [debugLog, setDebugLog] = useState<string>("");
   const [pastedUrl, setPastedUrl] = useState("");
   const [title, setTitle] = useState("");
-  // ≡ƒ¢í∩╕Å strongest good title during this import run
+  // =���n+� strongest good title during this import run
   const strongTitleRef = useRef<string>("");
   const [timeMinutes, setTimeMinutes] = useState("");
   const [servings, setServings] = useState("");
@@ -1543,15 +1549,38 @@ function stitchBrokenSteps(lines: string[]): string[] {
     return await new Promise<{ w: number; h: number }>((ok) => RNImage.getSize(uri, (w, h) => ok({ w, h }), () => ok({ w: 0, h: 0 })));
   }, []);
   const validateOrRepairLocal = useCallback(async (uri: string): Promise<string | null> => {
+    let working = uri;
+    const reencode = async (candidate: string) => {
+      try {
+        const resaved = await ImageManipulator.manipulateAsync(candidate, [], { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG });
+        return resaved?.uri ?? null;
+      } catch (e) { try { dbg('I"A?Ar reencode failed:', safeErr(e)); } catch {} return null; }
+    };
+
     try {
       const info = await FileSystem.getInfoAsync(uri);
-      if (!("exists" in info) || !info.exists || (info.size ?? 0) < MIN_LOCAL_BYTES) {
-        const resaved = await ImageManipulator.manipulateAsync(uri, [], { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }).catch(() => null);
-        if (resaved?.uri) uri = resaved.uri; else return null;
+      if (!info.exists) {
+        const resaved = await reencode(uri);
+        if (!resaved) return null;
+        working = resaved;
+      } else if ((info.size ?? 0) < MIN_LOCAL_BYTES) {
+        const resaved = await reencode(uri);
+        if (resaved) working = resaved;
       }
-    } catch (e) { return null; try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
-    return await ensureMinLocalImage(uri);
+    } catch (e) {
+      const resaved = await reencode(uri);
+      if (!resaved) return null;
+      working = resaved;
+    }
+
+    let ensured = await ensureMinLocalImage(working);
+    if (ensured) return ensured;
+    const retry = await reencode(working);
+    if (!retry) return null;
+    ensured = await ensureMinLocalImage(retry);
+    return ensured;
   }, []);
+
   const isValidCandidate = useCallback(async (uri: string): Promise<{ ok: boolean; useUri?: string }> => {
     if (!uri) return { ok: false };
     if (uri.startsWith("file://")) {
@@ -1561,14 +1590,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
       if (w < MIN_IMG_W || h < MIN_IMG_H) return { ok: false };
       return { ok: true, useUri: fixed };
     } else {
-      try { await withTimeout(RNImage.prefetch(uri), 1800).catch(() => null); } catch (e) { try { dbg('Γ¥î try-block failed:', safeErr(e));  } catch {} }
+      try { await withTimeout(RNImage.prefetch(uri), 1800).catch(() => null); } catch (e) { try { dbg('G�� try-block failed:', safeErr(e));  } catch {} }
       const { w, h } = await getImageDims(uri);
       if ((w >= MIN_IMG_W && h >= MIN_IMG_H) || (w === 0 && h === 0)) return { ok: true, useUri: uri };
       try {
         const dl = await FileSystem.downloadAsync(uri, FileSystem.cacheDirectory + `snap_${Date.now()}.jpg`);
         const fixed = await validateOrRepairLocal(dl.uri);
         if (fixed) return { ok: true, useUri: fixed };
-      } catch (e) { try { dbg('Γ¥î try-block failed:', safeErr(e)); } catch {} }
+      } catch (e) { try { dbg('G�� try-block failed:', safeErr(e)); } catch {} }
       return { ok: false };
     }
   }, [getImageDims, validateOrRepairLocal]);
@@ -1617,14 +1646,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
     }
   }, [hudVisible, pendingImportUrl, bringHudToFront]);
 
-  // ≡ƒº▓ HUD "z-index key" - we bump this whenever a helper modal opens,
+  // =��� HUD "z-index key" - we bump this whenever a helper modal opens,
   // so the HUD remounts LAST and stays on top like a blanket.
   // Keep a z-index key so we can remount HUD on top of newly opened modals (WebViews)
   const [hudZKey, setHudZKey] = useState(0);
   const bringHudToFront = useCallback(() => setHudZKey((k) => k + 1), []);
 
-  // ≡ƒöì open tiny web window to read caption + comments
-  // Γ¥ù∩╕ÅFIX: DO NOT convert to /embed. Open the real page to expose SIGI/NEXT JSON and allow "see more" clicks.
+  // =��� open tiny web window to read caption + comments
+  // G��n+�FIX: DO NOT convert to /embed. Open the real page to expose SIGI/NEXT JSON and allow "see more" clicks.
   const scrapeTikTokDom = useCallback(async (rawUrl: string): Promise<{
     text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string;
   } | null> => {
@@ -1638,7 +1667,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       // 2) open the full **desktop** page; TTDomScraper will handle viewports and "see more" clicks.
       setDomScraperUrl(finalUrl);
       setDomScraperVisible(true);
-      bringHudToFront(); // ≡ƒºÆ tell the HUD to hop back on top
+      bringHudToFront(); // =��� tell the HUD to hop back on top
       domScraperResolverRef.current = (payload: any) => {
         if (!resolved) {
           resolved = true;
@@ -2046,7 +2075,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
   
 
-  // ≡ƒô╕ snap TikTok for preview/OCR (embed is ok for a *picture*)
+  // =��+ snap TikTok for preview/OCR (embed is ok for a *picture*)
   const autoSnapTikTok = useCallback(async (rawUrl: string, maxAttempts = SNAP_ATTEMPTS) => {
     const { embedUrl, finalUrl } = await resolveTikTokEmbedUrl(rawUrl);
     const target = embedUrl || ensureHttps(rawUrl);
@@ -2118,7 +2147,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
     // STEP 0: try oEmbed title
     try {
         const siteType = await detectSiteType(url);
-        dbg("≡ƒÄ» Site detected:", siteType);
+        dbg("=�Ļ Site detected:", siteType);
 
         if (siteType === "instagram") {
           dbg("[IG] Instagram path begins");
@@ -2139,7 +2168,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             
             // If we got meaningful data from server-side extraction, use it!
             if (meta.ingredients && meta.ingredients.length > 0) {
-              dbg("[IG] ✓ Server-side extraction successful! Using fetchMeta data.");
+              dbg("[IG] ? Server-side extraction successful! Using fetchMeta data.");
               
               // Clean the title - remove Instagram boilerplate
               let cleanTitle = meta.title || "";
@@ -2374,7 +2403,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   // creator/date attributions like "alfskitchen on July 18"
                   if (/^@?\w+\s+on\s+/.test(low) && monthPattern.test(low)) return false;
                   // drop year-prefixed quoted lines that look like a title and not an ingredient
-                  const m = t.match(/^\s*\d{4}\s*[:\-]\s*["“'’]?([^"”'’]{3,80})["”'’]?\s*$/);
+                  const m = t.match(/^\s*\d{4}\s*[:\-]\s*["�'�]?([^"�'�]{3,80})["�'�]?\s*$/);
                   if (m) {
                     const candidate = m[1].trim();
                     const hasMeasure = ING_AMOUNT_CLUE.test(candidate) || ING_UNIT_CLUE.test(candidate);
@@ -2385,7 +2414,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                     cleanTitle(
                       t
                         .replace(/^\s*\d{4}\s*[:\-]\s*/, "")
-                        .replace(/^['"”’]+|['"“‘]+$/g, ""),
+                        .replace(/^['"��]+|['"��]+$/g, ""),
                       url
                     )
                   );
@@ -2457,7 +2486,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                           cleanTitle(
                             t
                               .replace(/^\s*\d{4}\s*[:\-]\s*/, "")
-                              .replace(/^['"”’]+|['"“‘]+$/g, ""),
+                              .replace(/^['"��]+|['"��]+$/g, ""),
                             url
                           )
                         );
@@ -2499,7 +2528,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
         } else if (siteType === "facebook") {
           // FACEBOOK PATH (similar to Instagram)
-          dbg("≡ƒæì Facebook path begins");
+          dbg("=��� Facebook path begins");
           
           try {
             const og = await fetchOgForUrl(url);
@@ -2510,7 +2539,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             
             if (og?.description) {
               const parsed = parseRecipeText(og.description);
-              dbg("≡ƒôè Facebook parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+              dbg("=��� Facebook parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
               
               if (parsed.ingredients.length >= 2) {
                 setIngredients(parsed.ingredients);
@@ -2530,12 +2559,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
             
             if (og?.image) await tryImageUrl(og.image, url);
           } catch (e) {
-            dbg("Γ¥î Facebook handler failed:", safeErr(e));
+            dbg("G�� Facebook handler failed:", safeErr(e));
           }
 
         } else if (siteType === "recipe-site") {
           // RECIPE SITE PATH (AllRecipes, Food Network, etc.)
-          dbg("≡ƒì│ Recipe site path begins");
+          dbg("=�� Recipe site path begins");
           
           try {
             const html = await fetchWithUA(url, 12000, "text");
@@ -2551,7 +2580,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             
             if (handled) {
               success = true;
-              dbg("Γ£à Recipe site extraction successful");
+              dbg("G�� Recipe site extraction successful");
             } else {
               dbg("[RECIPE] Extraction failed, falling back to OG metadata");
               // Fallback to OG if structured data failed
@@ -2562,13 +2591,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
               if (og?.image) await tryImageUrl(og.image, url);
             }
           } catch (e) {
-            dbg("Γ¥î Recipe site handler failed:", safeErr(e));
+            dbg("G�� Recipe site handler failed:", safeErr(e));
           }
 
         } else if (siteType === "generic") {
           // GENERIC SITE - Try to detect recipe data and auto-discover
           // NOTE: No screenshot/OCR capture for generic sites - uses OG images instead
-          dbg("≡ƒì│ Generic site - checking for recipe data");
+          dbg("=�� Generic site - checking for recipe data");
           try {
             const html = await fetchWithUA(url, 12000, "text");
             
@@ -2579,7 +2608,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             
             if (jsonLd || microdata || htmlExtracted) {
               // Found recipe data! Auto-discover the site and process it
-              dbg("≡ƒì│ Recipe data found on generic site - auto-discovering");
+              dbg("=�� Recipe data found on generic site - auto-discovering");
               await discoverRecipeSiteIfNeeded(url, html);
               
               // Now try to extract recipe (same as recipe-site path)
@@ -2587,7 +2616,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
               
               if (handled) {
                 success = true;
-                dbg("Γ£à Generic site recipe extraction successful (auto-discovered)");
+                dbg("G�� Generic site recipe extraction successful (auto-discovered)");
               } else {
                 // Fallback to OG if structured data extraction failed
                 const og = await fetchOgForUrl(url);
@@ -2603,7 +2632,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
               }
             } else {
               // No recipe data - just try OG fallback
-              dbg("≡ƒì│ No recipe data found on generic site");
+              dbg("=�� No recipe data found on generic site");
               const og = await fetchOgForUrl(url);
               if (og?.title && isWeakTitle(title)) {
                 safeSetTitle(og.title, url, title, dbg, "generic:og");
@@ -2616,34 +2645,36 @@ function stitchBrokenSteps(lines: string[]): string[] {
               }
             }
           } catch (e) {
-            dbg("Γ¥î Generic site handler failed:", safeErr(e));
+            dbg("G�� Generic site handler failed:", safeErr(e));
           }
 
         } else if (siteType === "tiktok") {
           // EXISTING TIKTOK PATH (keep all your existing TikTok code here)
-          dbg("≡ƒÄ» TikTok detected - unified import path begins");
+          dbg("=�Ļ TikTok detected - unified import path begins");
           // STEP 1: DOM scrape
           let domPayload: { text?: string; caption?: string; comments?: string[]; bestComment?: string; debug?: string } | null = null;
           // title candidates collected across steps (declare in outer scope so available later)
           let ttTitleCandidates: Array<{ v: string; src: string }> = [];
+          let hasTikTokIngredients = ingredients.some((line) => line?.trim());
+          let hasTikTokSteps = steps.some((line) => line?.trim());
           try {
             bumpStage(1);
             domPayload = await scrapeTikTokDom(url);
             // Collect TikTok title candidates without setting the title yet
             const len = (domPayload?.text || "").length;
-            dbg("≡ƒôä STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
-            // ≡ƒæç extra trace to know where it came from and if "see more" was clicked
-            if (domPayload?.debug) dbg("≡ƒº¬ TTDOM DEBUG:", domPayload.debug);
+            dbg("=��� STEP 1 DOM payload. text length:", len, "comments:", domPayload?.comments?.length || 0);
+            // =��� extra trace to know where it came from and if "see more" was clicked
+            if (domPayload?.debug) dbg("=��� TTDOM DEBUG:", domPayload.debug);
             // EXTRA DEBUG: log keys and a small sample of fields so we can see what the WebView actually returned
             try {
-              dbg("≡ƒπ TTDOM payload keys:", domPayload ? Object.keys(domPayload) : null);
-              if (domPayload?.caption) dbg("≡ƒπ TTDOM caption (snippet):", (domPayload.caption || "").slice(0, 240));
-              if (domPayload?.text) dbg("≡ƒπ TTDOM text (snippet):", (domPayload.text || "").slice(0, 240));
-              if ((domPayload as any)?.sigi) dbg("≡ƒπ TTDOM sigi keys:", Object.keys((domPayload as any).sigi || {}).slice(0, 10));
-              if (domPayload?.comments && domPayload.comments.length) dbg("≡ƒπ TTDOM first comment:", domPayload.comments[0].slice(0, 160));
-            } catch (e) { dbg("≡ƒπ TTDOM debug failed:", safeErr(e)); }
+              dbg("=�p TTDOM payload keys:", domPayload ? Object.keys(domPayload) : null);
+              if (domPayload?.caption) dbg("=�p TTDOM caption (snippet):", (domPayload.caption || "").slice(0, 240));
+              if (domPayload?.text) dbg("=�p TTDOM text (snippet):", (domPayload.text || "").slice(0, 240));
+              if ((domPayload as any)?.sigi) dbg("=�p TTDOM sigi keys:", Object.keys((domPayload as any).sigi || {}).slice(0, 10));
+              if (domPayload?.comments && domPayload.comments.length) dbg("=�p TTDOM first comment:", domPayload.comments[0].slice(0, 160));
+            } catch (e) { dbg("=�p TTDOM debug failed:", safeErr(e)); }
           
-            // ≡ƒæë NEW: try to set a nice title from the TikTok caption if ours is weak
+            // =��� NEW: try to set a nice title from the TikTok caption if ours is weak
             try {
                 // Prefer any DOM-provided short title first (cleanTitle/pageTitle/SIGI)
                 try {
@@ -2685,7 +2716,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 } catch {}
             } catch {}
           } catch (e) {
-            dbg("Γ¥î STEP 1 (DOM scraper) failed:", safeErr(e));
+            dbg("G�� STEP 1 (DOM scraper) failed:", safeErr(e));
           }
 
           // STEP 2: PARSE - caption first (photos often hold full recipe here)
@@ -2708,13 +2739,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
             
             // Always try SIGI_STATE if available and caption mentions ingredients (might be truncated)
             if (domPayload?.sigi && (isTruncated || /\bingredients?\s*:/i.test(cap))) {
-              dbg("≡ƒöì Caption mentions ingredients, trying SIGI_STATE extraction (truncated:", isTruncated, "endsAbruptly:", endsAbruptly, ")");
+              dbg("=��� Caption mentions ingredients, trying SIGI_STATE extraction (truncated:", isTruncated, "endsAbruptly:", endsAbruptly, ")");
               try {
                 const sigiCaption = extractCaptionFromSigi(domPayload.sigi, dbg);
                 if (sigiCaption) {
-                  dbg("≡ƒöì SIGI_STATE caption length:", sigiCaption.length, "vs DOM caption length:", cap.length);
-                  dbg("≡ƒöì SIGI_STATE caption preview:", sigiCaption.slice(0, 200));
-                  dbg("≡ƒöì DOM caption ends with:", cap.slice(-50));
+                  dbg("=��� SIGI_STATE caption length:", sigiCaption.length, "vs DOM caption length:", cap.length);
+                  dbg("=��� SIGI_STATE caption preview:", sigiCaption.slice(0, 200));
+                  dbg("=��� DOM caption ends with:", cap.slice(-50));
                   
                   // Use SIGI_STATE caption if:
                   // 1. It's longer, OR
@@ -2731,23 +2762,23 @@ function stitchBrokenSteps(lines: string[]): string[] {
                                         (domHasIngredients && sigiHasIngredients && lengthRatio >= 0.98); // Both have ingredients, prefer longer if close
                   
                   if (shouldUseSigi) {
-                    dbg("≡ƒöì Using SIGI_STATE caption (length:", sigiCaption.length, "hasIngredients:", sigiHasIngredients, ")");
+                    dbg("=��� Using SIGI_STATE caption (length:", sigiCaption.length, "hasIngredients:", sigiHasIngredients, ")");
                     // Log the section around INGREDIENTS: to debug parsing
                     const ingIndex = sigiCaption.toLowerCase().indexOf('ingredients');
                     if (ingIndex >= 0) {
                       const start = Math.max(0, ingIndex - 50);
                       const end = Math.min(sigiCaption.length, ingIndex + 300);
-                      dbg("≡ƒöì SIGI_STATE caption around INGREDIENTS:", sigiCaption.slice(start, end));
+                      dbg("=��� SIGI_STATE caption around INGREDIENTS:", sigiCaption.slice(start, end));
                     }
                     cap = sigiCaption;
                   } else {
-                    dbg("≡ƒöì Keeping DOM caption (SIGI_STATE not better - length:", sigiCaption.length, "vs", cap.length, "hasIngredients:", sigiHasIngredients, ")");
+                    dbg("=��� Keeping DOM caption (SIGI_STATE not better - length:", sigiCaption.length, "vs", cap.length, "hasIngredients:", sigiHasIngredients, ")");
                   }
                 } else {
-                  dbg("≡ƒöì SIGI_STATE extraction returned null");
+                  dbg("=��� SIGI_STATE extraction returned null");
                 }
               } catch (e) {
-                dbg("≡ƒöì SIGI_STATE extraction failed:", safeErr(e));
+                dbg("=��� SIGI_STATE extraction failed:", safeErr(e));
               }
             }
             
@@ -2771,20 +2802,20 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
             // A) build clean recipe text from CAPTION
             const capRecipe = captionToRecipeText(cap);
-            dbg("≡ƒöì capRecipe length:", capRecipe.length, "preview:", capRecipe.slice(0, 300));
+            dbg("=��� capRecipe length:", capRecipe.length, "preview:", capRecipe.slice(0, 300));
 
             // B) parse caption text
             let parsed = parseRecipeText(capRecipe);
-            dbg("≡ƒôè STEP 2A parse(CAPTION) conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+            dbg("=��� STEP 2A parse(CAPTION) conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
             if (parsed.ingredients.length === 0 && cap.toLowerCase().includes('ingredients')) {
-              dbg("≡ƒöì WARNING: Caption mentions ingredients but parser found 0. Full caption preview:", cap.slice(0, 500));
+              dbg("=��� WARNING: Caption mentions ingredients but parser found 0. Full caption preview:", cap.slice(0, 500));
             }
 
             // C) if still weak, fuse top comments and reparse
             if ((parsed.ingredients.length < 3 || parsed.steps.length < 1) && comments.length) {
               const fusion = fuseCaptionAndComments(cap, comments, 5);
               const parsed2 = parseRecipeText(fusion);
-              dbg("≡ƒôè STEP 2B parse(CAPTION+COMMENTS) conf:", parsed2.confidence, "ing:", parsed2.ingredients.length, "steps:", parsed2.steps.length);
+              dbg("=��� STEP 2B parse(CAPTION+COMMENTS) conf:", parsed2.confidence, "ing:", parsed2.ingredients.length, "steps:", parsed2.steps.length);
               if ((parsed2.ingredients.length + parsed2.steps.length) > (parsed.ingredients.length + parsed.steps.length)) {
                 parsed = parsed2;
               }
@@ -2820,6 +2851,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             if (partitioned.ingredients.length >= 2 || normalizedSteps.length >= 1) {
               if (partitioned.ingredients.length) {
                 setIngredients(partitioned.ingredients);
+                hasTikTokIngredients = hasTikTokIngredients || partitioned.ingredients.some((line) => line && line.trim());
                 // Use ingredient sections if available, otherwise use flat list
                 if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
                   setIngredientSections(parsed.ingredientSections);
@@ -2827,12 +2859,15 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   setIngredientSections(null);
                 }
               }
-              if (normalizedSteps.length) setSteps(normalizedSteps);
+              if (normalizedSteps.length) {
+                setSteps(normalizedSteps);
+                hasTikTokSteps = true;
+              }
               bumpStage(2);
-              dbg("Γ£à STEP 2 caption-based parse worked");
+              dbg("G�� STEP 2 caption-based parse worked");
               success = true;
             } else {
-              dbg("Γä╣∩╕Å STEP 2 caption parse still weak; will try OCR next");
+              dbg("G�n+� STEP 2 caption parse still weak; will try OCR next");
             }
 
             // Choose best title candidate for TikTok now that parsing is done
@@ -2868,47 +2903,52 @@ function stitchBrokenSteps(lines: string[]): string[] {
               }
             } catch {}
           } catch (e) {
-            dbg("Γ¥î STEP 2 (parse) failed:", safeErr(e));
+            dbg("G�� STEP 2 (parse) failed:", safeErr(e));
           }
 
           // STEP 3: OCR fallback
           try {
-            if (!success || (ingredients.every(v => !v.trim()))) {
-              bumpStage(2);
-              dbg("≡ƒô╕ STEP 3 trying screenshot + OCR");
-              const shot = await autoSnapTikTok(url, 2);
-              if (shot) {
-                const ocrText = await ocrImageToText(shot);
-                dbg("≡ƒöì STEP 3 OCR text length:", ocrText ? ocrText.length : 0);
-                if (ocrText && ocrText.length > 50) {
-                  const parsed = parseRecipeText(ocrText);
-                  dbg("≡ƒôè STEP 3 OCR parse conf:", parsed.confidence, "ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
-                  if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
-                    if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) {
-                      setIngredients(parsed.ingredients);
-                      if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
-                        setIngredientSections(parsed.ingredientSections);
-                      } else {
-                        setIngredientSections(null);
-                      }
+            const needOcr = !hasTikTokIngredients || !hasTikTokSteps;
+            bumpStage(2);
+            dbg('[TikTok] STEP 3 capturing preview (need OCR:', needOcr, ')');
+            const shot = await autoSnapTikTok(url, 2);
+            if (needOcr && shot) {
+              const ocrText = await ocrImageToText(shot);
+              dbg('[TikTok] STEP 3 OCR text length:', ocrText ? ocrText.length : 0);
+              if (ocrText && ocrText.length > 50) {
+                const parsed = parseRecipeText(ocrText);
+                dbg('[TikTok] STEP 3 OCR parse conf:', parsed.confidence, 'ing:', parsed.ingredients.length, 'steps:', parsed.steps.length);
+                if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
+                  if (!hasTikTokIngredients && parsed.ingredients.length) {
+                    setIngredients(parsed.ingredients);
+                    hasTikTokIngredients = true;
+                    if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
+                      setIngredientSections(parsed.ingredientSections);
+                    } else {
+                      setIngredientSections(null);
                     }
-                    if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
-                    bumpStage(3);
-                    dbg("Γ£à STEP 3 OCR gave usable content");
-                    success = true;
                   }
+                  if (!hasTikTokSteps && parsed.steps.length) {
+                    setSteps(parsed.steps);
+                    hasTikTokSteps = true;
+                  }
+                  bumpStage(3);
+                  dbg('[TikTok] STEP 3 OCR gave usable content');
+                  success = true;
                 }
               }
+            } else if (needOcr && !shot) {
+              dbg('[TikTok] STEP 3 OCR skipped because screenshot failed');
             }
           } catch (e) {
-            dbg("ΓÜá∩╕Å STEP 3 (OCR) failed:", safeErr(e));
+            dbg('=��� STEP 3 (OCR) failed:', safeErr(e));
           }
 
           // STEP 4: OG/Meta as last resort for text
           try {
             if (!success || ingredients.every(v => !v.trim())) {
               bumpStage(3);
-              dbg("≡ƒîÉ STEP 4 trying OG/Meta description");
+              dbg("=��� STEP 4 trying OG/Meta description");
               const og = await fetchOgForUrl(url);
 
               /* Title from og:title intentionally ignored for TikTok to avoid 'TikTok -' overwrites */
@@ -2919,7 +2959,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
               if (og?.description) {
                 const parsed = parseRecipeText(og.description);
-                dbg("≡ƒôè STEP 4 OG parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
+                dbg("=��� STEP 4 OG parse ing:", parsed.ingredients.length, "steps:", parsed.steps.length);
                 if (parsed.ingredients.length >= 2 || parsed.steps.length >= 1) {
                   if (ingredients.every(v => !v.trim()) && parsed.ingredients.length) {
                     setIngredients(parsed.ingredients);
@@ -2930,13 +2970,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
                     }
                   }
                   if (steps.every(v => !v.trim()) && parsed.steps.length) setSteps(parsed.steps);
-                  dbg("Γ£à STEP 4 got usable content from OG description");
+                  dbg("G�� STEP 4 got usable content from OG description");
                   success = true;
                 }
               }
             }
           } catch (e) {
-            dbg("ΓÜá∩╕Å STEP 4 (OG/Meta) failed:", safeErr(e));
+            dbg("G��n+� STEP 4 (OG/Meta) failed:", safeErr(e));
           }
           // STEP 5: image preview fallback
           try {
@@ -2944,10 +2984,10 @@ function stitchBrokenSteps(lines: string[]): string[] {
             if (!gotSomethingForRunRef.current) {
               const imgUrl = await getAnyImageFromPage(url);
               if (imgUrl) await tryImageUrl(imgUrl, url);
-              dbg("≡ƒû╝∩╕Å STEP 5 image fallback:", !!imgUrl);
+              dbg("=��+n+� STEP 5 image fallback:", !!imgUrl);
             }
           } catch (e) {
-            dbg("ΓÜá∩╕Å STEP 5 (image fallback) failed:", safeErr(e));
+            dbg("G��n+� STEP 5 (image fallback) failed:", safeErr(e));
           }
 
         } else {
@@ -2969,12 +3009,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
             }
             if (og?.image) await tryImageUrl(og.image, url);
           } catch (e) {
-            dbg("ΓÜá∩╕Å Generic handler failed:", safeErr(e));
+            dbg("G��n+� Generic handler failed:", safeErr(e));
           }
         }
       } catch (e: any) {
         const msg = safeErr(e);
-        dbg("Γ¥î Import error:", msg);
+        dbg("G�� Import error:", msg);
         // Only clear image if we got nothing in this run AND there was no existing image
         // This preserves the image from a previous successful import when re-importing
         if (!gotSomethingForRunRef.current && !hadExistingImage) {
@@ -3444,7 +3484,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           }}
           onFound={async (uri) => {
             setTikTokShots((prev)=> (prev.includes(uri) ? prev : [...prev, uri]));
-            logDebug("≡ƒô╕ snap onFound", uri);
+            logDebug("=��+ snap onFound", uri);
             gotSomethingForRunRef.current = true;
             // Resolve any pending snap promise so autoSnapTikTok can continue.
             try {
@@ -3458,6 +3498,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             // In full snapshot mode, show the focal point editor instead of directly setting preview
             const fixed = await validateOrRepairLocal(uri);
             if (fixed) {
+              setGoodPreview(fixed, lastResolvedUrlRef.current);
               // Show the editor so user can adjust focal point
               setFocalPointEditorImageUri(fixed);
               setFocalPointEditorVisible(true);
@@ -3465,6 +3506,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             } else {
               const test = await isValidCandidate(uri);
               if (test.ok && test.useUri) {
+                setGoodPreview(test.useUri, lastResolvedUrlRef.current);
                 setFocalPointEditorImageUri(test.useUri);
                 setFocalPointEditorVisible(true);
                 setSnapVisible(false);
@@ -3504,11 +3546,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
           onClose={() => setDomScraperVisible(false)}
           onResult={(payload) => {
             try {
-              dbg("≡ƒπ TTDomScraper onResult payload keys:", payload ? Object.keys(payload) : null);
-              if (payload?.caption) dbg("≡ƒπ onResult caption snippet:", (payload.caption || "").slice(0, 240));
-              if (payload?.text) dbg("≡ƒπ onResult text snippet:", (payload.text || "").slice(0, 240));
-              if ((payload as any)?.sigi) dbg("≡ƒπ onResult sigi keys:", Object.keys((payload as any).sigi || {}).slice(0, 10));
-            } catch (e) { dbg("≡ƒπ onResult debug failed:", safeErr(e)); }
+              dbg("=�p TTDomScraper onResult payload keys:", payload ? Object.keys(payload) : null);
+              if (payload?.caption) dbg("=�p onResult caption snippet:", (payload.caption || "").slice(0, 240));
+              if (payload?.text) dbg("=�p onResult text snippet:", (payload.text || "").slice(0, 240));
+              if ((payload as any)?.sigi) dbg("=�p onResult sigi keys:", Object.keys((payload as any).sigi || {}).slice(0, 10));
+            } catch (e) { dbg("=�p onResult debug failed:", safeErr(e)); }
             domScraperResolverRef.current?.(payload);
             setDomScraperVisible(false);
           }}
@@ -3665,7 +3707,7 @@ function MilitaryImportOverlay({
               return (
                 <View key={label} style={hudBackdrop.stepRow}>
                   <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(47,174,102,0.26)", borderColor: "rgba(47,174,102,0.6)" }, active && { borderColor: "#86efac" }]}>
-                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>✓</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>•</Text> : null}
+                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>?</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>�</Text> : null}
                   </View>
                   <Text style={[hudBackdrop.stepText, done && { color: "#bbf7d0" }, active && { color: COLORS.text, fontWeight: "600" }]}>{label}</Text>
                 </View>
@@ -3689,7 +3731,7 @@ const hudBackdrop = StyleSheet.create({
     paddingBottom: 28,
     borderWidth: 1,
     borderColor: COLORS.border,
-    minHeight: HUD_CARD_MIN_H, // ≡ƒæê gives the card extra height
+    minHeight: HUD_CARD_MIN_H, // =��� gives the card extra height
   },
   headline: { color: COLORS.text, fontSize: 18, textAlign: "center", letterSpacing: 1, marginBottom: 12 },
   radarWrap: {
@@ -3698,7 +3740,7 @@ const hudBackdrop = StyleSheet.create({
     height: RADAR_SIZE,
     alignItems: "center",
     justifyContent: "center",
-    marginVertical: 16,        // ≡ƒæê was marginBottom: 12
+    marginVertical: 16,        // =��� was marginBottom: 12
     overflow: "hidden",
     borderRadius: RADAR_SIZE / 2,
     backgroundColor: "rgba(47,174,102,0.12)",
@@ -3784,7 +3826,7 @@ function ThemedDialog({
         <Animated.View style={[dialogStyles.backdrop, { opacity }]}>
           <TouchableWithoutFeedback onPress={() => {}}>
             <Animated.View style={[dialogStyles.card, { transform: [{ scale }] }]}>
-              <View style={dialogStyles.checkCircle}><Text style={{ color: "#0B1120", fontWeight: "900", fontSize: 18 }}>✓</Text></View>
+              <View style={dialogStyles.checkCircle}><Text style={{ color: "#0B1120", fontWeight: "900", fontSize: 18 }}>?</Text></View>
               <Text style={dialogStyles.title}>{title}</Text>
               {!!message && <Text style={dialogStyles.message}>{message}</Text>}
               <TouchableOpacity onPress={onClose} style={dialogStyles.okBtn}><Text style={dialogStyles.okText}>OK</Text></TouchableOpacity>
@@ -3867,6 +3909,7 @@ async function checkDuplicateSourceUrl(rawUrl: string): Promise<boolean> {
     return !!(data && data.length);
   } catch (e) { return false; }
 }
+
 
 
 

@@ -15,23 +15,111 @@ const BOLD_MD = /\*{1,3}([^*]+)\*{1,3}/g;// remove **bold** marks
 const TRAIL_DECOR = /[-–—•\s]+$/;         // trim trailing " - " or dots/spaces
 const LEAD_BULLET = /^\s*[-–—•]+\s*/;     // trim leading "- " bullets
 const MARKUP = /[_`~]/g;                  // drop stray markdown marks
+const TEMP_ING = /\b(?:warmed|warm|heated|heat|cooled|cool)\s+to\s+[-~]?\s*\d+\s*(?:°\s*)?(?:f|c)\b/i;
 
 // These words mean "this is a section title" like "For the Ganache:"
 const SECTION_HINTS = [
   "for the", "ganache", "filling", "topping", "frosting",
   "assembly", "optional toppings", "to serve", "batter", "glaze",
-  "streusel", "crust", "dough", "sauce", "dressing", "marinade"
+  "streusel", "crust", "dough", "sauce", "dressing", "marinade",
+  "ingredients"
 ];
 
-// 👀 Does this look like a section header?
+const UNIT_OR_MEASURE_HINT = /\b(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|ml|l|g|gram|grams|kg|stick|sticks)\b/i;
+const INLINE_INGREDIENT_HINT = /\b(cup|cups|tsp|tbsp|teaspoon|tablespoon|oz|ounce|ounces|ml|l|g|gram|grams|kg|stick|sticks|egg|eggs|butter|milk|sugar|cream|yeast|flour|salt|pepper)\b/i;
+const NUMBER_WORD = /\b(one|two|three|four|five|six|seven|eight|nine|ten)\b/i;
+
+function headerHasHint(header: string): boolean {
+  const lower = header.toLowerCase();
+  return SECTION_HINTS.some(hint => lower.includes(hint));
+}
+
+const GENERIC_HEADER_SKIP = /title\/captions/i;
+const TITLE_CASE_HEADER = /^[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,5}$/;
+
 function looksLikeSectionHeader(s: string): boolean {
-  const plain = s.toLowerCase();
-  // Ends with colon - likely a header
-  if (plain.endsWith(":")) return true;
-  // Pattern like "For X:" or "For the X:"
-  if (/^for\s+(?:the\s+)?[^:]+:\s*$/i.test(s)) return true;
-  // Contains section hints and ends with colon or has "for" pattern
-  return SECTION_HINTS.some(w => plain.includes(w) && (plain.endsWith(":") || /\bfor\s+(?:the\s+)?/i.test(plain)));
+  const trimmed = (s || "").trim();
+  if (!trimmed) return false;
+  const lower = trimmed.toLowerCase();
+  if (GENERIC_HEADER_SKIP.test(lower)) return false;
+
+  if (!trimmed.endsWith(":")) {
+    return /^for\s+(?:the\s+)?[^:]+:\s*$/i.test(lower);
+  }
+
+  const base = trimmed.slice(0, -1).trim();
+  if (!base || /\d/.test(base)) return false;
+  if (UNIT_OR_MEASURE_HINT.test(base)) return false;
+
+  return headerHasHint(base) || TITLE_CASE_HEADER.test(base) || /^for\s+(?:the\s+)?/i.test(base);
+}
+
+function normalizeHeaderCandidate(raw: string): string {
+  const stripped = (raw || "").replace(TRAIL_DECOR, "").trim();
+  if (!stripped) return "";
+  const firstUpperIdx = stripped.search(/[A-Z]/);
+  if (firstUpperIdx > 0) {
+    const prefix = stripped.slice(0, firstUpperIdx).trim();
+    if (prefix && /^[a-z\s]+$/.test(prefix)) {
+      return stripped.slice(firstUpperIdx).trim();
+    }
+  }
+  return stripped;
+}
+
+function tailLooksLikeIngredient(tail: string): boolean {
+  if (!tail) return false;
+  const core = tail.replace(/^[-•*]+\s*/, "").trim();
+  if (!core) return false;
+  if (/^(\d+\/\d+|\d+(?:\s+\d+\/\d+)?)/.test(core)) return true;
+  if (NUMBER_WORD.test(core)) return true;
+  if (INLINE_INGREDIENT_HINT.test(core)) return true;
+  return false;
+}
+
+function shouldSplitInlineHeader(headerRaw: string, tail: string): boolean {
+  const header = normalizeHeaderCandidate(headerRaw);
+  if (!header || GENERIC_HEADER_SKIP.test(header)) return false;
+  const looksSectiony =
+    headerHasHint(header) ||
+    /^[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3}$/.test(header);
+  if (!looksSectiony) return false;
+  return tailLooksLikeIngredient(tail);
+}
+
+function splitInlineHeaderSegments(raw: string): string[] {
+  const text = raw ?? "";
+  if (!text.trim()) return [];
+  const nakedMatch = text.match(/^\s*(ingredients?|ingredient\s+list)\b/i);
+  if (nakedMatch) {
+    const after = text.slice(nakedMatch[0].length).trim();
+    if (tailLooksLikeIngredient(after)) {
+      const normalizedHeader = normalizeHeaderCandidate(nakedMatch[0]);
+      const parts: string[] = [];
+      if (normalizedHeader) parts.push(`${normalizedHeader}:`);
+      if (after) parts.push(after);
+      if (parts.length) return parts;
+    }
+  }
+  const parts: string[] = [];
+  let cursor = 0;
+  const matcher = /([A-Z][A-Za-z\s]{0,80}):/g;
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(text)) !== null) {
+    const headerRaw = match[1];
+    const tail = text.slice(match.index + match[0].length);
+    if (!shouldSplitInlineHeader(headerRaw, tail)) continue;
+    const before = text.slice(cursor, match.index).trim();
+    if (before) parts.push(before);
+    const normalizedHeader = normalizeHeaderCandidate(headerRaw);
+    if (normalizedHeader) {
+      parts.push(`${normalizedHeader}:`);
+    }
+    cursor = match.index + match[0].length;
+  }
+  const tail = text.slice(cursor).trim();
+  if (tail) parts.push(tail);
+  return parts.length ? parts : [raw];
 }
 
 // ✂️ Split glued-together items: "A - B -" -> ["A", "B"]
@@ -82,19 +170,57 @@ function basicClean(s: string): string {
 
 // 🚿 Main bath time!
 export function sanitizeAndSplitIngredientCandidates(lines: string[]): SanitizedPiece[] {
+  const headerTail = /([A-Za-z][A-Za-z\s]{1,60}):\s*$/;
+  const expanded: string[] = [];
+  for (const raw of lines) {
+    if (!raw) continue;
+    const segments = splitInlineHeaderSegments(raw);
+    for (const segment of segments) {
+      if (!segment) continue;
+      const trimmed = segment.trimEnd();
+      if (!trimmed) continue;
+      const tailMatch = headerTail.exec(trimmed);
+      if (tailMatch && !/\d/.test(tailMatch[1])) {
+        const before = trimmed.slice(0, tailMatch.index).trim();
+        if (before) expanded.push(before);
+        const normalizedHeader = normalizeHeaderCandidate(tailMatch[1]);
+        if (normalizedHeader) {
+          expanded.push(normalizedHeader + ":");
+        }
+      } else {
+        expanded.push(segment);
+      }
+    }
+  }
+
   const out: SanitizedPiece[] = [];
 
-  for (const raw of lines) {
+  for (const raw of expanded) {
     if (!raw || !raw.trim()) continue;
 
     // 1) light scrub
     let s = basicClean(raw);
+    if (!s) continue;
+    const hasIngredientHints = /[-•\d]/.test(s);
+    const hasSectionHint = /(?:recipe|details|makes|serves|yield)\b/i.test(s);
+    if (!hasIngredientHints && !hasSectionHint && s.length > 160) continue;
 
-    // 2) header check (we tag & skip later)
-    const header = looksLikeSectionHeader(s);
-    if (header) {
-      out.push({ text: s.replace(TRAIL_DECOR, ""), maybeHeader: true });
-      continue;
+    // 2) header check (we tag & skip later) but allow inline ingredients after colon
+    let header = looksLikeSectionHeader(s);
+    if (header && s.endsWith(":")) {
+      const colonIdx = s.indexOf(":");
+      const afterColon = colonIdx >= 0 ? s.slice(colonIdx + 1).trim() : "";
+      let headerText = s.slice(0, colonIdx + 1).replace(TRAIL_DECOR, "").trim();
+      headerText = normalizeHeaderCandidate(headerText);
+      if (headerText && headerText.length <= 80) {
+        out.push({ text: headerText, maybeHeader: true });
+      }
+      if (afterColon) {
+        s = afterColon;
+        header = false;
+      } else {
+        continue;
+      }
     }
 
     // 3) tiny OCR fixes
@@ -121,12 +247,31 @@ export function sanitizeAndSplitIngredientCandidates(lines: string[]): Sanitized
     }
   }
 
-  // 6) de-dupe but keep order
-  const seen = new Set<string>();
-  return out.filter(p => {
+  const merged: SanitizedPiece[] = [];
+  for (const piece of out) {
+    if (TEMP_ING.test(piece.text) && merged.length && !merged[merged.length - 1].maybeHeader) {
+      const prev = merged[merged.length - 1];
+      merged[merged.length - 1] = { ...prev, text: `${prev.text} ${piece.text}`.trim() };
+    } else {
+      merged.push(piece);
+    }
+  }
+
+  // 6) de-dupe inside each section but keep duplicates across sections
+  const seenBySection = new Map<number, Set<string>>();
+  let sectionEpoch = 0;
+  return merged.filter(p => {
+    if (p.maybeHeader) {
+      sectionEpoch += 1;
+      return true;
+    }
+    if (!seenBySection.has(sectionEpoch)) {
+      seenBySection.set(sectionEpoch, new Set());
+    }
+    const bucket = seenBySection.get(sectionEpoch)!;
     const key = p.text.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
+    if (bucket.has(key)) return false;
+    bucket.add(key);
     return true;
   });
 }

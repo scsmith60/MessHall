@@ -2,8 +2,7 @@
 // Allows user to pan/zoom an image and select the focal point area to crop
 
 import React, { useCallback, useState, useEffect } from 'react';
-import { View, StyleSheet, Modal, TouchableOpacity, Text, Dimensions } from 'react-native';
-import { Image } from 'expo-image';
+import { View, StyleSheet, Modal, TouchableOpacity, Text, Dimensions, Image as RNImage } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { useSharedValue, useAnimatedStyle, clamp, runOnJS } from 'react-native-reanimated';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -46,42 +45,45 @@ export default function ImageFocalPointEditor({ visible, imageUri, onCancel, onC
 
   // Load image dimensions
   useEffect(() => {
-    if (visible && imageUri) {
-      // Use ImageManipulator to get dimensions (same approach as capture.tsx)
-      ImageManipulator.manipulateAsync(imageUri, [], { compress: 0, format: ImageManipulator.SaveFormat.JPEG })
-        .then((result) => {
-          const width = result.width ?? 0;
-          const height = result.height ?? 0;
-          
-          if (width === 0 || height === 0) {
-            setImageSize({ width: EDITOR_WIDTH, height: EDITOR_HEIGHT });
-            return;
-          }
-          
-          // Calculate size to fit in editor while maintaining aspect ratio
-          const aspectRatio = width / height;
-          let displayWidth = EDITOR_WIDTH;
-          let displayHeight = EDITOR_WIDTH / aspectRatio;
-          
-          if (displayHeight > EDITOR_HEIGHT) {
-            displayHeight = EDITOR_HEIGHT;
-            displayWidth = EDITOR_HEIGHT * aspectRatio;
-          }
-          
-          setImageSize({ width: displayWidth, height: displayHeight });
-          // Reset transforms when image changes
-          scale.value = 1;
-          translateX.value = 0;
-          translateY.value = 0;
-          savedScale.value = 1;
-          savedTranslateX.value = 0;
-          savedTranslateY.value = 0;
-        })
-        .catch(() => {
-          // Fallback to default size if we can't get dimensions
+    if (!visible || !imageUri) return;
+
+    let cancelled = false;
+    RNImage.getSize(
+      imageUri,
+      (width, height) => {
+        if (cancelled) return;
+
+        if (!width || !height) {
           setImageSize({ width: EDITOR_WIDTH, height: EDITOR_HEIGHT });
-        });
-    }
+          return;
+        }
+
+        const aspectRatio = width / height;
+        let displayWidth = EDITOR_WIDTH;
+        let displayHeight = EDITOR_WIDTH / aspectRatio;
+
+        if (displayHeight > EDITOR_HEIGHT) {
+          displayHeight = EDITOR_HEIGHT;
+          displayWidth = EDITOR_HEIGHT * aspectRatio;
+        }
+
+        setImageSize({ width: displayWidth, height: displayHeight });
+        scale.value = 1;
+        translateX.value = 0;
+        translateY.value = 0;
+        savedScale.value = 1;
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
+      },
+      () => {
+        if (cancelled) return;
+        setImageSize({ width: EDITOR_WIDTH, height: EDITOR_HEIGHT });
+      }
+    );
+
+    return () => {
+      cancelled = true;
+    };
   }, [visible, imageUri]);
 
   // Constrain translation to keep image within bounds
@@ -277,10 +279,10 @@ export default function ImageFocalPointEditor({ visible, imageUri, onCancel, onC
                 style={[styles.imageContainer, animatedStyle]}
                 collapsable={false}
               >
-                <Image
+                <RNImage
                   source={{ uri: imageUri }}
                   style={{ width: imageSize.width, height: imageSize.height }}
-                  contentFit="contain"
+                  resizeMode="contain"
                   pointerEvents="none"
                 />
               </Animated.View>
