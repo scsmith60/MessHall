@@ -2971,6 +2971,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
               bumpStage(2);
               dbg("G�� STEP 2 caption-based parse worked");
               success = true;
+              gotSomethingForRunRef.current = true;
+              // Track successful import from caption parsing
+              if (partitioned.ingredients.length >= 2) {
+                await trackSuccessfulImport(url, partitioned.ingredients, normalizedSteps, 'tiktok-caption');
+              }
             } else {
               dbg("G�n+� STEP 2 caption parse still weak; will try OCR next");
             }
@@ -3412,6 +3417,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
           attemptIdToMark = original.attemptId || null;
           
           // Compare normalized versions (order-independent for ingredients, order-dependent for steps)
+          // More sensitive detection: any difference in count or content is considered a correction
           const ingredientsChanged = 
             originalIngredients.length !== savedIngNormalized.length ||
             !originalIngredients.every(orig => savedIngNormalized.includes(orig)) ||
@@ -3421,7 +3427,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
             originalSteps.length !== savedStepsNormalized.length ||
             originalSteps.some((origStep, i) => origStep !== savedStepsNormalized[i]);
           
-          shouldTrackCorrection = ingredientsChanged || stepsChanged;
+          // Also check if content changed even if counts match (user edited text)
+          const ingredientTextChanged = originalIngredients.length > 0 && savedIngNormalized.length > 0 &&
+            originalIngredients.some((orig, idx) => {
+              const saved = savedIngNormalized[idx];
+              return saved && orig !== saved;
+            });
+          
+          shouldTrackCorrection = ingredientsChanged || stepsChanged || ingredientTextChanged;
           
           if (shouldTrackCorrection) {
             console.log(`[TRACKING] Detected changes using in-memory ref:`);
@@ -3429,18 +3442,40 @@ function stitchBrokenSteps(lines: string[]): string[] {
             console.log(`  Original steps: ${originalSteps.length}, Saved: ${savedStepsNormalized.length}`);
           }
         } else {
-          // Fallback: Compare against what's in the database from the most recent successful import
+          // Fallback: Compare against what's in the database from the most recent import attempt
           // This handles cases where the user navigated away and came back
           try {
-            const { data: attempts } = await supabase
+            // First try to find a successful import
+            let { data: attempts } = await supabase
               .from('recipe_import_attempts')
-              .select('id, ingredients_count, steps_count')
+              .select('id, ingredients_count, steps_count, success, strategy_used')
               .eq('url', cleanedSourceUrl)
               .eq('success', true)
               .order('created_at', { ascending: false })
               .limit(1);
             
-            if (attempts && attempts.length > 0) {
+            // If no successful import, check for any import attempt (including failed ones)
+            // This handles cases where import failed but user manually added ingredients
+            if (!attempts || attempts.length === 0) {
+              const { data: allAttempts } = await supabase
+                .from('recipe_import_attempts')
+                .select('id, ingredients_count, steps_count, success, strategy_used')
+                .eq('url', cleanedSourceUrl)
+                .order('created_at', { ascending: false })
+                .limit(1);
+              
+              if (allAttempts && allAttempts.length > 0) {
+                attempts = allAttempts;
+                // If the attempt failed but we have ingredients/steps now, user definitely corrected it
+                if (!attempts[0].success && (savedIngNormalized.length > 0 || savedStepsNormalized.length > 0)) {
+                  attemptIdToMark = attempts[0].id;
+                  shouldTrackCorrection = true;
+                  console.log(`[TRACKING] Detected correction: Import failed but user added ${savedIngNormalized.length} ingredients, ${savedStepsNormalized.length} steps`);
+                }
+              }
+            }
+            
+            if (attempts && attempts.length > 0 && !shouldTrackCorrection) {
               const latestAttempt = attempts[0];
               attemptIdToMark = latestAttempt.id;
               
@@ -3448,14 +3483,19 @@ function stitchBrokenSteps(lines: string[]): string[] {
               const ingredientsCountDiff = Math.abs((latestAttempt.ingredients_count || 0) - savedIngNormalized.length);
               const stepsCountDiff = Math.abs((latestAttempt.steps_count || 0) - savedStepsNormalized.length);
               
-              // Consider it a correction if counts differ by more than 10% or absolute difference > 2
+              // Consider it a correction if:
+              // 1. Counts differ by more than 2 items, OR
+              // 2. Counts differ by more than 10% (if we have original counts), OR
+              // 3. Original had 0 but we have data now (user added everything manually)
               const ingredientsChanged = 
+                (latestAttempt.ingredients_count === 0 && savedIngNormalized.length > 0) ||
                 ingredientsCountDiff > 2 || 
-                (latestAttempt.ingredients_count && ingredientsCountDiff / latestAttempt.ingredients_count > 0.1);
+                (latestAttempt.ingredients_count && latestAttempt.ingredients_count > 0 && ingredientsCountDiff / latestAttempt.ingredients_count > 0.1);
               
               const stepsChanged = 
+                (latestAttempt.steps_count === 0 && savedStepsNormalized.length > 0) ||
                 stepsCountDiff > 2 || 
-                (latestAttempt.steps_count && stepsCountDiff / latestAttempt.steps_count > 0.1);
+                (latestAttempt.steps_count && latestAttempt.steps_count > 0 && stepsCountDiff / latestAttempt.steps_count > 0.1);
               
               shouldTrackCorrection = ingredientsChanged || stepsChanged;
               
@@ -3463,6 +3503,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 console.log(`[TRACKING] Detected changes using database comparison:`);
                 console.log(`  Imported ingredients: ${latestAttempt.ingredients_count}, Saved: ${savedIngNormalized.length}`);
                 console.log(`  Imported steps: ${latestAttempt.steps_count}, Saved: ${savedStepsNormalized.length}`);
+                console.log(`  Strategy: ${latestAttempt.strategy_used}, Success: ${latestAttempt.success}`);
               }
             }
           } catch (err) {

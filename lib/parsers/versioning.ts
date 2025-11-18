@@ -11,6 +11,7 @@ export type StrategyName =
   | 'webview-dom'
   | 'ocr-screenshot'
   | 'ocr-screenshot-v2'
+  | 'tiktok-caption'
   | 'attempt-started'
   | 'user-abandoned'
   | 'user-corrected'
