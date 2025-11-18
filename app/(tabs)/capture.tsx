@@ -3641,8 +3641,46 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const handleDeleteIngredient = useCallback((index: number) => {
     ingredientSwipeRefs.current[index]?.close();
     ingredientSwipeRefs.current.splice(index, 1);
-    setIngredients((prev) => prev.filter((_, idx) => idx !== index));
-  }, []);
+    
+    // If we have ingredient sections, delete from the appropriate section
+    if (ingredientSections && ingredientSections.length > 0) {
+      let currentIndex = 0;
+      for (let sectionIdx = 0; sectionIdx < ingredientSections.length; sectionIdx++) {
+        const section = ingredientSections[sectionIdx];
+        const sectionStart = currentIndex;
+        const sectionEnd = currentIndex + section.ingredients.length;
+        
+        if (index >= sectionStart && index < sectionEnd) {
+          // Found the section containing this ingredient
+          const localIndex = index - sectionStart;
+          const newSections = [...ingredientSections];
+          
+          // Remove the ingredient from the section
+          newSections[sectionIdx].ingredients = newSections[sectionIdx].ingredients.filter((_, idx) => idx !== localIndex);
+          
+          // If section is now empty, remove the section
+          if (newSections[sectionIdx].ingredients.length === 0) {
+            newSections.splice(sectionIdx, 1);
+          }
+          
+          // Update sections
+          setIngredientSections(newSections.length > 0 ? newSections : null);
+          
+          // Update flat list
+          const flatList: string[] = [];
+          newSections.forEach(s => flatList.push(...s.ingredients));
+          setIngredients(flatList);
+          
+          return;
+        }
+        
+        currentIndex = sectionEnd;
+      }
+    } else {
+      // Flat list mode
+      setIngredients((prev) => prev.filter((_, idx) => idx !== index));
+    }
+  }, [ingredientSections]);
 
   const handleDeleteStep = useCallback((index: number) => {
     stepSwipeRefs.current[index]?.close();
