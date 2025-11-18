@@ -1506,12 +1506,15 @@ function stitchBrokenSteps(lines: string[]): string[] {
         console.warn(`[TRACKING] Failed to log successful import`);
       }
       // Store original import data for correction tracking
+      // Canonicalize URL to ensure it matches what we'll compare against in onSave
+      const canonicalizedUrl = canonicalizeUrl(url);
       originalImportDataRef.current = {
         ingredients: [...ingredients],
         steps: [...steps],
-        url,
+        url: canonicalizedUrl,
         attemptId: attemptId || undefined,
       };
+      console.log(`[TRACKING] Stored original import data for URL: ${canonicalizedUrl}`);
     } catch (err) {
       console.warn('[TRACKING] Error tracking successful import:', err);
       // Silently fail - don't break import flow
@@ -3409,12 +3412,23 @@ function stitchBrokenSteps(lines: string[]): string[] {
         const savedIngNormalized = savedIngredients.map(i => i.trim().toLowerCase()).filter(Boolean);
         const savedStepsNormalized = stp.map(s => s.trim().toLowerCase()).filter(Boolean);
         
+        console.log(`[TRACKING] Starting correction detection for URL: ${cleanedSourceUrl}`);
+        console.log(`[TRACKING] Saved ingredients: ${savedIngNormalized.length}, steps: ${savedStepsNormalized.length}`);
+        console.log(`[TRACKING] originalImportDataRef exists: ${!!originalImportDataRef.current}`);
+        if (originalImportDataRef.current) {
+          console.log(`[TRACKING] originalImportDataRef URL: ${originalImportDataRef.current.url}`);
+          console.log(`[TRACKING] URL match: ${originalImportDataRef.current.url === cleanedSourceUrl}`);
+        }
+        
         // Try in-memory ref first
         if (originalImportDataRef.current && originalImportDataRef.current.url === cleanedSourceUrl) {
           const original = originalImportDataRef.current;
           originalIngredients = original.ingredients.map(i => i.trim().toLowerCase()).filter(Boolean);
           originalSteps = original.steps.map(s => s.trim().toLowerCase()).filter(Boolean);
           attemptIdToMark = original.attemptId || null;
+          
+          console.log(`[TRACKING] Original import data - ingredients: ${originalIngredients.length}, steps: ${originalSteps.length}`);
+          console.log(`[TRACKING] Attempt ID: ${attemptIdToMark}`);
           
           // Compare normalized versions (order-independent for ingredients, order-dependent for steps)
           // More sensitive detection: any difference in count or content is considered a correction
@@ -3428,18 +3442,30 @@ function stitchBrokenSteps(lines: string[]): string[] {
             originalSteps.some((origStep, i) => origStep !== savedStepsNormalized[i]);
           
           // Also check if content changed even if counts match (user edited text)
+          // Compare each ingredient at same position - if any differ, it's a correction
           const ingredientTextChanged = originalIngredients.length > 0 && savedIngNormalized.length > 0 &&
             originalIngredients.some((orig, idx) => {
               const saved = savedIngNormalized[idx];
               return saved && orig !== saved;
             });
           
-          shouldTrackCorrection = ingredientsChanged || stepsChanged || ingredientTextChanged;
+          // Also check if order changed (ingredients in different positions)
+          const orderChanged = originalIngredients.length === savedIngNormalized.length &&
+            originalIngredients.length > 0 &&
+            originalIngredients.some((orig, idx) => {
+              const saved = savedIngNormalized[idx];
+              return saved && orig !== saved; // Different ingredient at same position
+            });
+          
+          shouldTrackCorrection = ingredientsChanged || stepsChanged || ingredientTextChanged || orderChanged;
           
           if (shouldTrackCorrection) {
-            console.log(`[TRACKING] Detected changes using in-memory ref:`);
-            console.log(`  Original ingredients: ${originalIngredients.length}, Saved: ${savedIngNormalized.length}`);
-            console.log(`  Original steps: ${originalSteps.length}, Saved: ${savedStepsNormalized.length}`);
+            console.log(`[TRACKING] ✅ Detected changes using in-memory ref:`);
+            console.log(`  Ingredients changed: ${ingredientsChanged} (original: ${originalIngredients.length}, saved: ${savedIngNormalized.length})`);
+            console.log(`  Steps changed: ${stepsChanged} (original: ${originalSteps.length}, saved: ${savedStepsNormalized.length})`);
+            console.log(`  Text changed: ${ingredientTextChanged}, Order changed: ${orderChanged}`);
+          } else {
+            console.log(`[TRACKING] ❌ No changes detected - ingredients and steps match exactly`);
           }
         } else {
           // Fallback: Compare against what's in the database from the most recent import attempt
@@ -3479,32 +3505,41 @@ function stitchBrokenSteps(lines: string[]): string[] {
               const latestAttempt = attempts[0];
               attemptIdToMark = latestAttempt.id;
               
-              // Compare counts - if saved data differs significantly, likely user made changes
+              console.log(`[TRACKING] Comparing against database attempt ${latestAttempt.id}:`);
+              console.log(`  Imported ingredients: ${latestAttempt.ingredients_count}, Saved: ${savedIngNormalized.length}`);
+              console.log(`  Imported steps: ${latestAttempt.steps_count}, Saved: ${savedStepsNormalized.length}`);
+              console.log(`  Strategy: ${latestAttempt.strategy_used}, Success: ${latestAttempt.success}`);
+              
+              // Compare counts - if saved data differs at all, likely user made changes
+              // Be more sensitive: any difference is considered a correction
               const ingredientsCountDiff = Math.abs((latestAttempt.ingredients_count || 0) - savedIngNormalized.length);
               const stepsCountDiff = Math.abs((latestAttempt.steps_count || 0) - savedStepsNormalized.length);
               
               // Consider it a correction if:
-              // 1. Counts differ by more than 2 items, OR
-              // 2. Counts differ by more than 10% (if we have original counts), OR
-              // 3. Original had 0 but we have data now (user added everything manually)
+              // 1. Counts differ by ANY amount (more sensitive), OR
+              // 2. Original had 0 but we have data now (user added everything manually), OR
+              // 3. Counts differ by more than 10% (if we have original counts)
               const ingredientsChanged = 
                 (latestAttempt.ingredients_count === 0 && savedIngNormalized.length > 0) ||
-                ingredientsCountDiff > 2 || 
-                (latestAttempt.ingredients_count && latestAttempt.ingredients_count > 0 && ingredientsCountDiff / latestAttempt.ingredients_count > 0.1);
+                ingredientsCountDiff > 0 || // Changed: was > 2, now > 0 (any difference)
+                (latestAttempt.ingredients_count && latestAttempt.ingredients_count > 0 && ingredientsCountDiff / latestAttempt.ingredients_count > 0.05); // Changed: was 0.1, now 0.05 (5% threshold)
               
               const stepsChanged = 
                 (latestAttempt.steps_count === 0 && savedStepsNormalized.length > 0) ||
-                stepsCountDiff > 2 || 
-                (latestAttempt.steps_count && latestAttempt.steps_count > 0 && stepsCountDiff / latestAttempt.steps_count > 0.1);
+                stepsCountDiff > 0 || // Changed: was > 2, now > 0 (any difference)
+                (latestAttempt.steps_count && latestAttempt.steps_count > 0 && stepsCountDiff / latestAttempt.steps_count > 0.05); // Changed: was 0.1, now 0.05 (5% threshold)
               
               shouldTrackCorrection = ingredientsChanged || stepsChanged;
               
               if (shouldTrackCorrection) {
-                console.log(`[TRACKING] Detected changes using database comparison:`);
-                console.log(`  Imported ingredients: ${latestAttempt.ingredients_count}, Saved: ${savedIngNormalized.length}`);
-                console.log(`  Imported steps: ${latestAttempt.steps_count}, Saved: ${savedStepsNormalized.length}`);
-                console.log(`  Strategy: ${latestAttempt.strategy_used}, Success: ${latestAttempt.success}`);
+                console.log(`[TRACKING] ✅ Detected changes using database comparison:`);
+                console.log(`  Ingredients changed: ${ingredientsChanged} (diff: ${ingredientsCountDiff})`);
+                console.log(`  Steps changed: ${stepsChanged} (diff: ${stepsCountDiff})`);
+              } else {
+                console.log(`[TRACKING] ❌ No changes detected - counts match exactly`);
               }
+            } else if (!attempts || attempts.length === 0) {
+              console.log(`[TRACKING] ⚠️ No import attempts found for URL: ${cleanedSourceUrl}`);
             }
           } catch (err) {
             console.warn('[TRACKING] Error comparing against database:', err);
@@ -3518,10 +3553,28 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const config = getParserConfig(siteType);
             
             if (attemptIdToMark) {
-              await markImportCorrected(attemptIdToMark);
-              console.log(`[TRACKING] ✅ Successfully marked attempt ${attemptIdToMark} as user-corrected`);
+              try {
+                await markImportCorrected(attemptIdToMark);
+                console.log(`[TRACKING] ✅ Successfully marked attempt ${attemptIdToMark} as user-corrected`);
+                
+                // Verify it was actually updated
+                const { data: verify } = await supabase
+                  .from('recipe_import_attempts')
+                  .select('user_corrected')
+                  .eq('id', attemptIdToMark)
+                  .single();
+                
+                if (verify && verify.user_corrected) {
+                  console.log(`[TRACKING] ✅ Verified: attempt ${attemptIdToMark} has user_corrected = TRUE`);
+                } else {
+                  console.warn(`[TRACKING] ⚠️ WARNING: attempt ${attemptIdToMark} still has user_corrected = FALSE after marking!`);
+                }
+              } catch (markErr) {
+                console.error(`[TRACKING] ❌ Error marking attempt ${attemptIdToMark} as corrected:`, markErr);
+              }
             } else {
               console.warn(`[TRACKING] ⚠️ Could not find attempt ID to mark as corrected for URL: ${cleanedSourceUrl}`);
+              console.warn(`[TRACKING] This means the original import attempt may not have been logged, or URL matching failed`);
             }
             
             // Also log the correction details
@@ -3532,7 +3585,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const stepsChanged = originalSteps.length !== savedStepsNormalized.length ||
               originalSteps.some((origStep, i) => origStep !== savedStepsNormalized[i]);
             
-            await logImportAttempt({
+            const correctionAttemptId = await logImportAttempt({
               url: cleanedSourceUrl,
               siteType,
               parserVersion: config.version,
@@ -3542,6 +3595,17 @@ function stitchBrokenSteps(lines: string[]): string[] {
               ingredientsCount: originalIngredients.length || savedIngredients.length,
               stepsCount: originalSteps.length || stp.length,
             });
+            
+            // Also mark the tracking record itself as user_corrected for clarity
+            if (correctionAttemptId) {
+              try {
+                await markImportCorrected(correctionAttemptId);
+                console.log(`[TRACKING] ✅ Also marked tracking record ${correctionAttemptId} as user-corrected`);
+              } catch (err) {
+                console.warn(`[TRACKING] Could not mark tracking record as corrected:`, err);
+              }
+            }
+            
             console.log(`[TRACKING] ✅ Logged user-corrected attempt`);
           } catch (err) {
             console.warn('[TRACKING] ❌ Error tracking user correction:', err);
