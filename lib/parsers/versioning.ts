@@ -10,7 +10,12 @@ export type StrategyName =
   | 'oembed-api'
   | 'webview-dom'
   | 'ocr-screenshot'
-  | 'ocr-screenshot-v2';
+  | 'ocr-screenshot-v2'
+  | 'attempt-started'
+  | 'user-abandoned'
+  | 'user-corrected'
+  | 'timeout'
+  | 'error';
 
 export interface ParserConfig {
   version: ParserVersion;
@@ -113,12 +118,13 @@ export function getParserConfig(siteType: SiteType, userId?: string): ParserConf
 
 /**
  * Log an import attempt to the database
+ * Returns the attempt ID if successful, null otherwise
  */
-export async function logImportAttempt(attempt: ImportAttempt): Promise<void> {
+export async function logImportAttempt(attempt: ImportAttempt): Promise<string | null> {
   try {
     const { supabase } = await import('@/lib/supabase');
     
-    const { error } = await supabase.rpc('log_recipe_import_attempt', {
+    const { data, error } = await supabase.rpc('log_recipe_import_attempt', {
       p_url: attempt.url,
       p_site_type: attempt.siteType,
       p_parser_version: attempt.parserVersion,
@@ -133,10 +139,14 @@ export async function logImportAttempt(attempt: ImportAttempt): Promise<void> {
     
     if (error) {
       console.warn('[logImportAttempt] Failed to log:', error.message);
+      return null;
     }
+    
+    return data || null;
   } catch (err) {
     // Silently fail - logging shouldn't break the import flow
     console.warn('[logImportAttempt] Error:', err);
+    return null;
   }
 }
 

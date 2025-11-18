@@ -210,6 +210,7 @@ export default function EditRecipe() {
   const [title, setTitle] = useState('');
   const [currentImageUrl, setCurrentImageUrl] = useState<string>('');
   const [ingredients, setIngredients] = useState<string[]>([]);
+  const [ingredientSections, setIngredientSections] = useState<Array<{ name: string | null; ingredients: string[] }> | null>(null);
   const [steps, setSteps] = useState<StepRow[]>([]);
 
   // privacy/monetization
@@ -277,6 +278,7 @@ export default function EditRecipe() {
         setTitle(r.title || '');
         setCurrentImageUrl(r.image_url || r.image || '');
         setIngredients(r.ingredients || []);
+        setIngredientSections(r.ingredientSections || null);
         setSteps(r.steps || []);
 
         setCreatorUsername(r.creator || 'someone');
@@ -361,6 +363,7 @@ export default function EditRecipe() {
           title: cleanTitle,
           image_url: (currentImageUrl || '').trim() || null,
           ingredients,
+          ingredientSections: ingredientSections,
           steps: cleanSteps,
           is_private: isPrivate,
           monetization_eligible: monetizationFlag,
@@ -848,29 +851,198 @@ export default function EditRecipe() {
           {/* Ingredients */}
           <View style={{ marginBottom: 16 }}>
             <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 8 }}>Ingredients</Text>
-            {ingredients.map((ing, i) => (
-              <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
-                <TextInput
-                  value={ing}
-                  onChangeText={(t) => setIngredients((a) => a.map((v, idx) => (idx === i ? t : v)))}
-                  placeholder={`Ingredient ${i + 1}`}
-                  placeholderTextColor="#64748b"
-                  style={{ flex: 1, color: 'white', backgroundColor: '#1e293b', borderRadius: 10, padding: 10 }}
-                />
-                <TouchableOpacity
-                  onPress={() => setIngredients((a) => a.filter((_, idx) => idx !== i))}
-                  style={{ marginLeft: 8, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: '#7f1d1d', borderRadius: 10 }}
-                >
-                  <Text style={{ color: 'white', fontWeight: '800' }}>X</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-            <HapticButton
-              onPress={() => setIngredients((a) => [...a, ''])}
-              style={{ marginTop: 6, backgroundColor: COLORS.card, paddingVertical: 12, borderRadius: RADIUS.lg, alignItems: 'center' }}
-            >
-              <Text style={{ color: COLORS.text, fontWeight: '800' }}>+ Add Ingredient</Text>
-            </HapticButton>
+            {ingredientSections && ingredientSections.length > 0 ? (
+              // Display with sections
+              ingredientSections.map((section, sectionIdx) => (
+                <View key={`section-${sectionIdx}`} style={{ marginBottom: 16, backgroundColor: '#1e293b', borderRadius: 10, padding: 12 }}>
+                  {/* Section Header */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 4 }}>
+                    {/* Move Up Button */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (sectionIdx > 0) {
+                          const newSections = [...ingredientSections];
+                          [newSections[sectionIdx - 1], newSections[sectionIdx]] = [newSections[sectionIdx], newSections[sectionIdx - 1]];
+                          setIngredientSections(newSections);
+                          // Also update flat list
+                          const flatList: string[] = [];
+                          newSections.forEach(s => flatList.push(...s.ingredients));
+                          setIngredients(flatList);
+                          queueAutosave();
+                        }
+                      }}
+                      disabled={sectionIdx === 0}
+                      style={{ padding: 6, opacity: sectionIdx === 0 ? 0.3 : 1 }}
+                    >
+                      <Ionicons name="chevron-up" size={18} color={COLORS.accent} />
+                    </TouchableOpacity>
+                    {/* Move Down Button */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (sectionIdx < ingredientSections.length - 1) {
+                          const newSections = [...ingredientSections];
+                          [newSections[sectionIdx], newSections[sectionIdx + 1]] = [newSections[sectionIdx + 1], newSections[sectionIdx]];
+                          setIngredientSections(newSections);
+                          // Also update flat list
+                          const flatList: string[] = [];
+                          newSections.forEach(s => flatList.push(...s.ingredients));
+                          setIngredients(flatList);
+                          queueAutosave();
+                        }
+                      }}
+                      disabled={sectionIdx === ingredientSections.length - 1}
+                      style={{ padding: 6, opacity: sectionIdx === ingredientSections.length - 1 ? 0.3 : 1 }}
+                    >
+                      <Ionicons name="chevron-down" size={18} color={COLORS.accent} />
+                    </TouchableOpacity>
+                    <TextInput
+                      value={section.name || ''}
+                      onChangeText={(t) => {
+                        const newSections = [...ingredientSections];
+                        newSections[sectionIdx].name = t || null;
+                        setIngredientSections(newSections);
+                        // Also update flat list for backward compatibility
+                        const flatList: string[] = [];
+                        newSections.forEach(s => flatList.push(...s.ingredients));
+                        setIngredients(flatList);
+                        queueAutosave();
+                      }}
+                      placeholder="Section name (e.g., 'For the Cake:')"
+                      placeholderTextColor="#64748b"
+                      style={{ flex: 1, color: COLORS.accent, fontSize: 16, fontWeight: '700', backgroundColor: 'transparent', padding: 4 }}
+                    />
+                    <TouchableOpacity
+                      onPress={() => {
+                        const newSections = ingredientSections.filter((_, idx) => idx !== sectionIdx);
+                        setIngredientSections(newSections.length > 0 ? newSections : null);
+                        // Also update flat list
+                        const flatList: string[] = [];
+                        newSections.forEach(s => flatList.push(...s.ingredients));
+                        setIngredients(flatList);
+                        queueAutosave();
+                      }}
+                      style={{ marginLeft: 8, padding: 8 }}
+                    >
+                      <Ionicons name="trash-outline" size={20} color="#ef4444" />
+                    </TouchableOpacity>
+                  </View>
+                  {/* Section Ingredients */}
+                  {section.ingredients.map((ing, i) => (
+                    <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                      <TextInput
+                        value={ing}
+                        onChangeText={(t) => {
+                          const newSections = [...ingredientSections];
+                          newSections[sectionIdx].ingredients[i] = t;
+                          setIngredientSections(newSections);
+                          // Also update flat list
+                          const flatList: string[] = [];
+                          newSections.forEach(s => flatList.push(...s.ingredients));
+                          setIngredients(flatList);
+                          queueAutosave();
+                        }}
+                        placeholder={`Ingredient ${i + 1}`}
+                        placeholderTextColor="#64748b"
+                        style={{ flex: 1, color: 'white', backgroundColor: '#0f172a', borderRadius: 8, padding: 10 }}
+                      />
+                      <TouchableOpacity
+                        onPress={() => {
+                          const newSections = [...ingredientSections];
+                          newSections[sectionIdx].ingredients = newSections[sectionIdx].ingredients.filter((_, idx) => idx !== i);
+                          // Remove section if empty
+                          if (newSections[sectionIdx].ingredients.length === 0) {
+                            newSections.splice(sectionIdx, 1);
+                          }
+                          setIngredientSections(newSections.length > 0 ? newSections : null);
+                          // Also update flat list
+                          const flatList: string[] = [];
+                          newSections.forEach(s => flatList.push(...s.ingredients));
+                          setIngredients(flatList);
+                          queueAutosave();
+                        }}
+                        style={{ marginLeft: 8, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: '#7f1d1d', borderRadius: 8 }}
+                      >
+                        <Text style={{ color: 'white', fontWeight: '800' }}>X</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  <TouchableOpacity
+                    onPress={() => {
+                      const newSections = [...ingredientSections];
+                      newSections[sectionIdx].ingredients.push('');
+                      setIngredientSections(newSections);
+                      queueAutosave();
+                    }}
+                    style={{ marginTop: 6, backgroundColor: COLORS.card, paddingVertical: 8, borderRadius: 8, alignItems: 'center' }}
+                  >
+                    <Text style={{ color: COLORS.text, fontWeight: '700', fontSize: 12 }}>+ Add to Section</Text>
+                  </TouchableOpacity>
+                </View>
+              ))
+            ) : (
+              // Display flat list (backward compatibility)
+              ingredients.map((ing, i) => (
+                <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+                  <TextInput
+                    value={ing}
+                    onChangeText={(t) => setIngredients((a) => a.map((v, idx) => (idx === i ? t : v)))}
+                    placeholder={`Ingredient ${i + 1}`}
+                    placeholderTextColor="#64748b"
+                    style={{ flex: 1, color: 'white', backgroundColor: '#1e293b', borderRadius: 10, padding: 10 }}
+                  />
+                  <TouchableOpacity
+                    onPress={() => setIngredients((a) => a.filter((_, idx) => idx !== i))}
+                    style={{ marginLeft: 8, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: '#7f1d1d', borderRadius: 10 }}
+                  >
+                    <Text style={{ color: 'white', fontWeight: '800' }}>X</Text>
+                  </TouchableOpacity>
+                </View>
+              ))
+            )}
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+              <HapticButton
+                onPress={() => {
+                  if (ingredientSections && ingredientSections.length > 0) {
+                    // Add to last section
+                    const newSections = [...ingredientSections];
+                    newSections[newSections.length - 1].ingredients.push('');
+                    setIngredientSections(newSections);
+                  } else {
+                    // Add to flat list
+                    setIngredients((a) => [...a, '']);
+                  }
+                  queueAutosave();
+                }}
+                style={{ flex: 1, backgroundColor: COLORS.card, paddingVertical: 12, borderRadius: RADIUS.lg, alignItems: 'center' }}
+              >
+                <Text style={{ color: COLORS.text, fontWeight: '800' }}>+ Add Ingredient</Text>
+              </HapticButton>
+              <HapticButton
+                onPress={() => {
+                  // Add new section - preserve existing ingredients
+                  if (ingredientSections && ingredientSections.length > 0) {
+                    // Already using sections - just add a new empty one
+                    const newSections = [...ingredientSections];
+                    newSections.push({ name: null, ingredients: [''] });
+                    setIngredientSections(newSections);
+                  } else if (ingredients.length > 0) {
+                    // Convert flat list to sections - put existing ingredients in first section
+                    const newSections = [
+                      { name: null, ingredients: [...ingredients] },
+                      { name: null, ingredients: [''] }
+                    ];
+                    setIngredientSections(newSections);
+                  } else {
+                    // No ingredients yet - just add empty section
+                    setIngredientSections([{ name: null, ingredients: [''] }]);
+                  }
+                  queueAutosave();
+                }}
+                style={{ flex: 1, backgroundColor: COLORS.accent + '20', paddingVertical: 12, borderRadius: RADIUS.lg, alignItems: 'center' }}
+              >
+                <Text style={{ color: COLORS.accent, fontWeight: '800' }}>+ Add Section</Text>
+              </HapticButton>
+            </View>
           </View>
 
           {/* Steps */}

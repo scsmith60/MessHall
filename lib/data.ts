@@ -375,7 +375,7 @@ export const dataAPI: DataAPI = {
         monetization_eligible,
         user_id,
         profiles!recipes_user_id_fkey (username, avatar_url, knives),
-        recipe_ingredients (pos, text),
+        recipe_ingredients (pos, text, section_name),
         recipe_steps (pos, text, seconds)
       `)
       .eq("id", id)
@@ -384,10 +384,56 @@ export const dataAPI: DataAPI = {
     if (error) throw error;
     if (!r) return null;
 
-    const ings = (r.recipe_ingredients || [])
-      .sort((a: any, b: any) => (a.pos ?? 0) - (b.pos ?? 0))
-      .map((x: any) => x.text ?? "")
-      .filter(Boolean);
+    // Group ingredients by section if sections exist
+    const ingRows = (r.recipe_ingredients || [])
+      .sort((a: any, b: any) => (a.pos ?? 0) - (b.pos ?? 0));
+    
+    // Check if any ingredients have section names
+    const hasSections = ingRows.some((x: any) => x.section_name);
+    
+    let ingredientSections: Array<{ name: string | null; ingredients: string[] }> | null = null;
+    let ings: string[] = [];
+    
+    if (hasSections) {
+      // Group by section, preserving order
+      ingredientSections = [];
+      let currentSection: string | null = null;
+      let currentSectionIndex = -1;
+      
+      for (const row of ingRows) {
+        const text = (row.text ?? "").trim();
+        if (!text) continue;
+        const sectionName = row.section_name || null;
+        
+        if (sectionName !== currentSection) {
+          // Start new section
+          currentSection = sectionName;
+          ingredientSections.push({
+            name: sectionName,
+            ingredients: [text]
+          });
+          currentSectionIndex++;
+        } else {
+          // Add to current section
+          if (currentSectionIndex >= 0 && ingredientSections[currentSectionIndex]) {
+            ingredientSections[currentSectionIndex].ingredients.push(text);
+          } else {
+            // Fallback: create section if somehow we don't have one
+            ingredientSections.push({
+              name: sectionName,
+              ingredients: [text]
+            });
+            currentSectionIndex = ingredientSections.length - 1;
+          }
+        }
+      }
+      
+      // Also create flat list for backward compatibility
+      ings = ingRows.map((x: any) => x.text ?? "").filter(Boolean);
+    } else {
+      // No sections - flat list
+      ings = ingRows.map((x: any) => x.text ?? "").filter(Boolean);
+    }
 
     const steps = (r.recipe_steps || [])
       .sort((a: any, b: any) => (a.pos ?? 0) - (b.pos ?? 0))
@@ -403,6 +449,7 @@ export const dataAPI: DataAPI = {
       cooks: Number(r.cooks_count ?? 0),
       createdAt: r.created_at,
       ingredients: ings,
+      ingredientSections: ingredientSections,
       steps,
       is_private: !!r.is_private,
       monetization_eligible: !!r.monetization_eligible,
@@ -557,6 +604,7 @@ export const dataAPI: DataAPI = {
       title,
       image_url,
       ingredients,
+      ingredientSections,
       steps,
       is_private,
       monetization_eligible,
@@ -585,8 +633,30 @@ export const dataAPI: DataAPI = {
       .eq("recipe_id", id);
     if (delIngErr) throw delIngErr;
 
-    if (ingredients?.length) {
-      const rows = ingredients.map((text, i) => ({ recipe_id: id, pos: i, text }));
+    // Use sections if available, otherwise use flat list
+    if (ingredientSections && ingredientSections.length > 0) {
+      // Preserve sections when saving
+      let pos = 0;
+      const rows: Array<{ recipe_id: string; pos: number; text: string; section_name: string | null }> = [];
+      for (const section of ingredientSections) {
+        for (const ing of section.ingredients) {
+          const trimmed = (ing || "").trim();
+          if (trimmed) {
+            rows.push({
+              recipe_id: id,
+              pos: pos++,
+              text: trimmed,
+              section_name: section.name || null
+            });
+          }
+        }
+      }
+      if (rows.length) {
+        const { error: insIngErr } = await supabase.from("recipe_ingredients").insert(rows);
+        if (insIngErr) throw insIngErr;
+      }
+    } else if (ingredients?.length) {
+      const rows = ingredients.map((text, i) => ({ recipe_id: id, pos: i, text, section_name: null }));
       const { error: insIngErr } = await supabase.from("recipe_ingredients").insert(rows);
       if (insIngErr) throw insIngErr;
     }

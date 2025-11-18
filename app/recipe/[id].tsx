@@ -350,6 +350,7 @@ export default function RecipeDetail() {
   const [savingCook, setSavingCook] = useState(false);
 
   const [ingredients, setIngredients] = useState<string[]>([]);
+  const [ingredientSections, setIngredientSections] = useState<Array<{ name: string | null; ingredients: string[] }> | null>(null);
   const [steps, setSteps] = useState<{ text: string; seconds?: number | null }[]>([]);
 
   const [unitPref, setUnitPref] = useState<UnitsPref>('us');
@@ -507,13 +508,45 @@ export default function RecipeDetail() {
       try {
         const { data } = await supabase
           .from('recipe_ingredients')
-          .select('pos, text, text_original, convertible, qty, qty_max, unit, item, us_qty, us_qty_max, us_unit, metric_qty, metric_qty_max, metric_unit')
+          .select('pos, text, text_original, convertible, qty, qty_max, unit, item, us_qty, us_qty_max, us_unit, metric_qty, metric_qty_max, metric_unit, section_name')
           .eq('recipe_id', id)
           .order('pos');
 
         if (!cancelled && data && data.length) {
           const lines = data.map((row: any) => lineFromRow(row, unitPref)).filter(Boolean);
           if (lines.length) setIngredients(lines);
+          
+          // Also store section info for display
+          const hasSections = data.some((row: any) => row.section_name);
+          if (hasSections) {
+            const sections: Array<{ name: string | null; ingredients: string[] }> = [];
+            let currentSection: string | null = null;
+            let currentSectionIndex = -1;
+            
+            for (let i = 0; i < data.length; i++) {
+              const row = data[i];
+              const line = lineFromRow(row, unitPref);
+              if (!line) continue;
+              
+              const sectionName = row.section_name || null;
+              if (sectionName !== currentSection) {
+                currentSection = sectionName;
+                sections.push({
+                  name: sectionName,
+                  ingredients: [line]
+                });
+                currentSectionIndex++;
+              } else {
+                if (currentSectionIndex >= 0 && sections[currentSectionIndex]) {
+                  sections[currentSectionIndex].ingredients.push(line);
+                }
+              }
+            }
+            
+            setIngredientSections(sections);
+          } else {
+            setIngredientSections(null);
+          }
         }
       } catch {}
     })();
@@ -1012,7 +1045,39 @@ export default function RecipeDetail() {
       {/* INGREDIENTS */}
       <View style={{ paddingHorizontal: SPACING.lg, marginTop: 6 }}>
         <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: '900', marginBottom: 8 }}>Ingredients</Text>
-        <IngredientPicker items={ingredientRows} checkedIds={checkedIds} onToggleCheck={onToggleCheck} />
+        {ingredientSections && ingredientSections.length > 0 ? (
+          // Display with section headers
+          ingredientSections.map((section, sectionIdx) => (
+            <View key={`section-${sectionIdx}`} style={{ marginBottom: sectionIdx < ingredientSections.length - 1 ? 16 : 0 }}>
+              {section.name && (
+                <Text style={{ color: COLORS.accent, fontSize: 16, fontWeight: '700', marginBottom: 8, marginTop: sectionIdx > 0 ? 8 : 0 }}>
+                  {section.name}
+                </Text>
+              )}
+              <IngredientPicker 
+                items={section.ingredients.map((t, i) => {
+                  // Calculate global index for this ingredient
+                  const globalIndex = ingredientSections.slice(0, sectionIdx).reduce((sum, s) => sum + s.ingredients.length, 0) + i;
+                  return { 
+                    id: String(globalIndex + 1), 
+                    name: t 
+                  };
+                })} 
+                checkedIds={checkedIds} 
+                onToggleCheck={(id, next) => {
+                  const idx = parseInt(id, 10) - 1;
+                  const ingName = ingredients[idx];
+                  if (ingName) {
+                    persistToggle(id, next, ingName);
+                  }
+                }} 
+              />
+            </View>
+          ))
+        ) : (
+          // Display flat list (backward compatibility)
+          <IngredientPicker items={ingredientRows} checkedIds={checkedIds} onToggleCheck={onToggleCheck} />
+        )}
       </View>
 
       {/* STEPS */}

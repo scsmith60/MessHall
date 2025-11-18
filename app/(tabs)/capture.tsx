@@ -41,9 +41,12 @@ import { fetchMeta } from "@/lib/fetch_meta";
 import { parseSocialCaption } from "@/lib/parsers/instagram";
 import { dedupeNormalized } from "@/lib/parsers/types";
 import { extractTikTokTitleFromState } from "@/lib/extractTitle";
+import { logImportAttempt, markImportCorrected, getParserConfig } from "@/lib/parsers/versioning";
+import type { SiteType, ParserVersion, StrategyName } from "@/lib/parsers/versioning";
 
 import { COLORS } from "@/lib/theme";
 import { logDebug } from "@/lib/logger";
+import { Ionicons } from "@expo/vector-icons";
 
 // -------------- timings --------------
 const CAPTURE_DELAY_MS = 700;
@@ -1466,8 +1469,54 @@ function stitchBrokenSteps(lines: string[]): string[] {
   const [ingredientSections, setIngredientSections] = useState<IngredientSection[] | null>(null);
   const [steps, setSteps] = useState<string[]>([""]);
   const [img, setImg] = useState<ImageSourceState>({ kind: "none" });
+  
+  // Track original import data to detect user corrections
+  const originalImportDataRef = useRef<{
+    ingredients: string[];
+    steps: string[];
+    url: string;
+    attemptId?: string;
+  } | null>(null);
   const ingredientSwipeRefs = useRef<Array<Swipeable | null>>([]);
   const stepSwipeRefs = useRef<Array<Swipeable | null>>([]);
+  
+  // Helper to track successful imports
+  const trackSuccessfulImport = useCallback(async (
+    url: string,
+    ingredients: string[],
+    steps: string[],
+    strategy: StrategyName = 'server-html-meta'
+  ) => {
+    try {
+      const siteType = await detectSiteType(url);
+      const config = getParserConfig(siteType);
+      const attemptId = await logImportAttempt({
+        url,
+        siteType,
+        parserVersion: config.version,
+        strategyUsed: strategy,
+        success: true,
+        confidenceScore: ingredients.length >= 3 ? 'high' : 'medium',
+        ingredientsCount: ingredients.length,
+        stepsCount: steps.length,
+      });
+      if (attemptId) {
+        console.log(`[TRACKING] Logged successful import: ${attemptId}, strategy: ${strategy}`);
+      } else {
+        console.warn(`[TRACKING] Failed to log successful import`);
+      }
+      // Store original import data for correction tracking
+      originalImportDataRef.current = {
+        ingredients: [...ingredients],
+        steps: [...steps],
+        url,
+        attemptId: attemptId || undefined,
+      };
+    } catch (err) {
+      console.warn('[TRACKING] Error tracking successful import:', err);
+      // Silently fail - don't break import flow
+    }
+  }, []);
 
   const dbg = useCallback((...args: any[]) => {
     try {
@@ -1955,7 +2004,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
             if (anyData?.time && !timeMinutes.trim()) setTimeMinutes(anyData.time);
             if (anyData?.servings && !servings.trim()) setServings(anyData.servings);
           }
-          return hasMeaningfulRecipeData(data);
+          const hasData = hasMeaningfulRecipeData(data);
+          // Track successful import if we got meaningful data
+          if (hasData && data.ingredients && data.ingredients.length >= 2) {
+            await trackSuccessfulImport(url, data.ingredients, data.steps || [], source as StrategyName);
+            gotSomethingForRunRef.current = true;
+            success = true;
+          }
+          return hasData;
         };
 
         const jsonLd = extractRecipeFromJsonLd(html);
@@ -2129,7 +2185,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
       gotSomethingForRunRef.current = false;
     }
 
-    const watchdog = setTimeout(() => {
+    const watchdog = setTimeout(async () => {
       if (importRunIdRef.current !== runId) return;
       if (!gotSomethingForRunRef.current) {
         hardResetImport();
@@ -2138,11 +2194,50 @@ function stitchBrokenSteps(lines: string[]): string[] {
           title: "Mission Timeout", 
           message: "Import took too long. The URL might be invalid or the site might be slow. Please check the URL and try again." 
         });
+        // Track timeout as failure
+        try {
+          const siteType = await detectSiteType(url);
+          const config = getParserConfig(siteType);
+          await logImportAttempt({
+            url,
+            siteType,
+            parserVersion: config.version,
+            strategyUsed: 'timeout' as StrategyName,
+            success: false,
+            errorMessage: 'Import timeout - took too long',
+          });
+        } catch (err) {
+          // Silently fail tracking
+        }
       }
     }, IMPORT_HARD_TIMEOUT_MS);
 
     let success = false;
     lastResolvedUrlRef.current = url;
+    
+    // Track import attempt start (no error message - this is just a tracking marker)
+    let attemptTracked = false;
+    try {
+      const siteType = await detectSiteType(url);
+      const config = getParserConfig(siteType);
+      const attemptId = await logImportAttempt({
+        url,
+        siteType,
+        parserVersion: config.version,
+        strategyUsed: 'attempt-started' as StrategyName,
+        success: false, // Will be updated to true when successful
+        // No error message - this is just a tracking marker, not an error
+      });
+      if (attemptId) {
+        dbg(`[TRACKING] Logged import attempt start: ${attemptId}`);
+        attemptTracked = true;
+      } else {
+        dbg(`[TRACKING] Failed to log import attempt start`);
+      }
+    } catch (err) {
+      dbg(`[TRACKING] Error logging attempt start:`, err);
+      // Silently fail - don't break import flow
+    }
 
     // STEP 0: try oEmbed title
     try {
@@ -2217,6 +2312,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
               
               // Set steps - prefer parsed steps, fallback to meta.steps
               // Note: steps state is string[], not objects
+              let finalSteps: string[] = [];
               if (parsed.steps && parsed.steps.length > 0) {
                 dbg("[IG] Using parsed steps:", parsed.steps.length);
                 dbg("[IG] First 3 parsed steps:", parsed.steps.slice(0, 3));
@@ -2225,6 +2321,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   .map((s: string) => s.trim());
                 if (stepStrings.length > 0) {
                   setSteps(stepStrings);
+                  finalSteps = stepStrings;
                   dbg("[IG] Set", stepStrings.length, "steps");
                 } else {
                   dbg("[IG] All parsed steps were empty after filtering");
@@ -2237,6 +2334,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   .map((s: string) => s.trim());
                 if (stepStrings.length > 0) {
                   setSteps(stepStrings);
+                  finalSteps = stepStrings;
                   dbg("[IG] Set", stepStrings.length, "steps from meta");
                 } else {
                   dbg("[IG] All meta steps were empty after filtering");
@@ -2244,6 +2342,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
               } else {
                 dbg("[IG] No steps found in parsed or meta");
                 dbg("[IG] parsed.steps:", parsed.steps?.length || 0, "meta.steps:", meta.steps?.length || 0);
+              }
+              
+              // Track successful import and store original data for correction tracking
+              if (parsed.ingredients.length > 0 || finalSteps.length > 0) {
+                gotSomethingForRunRef.current = true;
+                success = true;
+                await trackSuccessfulImport(url, parsed.ingredients, finalSteps, 'server-html-meta');
               }
               
               // Set image - try meta.image first, then fetch OG image
@@ -2935,6 +3040,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   bumpStage(3);
                   dbg('[TikTok] STEP 3 OCR gave usable content');
                   success = true;
+                  gotSomethingForRunRef.current = true;
+                  // Track successful import
+                  if (parsed.ingredients.length >= 2) {
+                    await trackSuccessfulImport(url, parsed.ingredients, parsed.steps || [], 'ocr-screenshot');
+                  }
                 }
               }
             } else if (needOcr && !shot) {
@@ -3006,6 +3116,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 }
               }
               if (parsed.steps.length >= 1) setSteps(parsed.steps);
+              // Track successful import
+              if (parsed.ingredients.length >= 2) {
+                await trackSuccessfulImport(url, parsed.ingredients, parsed.steps || [], 'server-html-meta');
+                gotSomethingForRunRef.current = true;
+                success = true;
+              }
             }
             if (og?.image) await tryImageUrl(og.image, url);
           } catch (e) {
@@ -3019,6 +3135,21 @@ function stitchBrokenSteps(lines: string[]): string[] {
         // This preserves the image from a previous successful import when re-importing
         if (!gotSomethingForRunRef.current && !hadExistingImage) {
           setImg({ kind: "none" });
+        }
+        // Track import failure
+        try {
+          const siteType = await detectSiteType(url);
+          const config = getParserConfig(siteType);
+          await logImportAttempt({
+            url,
+            siteType,
+            parserVersion: config.version,
+            strategyUsed: 'error' as StrategyName,
+            success: false,
+            errorMessage: msg || 'Import failed',
+          });
+        } catch (err) {
+          // Silently fail tracking
         }
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         setNotice({ visible: true, title: "Mission Aborted", message: msg || "Could not read that webpage." });
@@ -3219,13 +3350,39 @@ function stitchBrokenSteps(lines: string[]): string[] {
       }
 
       // Use sections if available, otherwise use flat list
-      const ing = ingredientSections && ingredientSections.length > 0
-        ? ingredientSections.flatMap(s => s.ingredients).map((s) => (s || "").trim()).filter(Boolean)
-        : ingredients.map((s) => (s || "").trim()).filter(Boolean);
-      if (ing.length) {
-        await supabase.from("recipe_ingredients").insert(
-          ing.map((text, i) => ({ recipe_id: recipeId, pos: i + 1, text }))
-        );
+      let ingRows: Array<{ recipe_id: string; pos: number; text: string; section_name: string | null }> = [];
+      let savedIngredients: string[] = []; // Flat list for tracking/comparison
+      
+      if (ingredientSections && ingredientSections.length > 0) {
+        // Preserve sections when saving
+        let pos = 1;
+        for (const section of ingredientSections) {
+          for (const ing of section.ingredients) {
+            const trimmed = (ing || "").trim();
+            if (trimmed) {
+              ingRows.push({
+                recipe_id: recipeId,
+                pos: pos++,
+                text: trimmed,
+                section_name: section.name || null
+              });
+              savedIngredients.push(trimmed);
+            }
+          }
+        }
+      } else {
+        // Flat list - no sections
+        savedIngredients = ingredients.map((s) => (s || "").trim()).filter(Boolean);
+        ingRows = savedIngredients.map((text, i) => ({
+          recipe_id: recipeId,
+          pos: i + 1,
+          text,
+          section_name: null
+        }));
+      }
+      
+      if (ingRows.length) {
+        await supabase.from("recipe_ingredients").insert(ingRows);
       }
 
       const stp = steps.map((s) => (s || "").trim()).filter(Boolean);
@@ -3233,6 +3390,128 @@ function stitchBrokenSteps(lines: string[]): string[] {
         await supabase.from("recipe_steps").insert(
           stp.map((text, i) => ({ recipe_id: recipeId, pos: i + 1, text, seconds: null }))
         );
+      }
+
+      // Track user corrections - compare saved data against original import
+      // First try in-memory ref, then fallback to database lookup
+      let shouldTrackCorrection = false;
+      let originalIngredients: string[] = [];
+      let originalSteps: string[] = [];
+      let attemptIdToMark: string | null = null;
+      
+      if (cleanedSourceUrl) {
+        // Normalize saved data for comparison
+        const savedIngNormalized = savedIngredients.map(i => i.trim().toLowerCase()).filter(Boolean);
+        const savedStepsNormalized = stp.map(s => s.trim().toLowerCase()).filter(Boolean);
+        
+        // Try in-memory ref first
+        if (originalImportDataRef.current && originalImportDataRef.current.url === cleanedSourceUrl) {
+          const original = originalImportDataRef.current;
+          originalIngredients = original.ingredients.map(i => i.trim().toLowerCase()).filter(Boolean);
+          originalSteps = original.steps.map(s => s.trim().toLowerCase()).filter(Boolean);
+          attemptIdToMark = original.attemptId || null;
+          
+          // Compare normalized versions (order-independent for ingredients, order-dependent for steps)
+          const ingredientsChanged = 
+            originalIngredients.length !== savedIngNormalized.length ||
+            !originalIngredients.every(orig => savedIngNormalized.includes(orig)) ||
+            !savedIngNormalized.every(saved => originalIngredients.includes(saved));
+          
+          const stepsChanged = 
+            originalSteps.length !== savedStepsNormalized.length ||
+            originalSteps.some((origStep, i) => origStep !== savedStepsNormalized[i]);
+          
+          shouldTrackCorrection = ingredientsChanged || stepsChanged;
+          
+          if (shouldTrackCorrection) {
+            console.log(`[TRACKING] Detected changes using in-memory ref:`);
+            console.log(`  Original ingredients: ${originalIngredients.length}, Saved: ${savedIngNormalized.length}`);
+            console.log(`  Original steps: ${originalSteps.length}, Saved: ${savedStepsNormalized.length}`);
+          }
+        } else {
+          // Fallback: Compare against what's in the database from the most recent successful import
+          // This handles cases where the user navigated away and came back
+          try {
+            const { data: attempts } = await supabase
+              .from('recipe_import_attempts')
+              .select('id, ingredients_count, steps_count')
+              .eq('url', cleanedSourceUrl)
+              .eq('success', true)
+              .order('created_at', { ascending: false })
+              .limit(1);
+            
+            if (attempts && attempts.length > 0) {
+              const latestAttempt = attempts[0];
+              attemptIdToMark = latestAttempt.id;
+              
+              // Compare counts - if saved data differs significantly, likely user made changes
+              const ingredientsCountDiff = Math.abs((latestAttempt.ingredients_count || 0) - savedIngNormalized.length);
+              const stepsCountDiff = Math.abs((latestAttempt.steps_count || 0) - savedStepsNormalized.length);
+              
+              // Consider it a correction if counts differ by more than 10% or absolute difference > 2
+              const ingredientsChanged = 
+                ingredientsCountDiff > 2 || 
+                (latestAttempt.ingredients_count && ingredientsCountDiff / latestAttempt.ingredients_count > 0.1);
+              
+              const stepsChanged = 
+                stepsCountDiff > 2 || 
+                (latestAttempt.steps_count && stepsCountDiff / latestAttempt.steps_count > 0.1);
+              
+              shouldTrackCorrection = ingredientsChanged || stepsChanged;
+              
+              if (shouldTrackCorrection) {
+                console.log(`[TRACKING] Detected changes using database comparison:`);
+                console.log(`  Imported ingredients: ${latestAttempt.ingredients_count}, Saved: ${savedIngNormalized.length}`);
+                console.log(`  Imported steps: ${latestAttempt.steps_count}, Saved: ${savedStepsNormalized.length}`);
+              }
+            }
+          } catch (err) {
+            console.warn('[TRACKING] Error comparing against database:', err);
+          }
+        }
+        
+        if (shouldTrackCorrection) {
+          // User had to correct the import - mark as corrected
+          try {
+            const siteType = await detectSiteType(cleanedSourceUrl);
+            const config = getParserConfig(siteType);
+            
+            if (attemptIdToMark) {
+              await markImportCorrected(attemptIdToMark);
+              console.log(`[TRACKING] ✅ Successfully marked attempt ${attemptIdToMark} as user-corrected`);
+            } else {
+              console.warn(`[TRACKING] ⚠️ Could not find attempt ID to mark as corrected for URL: ${cleanedSourceUrl}`);
+            }
+            
+            // Also log the correction details
+            const savedIngNormalized = savedIngredients.map(i => i.trim().toLowerCase()).filter(Boolean);
+            const savedStepsNormalized = stp.map(s => s.trim().toLowerCase()).filter(Boolean);
+            const ingredientsChanged = originalIngredients.length !== savedIngNormalized.length ||
+              !originalIngredients.every(orig => savedIngNormalized.includes(orig));
+            const stepsChanged = originalSteps.length !== savedStepsNormalized.length ||
+              originalSteps.some((origStep, i) => origStep !== savedStepsNormalized[i]);
+            
+            await logImportAttempt({
+              url: cleanedSourceUrl,
+              siteType,
+              parserVersion: config.version,
+              strategyUsed: 'user-corrected' as StrategyName,
+              success: false, // Technically failed because user had to fix it
+              errorMessage: `User corrected: ${ingredientsChanged ? 'ingredients ' : ''}${stepsChanged ? 'steps' : ''}`,
+              ingredientsCount: originalIngredients.length || savedIngredients.length,
+              stepsCount: originalSteps.length || stp.length,
+            });
+            console.log(`[TRACKING] ✅ Logged user-corrected attempt`);
+          } catch (err) {
+            console.warn('[TRACKING] ❌ Error tracking user correction:', err);
+            // Silently fail - don't break save flow
+          }
+        } else {
+          console.log(`[TRACKING] No changes detected - import was accurate`);
+        }
+        
+        // Clear original import data after save
+        originalImportDataRef.current = null;
       }
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -3287,6 +3566,32 @@ function stitchBrokenSteps(lines: string[]): string[] {
   
   // Reset form when screen comes into focus (when user navigates back)
   // This ensures fields are cleared if user left without saving
+  // Track when user navigates away (abandon) - separate from reset form effect
+  useEffect(() => {
+    return () => {
+      // User is leaving the screen - check if there was an active import
+      if (lastResolvedUrlRef.current && !gotSomethingForRunRef.current) {
+        // User abandoned import (navigated away before it completed)
+        (async () => {
+          try {
+            const siteType = await detectSiteType(lastResolvedUrlRef.current);
+            const config = getParserConfig(siteType);
+            await logImportAttempt({
+              url: lastResolvedUrlRef.current,
+              siteType,
+              parserVersion: config.version,
+              strategyUsed: 'user-abandoned' as StrategyName,
+              success: false,
+              errorMessage: 'User navigated away before import completed',
+            });
+          } catch (err) {
+            // Silently fail
+          }
+        })();
+      }
+    };
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       // When screen comes into focus, always reset the form
@@ -3366,11 +3671,68 @@ function stitchBrokenSteps(lines: string[]): string[] {
               // Display grouped by sections
               ingredientSections.map((section, sectionIdx) => (
                 <View key={`section-${sectionIdx}`}>
-                  {section.name && (
-                    <View style={{ paddingHorizontal: 16, paddingTop: sectionIdx > 0 ? 16 : 12, paddingBottom: 8 }}>
-                      <Text style={{ color: COLORS.accent, fontSize: 16, fontWeight: "700" }}>{section.name}</Text>
-                    </View>
-                  )}
+                  <View style={{ paddingHorizontal: 16, paddingTop: sectionIdx > 0 ? 16 : 12, paddingBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    {/* Move Up Button */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (sectionIdx > 0) {
+                          const newSections = [...ingredientSections];
+                          [newSections[sectionIdx - 1], newSections[sectionIdx]] = [newSections[sectionIdx], newSections[sectionIdx - 1]];
+                          setIngredientSections(newSections);
+                          // Also update flat list
+                          const flatList: string[] = [];
+                          newSections.forEach(s => flatList.push(...s.ingredients));
+                          setIngredients(flatList);
+                        }
+                      }}
+                      disabled={sectionIdx === 0}
+                      style={{ padding: 6, opacity: sectionIdx === 0 ? 0.3 : 1 }}
+                    >
+                      <Ionicons name="chevron-up" size={18} color={COLORS.accent} />
+                    </TouchableOpacity>
+                    {/* Move Down Button */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (sectionIdx < ingredientSections.length - 1) {
+                          const newSections = [...ingredientSections];
+                          [newSections[sectionIdx], newSections[sectionIdx + 1]] = [newSections[sectionIdx + 1], newSections[sectionIdx]];
+                          setIngredientSections(newSections);
+                          // Also update flat list
+                          const flatList: string[] = [];
+                          newSections.forEach(s => flatList.push(...s.ingredients));
+                          setIngredients(flatList);
+                        }
+                      }}
+                      disabled={sectionIdx === ingredientSections.length - 1}
+                      style={{ padding: 6, opacity: sectionIdx === ingredientSections.length - 1 ? 0.3 : 1 }}
+                    >
+                      <Ionicons name="chevron-down" size={18} color={COLORS.accent} />
+                    </TouchableOpacity>
+                    <TextInput
+                      value={section.name || ''}
+                      onChangeText={(t) => {
+                        const newSections = [...ingredientSections];
+                        newSections[sectionIdx].name = t || null;
+                        setIngredientSections(newSections);
+                      }}
+                      placeholder="Section name (e.g., 'For the Cake:')"
+                      placeholderTextColor="#64748b"
+                      style={{ flex: 1, color: COLORS.accent, fontSize: 16, fontWeight: "700", backgroundColor: 'transparent', padding: 4 }}
+                    />
+                    <TouchableOpacity
+                      onPress={() => {
+                        const newSections = ingredientSections.filter((_, idx) => idx !== sectionIdx);
+                        setIngredientSections(newSections.length > 0 ? newSections : null);
+                        // Also update flat list
+                        const flatList: string[] = [];
+                        newSections.forEach(s => flatList.push(...s.ingredients));
+                        setIngredients(flatList);
+                      }}
+                      style={{ padding: 4 }}
+                    >
+                      <Ionicons name="trash-outline" size={18} color="#ef4444" />
+                    </TouchableOpacity>
+                  </View>
                   {section.ingredients.map((ing, i) => {
                     const globalIndex = ingredientSections.slice(0, sectionIdx).reduce((sum, s) => sum + s.ingredients.length, 0) + i;
                     return (
@@ -3428,9 +3790,54 @@ function stitchBrokenSteps(lines: string[]): string[] {
               ))
             )}
           </View>
-          <TouchableOpacity onPress={() => setIngredients((a) => [...a, ""])} style={{ marginTop: 6, backgroundColor: COLORS.card, paddingVertical: 12, borderRadius: 12, alignItems: "center", marginBottom: 16 }}>
-            <Text style={{ color: COLORS.text, fontWeight: "800" }}>+ Add Ingredient</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 6, marginBottom: 16 }}>
+            <TouchableOpacity 
+              onPress={() => {
+                if (ingredientSections && ingredientSections.length > 0) {
+                  // Add to the last section if using sections
+                  const newSections = [...ingredientSections];
+                  if (newSections.length > 0) {
+                    newSections[newSections.length - 1].ingredients.push("");
+                    setIngredientSections(newSections);
+                    // Also update flat list for backward compatibility
+                    const flatList: string[] = [];
+                    newSections.forEach(s => flatList.push(...s.ingredients));
+                    setIngredients(flatList);
+                  }
+                } else {
+                  // Add to flat list
+                  setIngredients((a) => [...a, ""]);
+                }
+              }} 
+              style={{ flex: 1, backgroundColor: COLORS.card, paddingVertical: 12, borderRadius: 12, alignItems: "center" }}
+            >
+              <Text style={{ color: COLORS.text, fontWeight: "800" }}>+ Add Ingredient</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              onPress={() => {
+                // Add new section - preserve existing ingredients
+                if (ingredientSections && ingredientSections.length > 0) {
+                  // Already using sections - just add a new empty one
+                  const newSections = [...ingredientSections];
+                  newSections.push({ name: null, ingredients: [''] });
+                  setIngredientSections(newSections);
+                } else if (ingredients.length > 0) {
+                  // Convert flat list to sections - put existing ingredients in first section
+                  const newSections = [
+                    { name: null, ingredients: [...ingredients] },
+                    { name: null, ingredients: [''] }
+                  ];
+                  setIngredientSections(newSections);
+                } else {
+                  // No ingredients yet - just add empty section
+                  setIngredientSections([{ name: null, ingredients: [''] }]);
+                }
+              }} 
+              style={{ flex: 1, backgroundColor: COLORS.accent + '20', paddingVertical: 12, borderRadius: 12, alignItems: "center" }}
+            >
+              <Text style={{ color: COLORS.accent, fontWeight: "800" }}>+ Add Section</Text>
+            </TouchableOpacity>
+          </View>
 
           <Text style={{ color: COLORS.text, fontSize: 18, fontWeight: "900", marginBottom: 8 }}>Steps</Text>
           <View style={{ backgroundColor: COLORS.card, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, marginBottom: 12 }}>

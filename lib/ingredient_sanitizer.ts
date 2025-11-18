@@ -43,15 +43,33 @@ function looksLikeSectionHeader(s: string): boolean {
   const lower = trimmed.toLowerCase();
   if (GENERIC_HEADER_SKIP.test(lower)) return false;
 
-  if (!trimmed.endsWith(":")) {
-    return /^for\s+(?:the\s+)?[^:]+:\s*$/i.test(lower);
+  // Check for common section header patterns that end with colon
+  if (trimmed.endsWith(":")) {
+    const base = trimmed.slice(0, -1).trim();
+    if (!base) return false;
+    
+    // Don't treat lines with numbers/units as headers (likely ingredients)
+    if (/\d/.test(base)) return false;
+    if (UNIT_OR_MEASURE_HINT.test(base)) return false;
+    
+    // Check if it matches known section patterns
+    if (headerHasHint(base)) return true;
+    if (/^for\s+(?:the\s+)?/i.test(base)) return true;
+    
+    // Title case headers (e.g., "Chimichurri ingredients", "For the Cake")
+    if (TITLE_CASE_HEADER.test(base)) return true;
+    
+    // Special case: "Ingredients" or "Ingredient" by itself is a header
+    if (/^ingredients?$/i.test(base)) return true;
+    
+    // Check for common ingredient section patterns
+    if (/^(ingredients?\s+(?:for|of|in)|for\s+the|to\s+serve|optional|garnish|topping|filling|sauce|dressing|marinade)/i.test(base)) return true;
+  } else {
+    // Check for "For the X:" pattern without colon
+    if (/^for\s+(?:the\s+)?[^:]+:\s*$/i.test(lower)) return true;
   }
 
-  const base = trimmed.slice(0, -1).trim();
-  if (!base || /\d/.test(base)) return false;
-  if (UNIT_OR_MEASURE_HINT.test(base)) return false;
-
-  return headerHasHint(base) || TITLE_CASE_HEADER.test(base) || /^for\s+(?:the\s+)?/i.test(base);
+  return false;
 }
 
 function normalizeHeaderCandidate(raw: string): string {
