@@ -23,6 +23,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ThemedNotice from '@/components/ui/ThemedNotice';
+import ThemedConfirm from '@/components/ui/ThemedConfirm';
 import { Ionicons } from '@expo/vector-icons';
 import { logDebug } from '@/lib/logger';
 
@@ -242,6 +243,9 @@ export default function EditRecipe() {
 
   // themed notice (modal) for errors/validation
   const [notice, setNotice] = useState<{ visible: boolean; title: string; message: string }>({ visible: false, title: '', message: '' });
+
+  // delete confirmation dialog
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // 🔎 hidden WebView snapshot state/refs
   const [webSnapUrl, setWebSnapUrl] = useState<string | null>(null);
@@ -1088,24 +1092,7 @@ export default function EditRecipe() {
           {/* Owner-only delete */}
           {canEditNow && (
             <HapticButton
-              onPress={() =>
-                Alert.alert('Delete recipe?', 'This cannot be undone.', [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Delete',
-                    style: 'destructive',
-                    onPress: async () => {
-                      try {
-                        const { error } = await supabase.from('recipes').delete().match({ id, user_id: userId! });
-                        if (error) return Alert.alert('Delete failed', error.message);
-                        router.replace('/');
-                      } catch (err: any) {
-                        Alert.alert('Delete failed', err?.message ?? 'Please try again.');
-                      }
-                    },
-                  },
-                ])
-              }
+              onPress={() => setShowDeleteConfirm(true)}
               style={{
                 marginTop: 12,
                 borderWidth: 1,
@@ -1164,6 +1151,30 @@ export default function EditRecipe() {
             />
           </View>
         )}
+
+        {/* Delete confirmation dialog */}
+        <ThemedConfirm
+          visible={showDeleteConfirm}
+          title="Delete recipe?"
+          message="This cannot be undone."
+          confirmText="Delete"
+          cancelText="Cancel"
+          destructive={true}
+          onConfirm={async () => {
+            setShowDeleteConfirm(false);
+            try {
+              const { error } = await supabase.from('recipes').delete().match({ id, user_id: userId! });
+              if (error) {
+                setNotice({ visible: true, title: 'Delete failed', message: error.message });
+                return;
+              }
+              router.replace('/');
+            } catch (err: any) {
+              setNotice({ visible: true, title: 'Delete failed', message: err?.message ?? 'Please try again.' });
+            }
+          }}
+          onCancel={() => setShowDeleteConfirm(false)}
+        />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

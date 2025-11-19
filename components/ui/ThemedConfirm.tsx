@@ -65,7 +65,7 @@ export default function ThemedConfirm({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: COLORS.overlay,
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
@@ -110,7 +110,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.accent,
   },
   destructiveButton: {
-    backgroundColor: "#EF4444",
+    backgroundColor: COLORS.danger,
   },
   cancelText: {
     color: COLORS.text,
