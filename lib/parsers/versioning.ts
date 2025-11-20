@@ -71,7 +71,7 @@ const DEFAULT_CONFIGS: Record<SiteType, ParserConfig[]> = {
   'recipe-site': [
     {
       version: 'v1',
-      strategies: ['server-html-jsonld', 'server-html-meta'],
+      strategies: ['server-html-sigi', 'server-html-jsonld', 'server-html-meta'],
       rolloutPercentage: 100,
       enabled: true,
     },

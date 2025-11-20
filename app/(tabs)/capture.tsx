@@ -37,6 +37,7 @@ import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Line, Circle } from "react-native-svg";
 import InstagramDomScraper from "@/components/InstagramDomScraper";
 import { detectSiteType, extractRecipeFromJsonLd, extractRecipeFromMicrodata, extractRecipeFromHtml, discoverRecipeSiteIfNeeded } from "@/lib/recipeSiteHelpers";
+import { isFoodNetworkUrl, getFoodNetworkBits, getFoodNetworkBestImage } from "@/lib/parsers/foodnetwork";
 import { fetchMeta } from "@/lib/fetch_meta";
 import { parseSocialCaption } from "@/lib/parsers/instagram";
 import { dedupeNormalized } from "@/lib/parsers/types";
@@ -2201,14 +2202,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
         try {
           const siteType = await detectSiteType(url);
           const config = getParserConfig(siteType);
-          await logImportAttempt({
-            url,
-            siteType,
-            parserVersion: config.version,
-            strategyUsed: 'timeout' as StrategyName,
-            success: false,
-            errorMessage: 'Import timeout - took too long',
-          });
+          if (config && config.version) {
+            await logImportAttempt({
+              url,
+              siteType,
+              parserVersion: config.version,
+              strategyUsed: 'timeout' as StrategyName,
+              success: false,
+              errorMessage: 'Import timeout - took too long',
+            });
+          }
         } catch (err) {
           // Silently fail tracking
         }
@@ -2674,6 +2677,63 @@ function stitchBrokenSteps(lines: string[]): string[] {
           // RECIPE SITE PATH (AllRecipes, Food Network, etc.)
           dbg("=�� Recipe site path begins");
           
+          // Special handling for Food Network (uses smart fetch with AMP fallback)
+          if (isFoodNetworkUrl(url)) {
+            dbg("[RECIPE] Food Network detected - using smart fetch");
+            try {
+              const fnRecipe = await getFoodNetworkBits(url, fetchWithUA);
+              if (fnRecipe) {
+                dbg("[RECIPE] Food Network recipe extracted:", {
+                  title: fnRecipe.title,
+                  ingredientsCount: fnRecipe.ingredients?.length ?? 0,
+                  stepsCount: fnRecipe.steps?.length ?? 0,
+                  hasImage: !!fnRecipe.image,
+                });
+                
+                // Apply the extracted data
+                if (fnRecipe.title && isWeakTitle(title)) {
+                  safeSetTitle(fnRecipe.title, url, title, dbg, "foodnetwork:jsonld");
+                }
+                
+                if (fnRecipe.ingredients && fnRecipe.ingredients.length >= 2) {
+                  setIngredients(fnRecipe.ingredients);
+                  setIngredientSections(null);
+                  bumpStage(2);
+                }
+                
+                if (fnRecipe.steps && fnRecipe.steps.length >= 1) {
+                  setSteps(fnRecipe.steps);
+                  bumpStage(3);
+                }
+                
+                // Try to get best image
+                if (fnRecipe.image) {
+                  await tryImageUrl(fnRecipe.image, url);
+                } else {
+                  // Fallback: try to get best image using smart fetch
+                  const bestImage = await getFoodNetworkBestImage(url, fetchWithUA);
+                  if (bestImage) {
+                    await tryImageUrl(bestImage, url);
+                  }
+                }
+                
+                if (fnRecipe.ingredients && fnRecipe.ingredients.length >= 2) {
+                  await trackSuccessfulImport(url, fnRecipe.ingredients, fnRecipe.steps || [], 'foodnetwork:jsonld');
+                  gotSomethingForRunRef.current = true;
+                  success = true;
+                  dbg("[RECIPE] Food Network extraction successful");
+                  return;
+                }
+              } else {
+                dbg("[RECIPE] Food Network smart fetch returned no data");
+              }
+            } catch (e) {
+              dbg("[RECIPE] Food Network handler failed:", safeErr(e));
+              // Fall through to regular handling
+            }
+          }
+          
+          // Regular recipe site handling (for non-Food Network or Food Network fallback)
           try {
             const html = await fetchWithUA(url, 12000, "text");
             dbg("[RECIPE] HTML fetched, length:", html?.length || 0);
@@ -3393,8 +3453,6 @@ function stitchBrokenSteps(lines: string[]): string[] {
         await supabase.from("recipe_ingredients").insert(ingRows);
       }
 
-      // CRITICAL: Steps must maintain their order - array index becomes pos in database
-      // This ensures users follow steps in the correct sequence to avoid ruining food
       const stp = steps.map((s) => (s || "").trim()).filter(Boolean);
       if (stp.length) {
         await supabase.from("recipe_steps").insert(
@@ -4259,7 +4317,7 @@ function MilitaryImportOverlay({
               return (
                 <View key={label} style={hudBackdrop.stepRow}>
                   <View style={[hudBackdrop.checkbox, done && { backgroundColor: "rgba(47,174,102,0.26)", borderColor: "rgba(47,174,102,0.6)" }, active && { borderColor: "#86efac" }]}>
-                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>●</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>●</Text> : null}
+                    {done ? <Text style={{ color: "#065f46", fontSize: 14, fontWeight: "700" }}>●</Text> : active ? <Text style={{ color: COLORS.accent, fontSize: 18, lineHeight: 18 }}>�</Text> : null}
                   </View>
                   <Text style={[hudBackdrop.stepText, done && { color: "#bbf7d0" }, active && { color: COLORS.text, fontWeight: "600" }]}>{label}</Text>
                 </View>
