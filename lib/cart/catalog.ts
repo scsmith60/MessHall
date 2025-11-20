@@ -12,6 +12,8 @@ export type SimpleCatalogEntry = {
   krogerUpc?: string;
   hebSku?: string;
   albertsonsSku?: string;
+  instacartId?: string;
+  doordashId?: string;
 };
 
 // 🔤 tiny helper: does the string include ANY of these words/phrases?

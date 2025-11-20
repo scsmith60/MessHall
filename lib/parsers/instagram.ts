@@ -170,13 +170,72 @@ export function parseSocialCaption(caption: string, options: InstagramParseOptio
   const title = tidyTitle(titleCandidate, fallbackCandidate, options.fallbackTitle);
   const servings = cleanServings(servingsCandidate);
 
-  // Use unified parser to extract ingredients and steps from the full caption
-  const parsed = parseRecipeText(caption);
+  // For Instagram, prioritize explicit section extraction over unified parser
+  // Instagram captions have clear "Ingredients:" and "Method:" sections
+  let ingredients: string[] = [];
+  let steps: string[] = [];
+  
+  // Find Ingredients section - look for "Ingredients:" header followed by content until "Method:" or "Directions:"
+  // Use a more robust pattern that handles various formatting
+  const ingPattern = /(?:^|\n)\s*ingredients?\s*:?\s*\n?\s*([\s\S]*?)(?:\n\s*\n\s*(?:directions?|steps?|method|instructions?)\s*:|\n\s*(?:directions?|steps?|method|instructions?)\s*:|$)/i;
+  const ingMatch = caption.match(ingPattern);
+  if (ingMatch && ingMatch[1]) {
+    const ingBlock = ingMatch[1].trim();
+    // Split by newlines and filter for ingredient-like lines
+    const ingLines = ingBlock.split(/\n+/)
+      .map(line => line.trim())
+      .filter(line => {
+        if (line.length < 3) return false;
+        // Skip section headers, tips, and non-ingredient content
+        if (/^(tips?|note|notes?|serves?|yield|#|method|directions?|instructions?|steps?|chill|for extra|to keep)/i.test(line)) return false;
+        // Must have quantity indicator or be ingredient-like
+        return /\d/.test(line) || 
+               /\b(cup|cups|tsp|tbsp|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|head|heads|bunch|bunches|piece|pieces|can|cans|package|packages|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers|stick|sticks|slice|slices|fillet|fillets|strip|strips|stalk|stalks)\b/i.test(line) ||
+               /\b(eggs?|avocado|mayonnaise|lemon|lime|garlic|onion|butter|salt|pepper|bell pepper|cheese|mustard|chives|parsley|cilantro|basil|tomato|cream|sugar|oil|vinegar|soy sauce|olive oil|parmesan|mozzarella)\b/i.test(line);
+      });
+    
+    if (ingLines.length >= 2) {
+      ingredients = ingLines;
+    }
+  }
+  
+  // Find Method/Directions section - look for "Method:" or "Directions:" header
+  const stepPattern = /(?:^|\n)\s*(?:method|directions?|instructions?|steps?)\s*:?\s*\n?\s*([\s\S]*?)(?:\n\s*\n\s*(?:tips?|note|notes?|serves?|yield)\s*:|\n\s*(?:tips?|note|notes?|serves?|yield)\s*:|#|$)/i;
+  const stepMatch = caption.match(stepPattern);
+  if (stepMatch && stepMatch[1]) {
+    const stepBlock = stepMatch[1].trim();
+    // Split by numbered steps, new paragraphs, or sentence boundaries
+    const stepLines = stepBlock
+      .split(/(?:\n\s*\n|\d+[.)]\s+|(?<=[.!?])\s+(?=[A-Z])|(?<=\.)\s+(?=[A-Z]))/)
+      .map(line => line.trim())
+      .filter(line => {
+        if (line.length < 10) return false;
+        // Skip tips and notes
+        if (/^(tips?|note|notes?|#|chill for|for extra|to keep)/i.test(line)) return false;
+        // Must contain cooking verbs or instructions
+        return /\b(place|add|mix|combine|stir|whisk|fold|pour|drizzle|layer|spread|cook|bake|heat|preheat|melt|fry|saute|sear|brown|season|toss|press|arrange|roll|wrap|serve|garnish|top|spoon|transfer|beat|blend|chop|mince|dice|slice|toast|grill|broil|roast|simmer|boil|knead|marinate|let|allow|rest|cover|refrigerate|chill|transfer|remove|bring|turn|increase|decrease|drain|rinse|trim|halve|cut|slice)\b/i.test(line);
+      });
+    
+    if (stepLines.length >= 1) {
+      steps = stepLines;
+    }
+  }
+  
+  // Fallback to unified parser only if explicit extraction found nothing
+  if (ingredients.length < 2 || steps.length < 1) {
+    const parsed = parseRecipeText(caption);
+    if (ingredients.length < 2 && parsed.ingredients && parsed.ingredients.length >= 2) {
+      ingredients = parsed.ingredients;
+    }
+    if (steps.length < 1 && parsed.steps && parsed.steps.length >= 1) {
+      steps = parsed.steps;
+    }
+  }
   
   return {
     title,
-    ingredients: parsed.ingredients || [],
-    steps: parsed.steps || [],
+    ingredients,
+    steps,
     servings,
     heroImage: options.heroImage ?? null,
     source: "instagram",

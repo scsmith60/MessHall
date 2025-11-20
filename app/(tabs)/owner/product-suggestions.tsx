@@ -41,6 +41,8 @@ const STORES: { id: ProviderId; label: string }[] = [
   { id: "kroger", label: "Kroger" },
   { id: "heb", label: "H-E-B" },
   { id: "albertsons", label: "Albertsons" },
+  { id: "instacart", label: "Instacart" },
+  { id: "doordash", label: "DoorDash" },
 ];
 
 export default function ProductSuggestions() {

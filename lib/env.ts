@@ -55,6 +55,8 @@ export const STORE_CONNECT_READY: Record<ProviderId, boolean> = {
   kroger: toBool(process.env.EXPO_PUBLIC_STORE_CONNECT_KROGER_READY),
   heb: toBool(process.env.EXPO_PUBLIC_STORE_CONNECT_HEB_READY),
   albertsons: toBool(process.env.EXPO_PUBLIC_STORE_CONNECT_ALBERTSONS_READY),
+  instacart: toBool(process.env.EXPO_PUBLIC_STORE_CONNECT_INSTACART_READY),
+  doordash: toBool(process.env.EXPO_PUBLIC_STORE_CONNECT_DOORDASH_READY),
 } as const;
 
 const lockedStores = Object.entries(STORE_CONNECT_READY)

@@ -1,5 +1,5 @@
 // lib/cart/providers.ts
-// LIKE I'M 5: these are our "store helpers" (Walmart, Amazon, Kroger, H-E-B, Albertsons).
+// LIKE I'M 5: these are our "store helpers" (Walmart, Amazon, Kroger, H-E-B, Albertsons, Instacart, DoorDash).
 // - suggest(): shows brand/size choices (from our mini catalog)
 // - addToCart(): talks to our server function (cart-add). Server may give us a link to open.
 // - isConnected/connect(): reads/writes your store_links table
@@ -7,7 +7,7 @@
 import { supabase } from "@/lib/supabase";
 import { MINI_CATALOG, toStoreQuantity } from "./catalog";
 
-export type ProviderId = "amazon" | "walmart" | "kroger" | "heb" | "albertsons";
+export type ProviderId = "amazon" | "walmart" | "kroger" | "heb" | "albertsons" | "instacart" | "doordash";
 
 export type CartItem = {
   name: string;
@@ -122,7 +122,11 @@ async function makeSuggestionSetForProvider(pid: ProviderId, items: CartItem[]):
         pid === "amazon" ? "amazonAsin" :
         pid === "walmart" ? "walmartId" :
         pid === "kroger"  ? "krogerUpc"  :
-        pid === "heb"     ? "hebSku"     : "albertsonsSku";
+        pid === "heb"     ? "hebSku"     :
+        pid === "albertsons" ? "albertsonsSku" :
+        pid === "instacart" ? "instacartId" :
+        pid === "doordash" ? "doordashId" :
+        "amazonAsin"; // fallback
 
       const key = Object.keys(MINI_CATALOG).find(k => normalizedName.includes(k));
       const catalogHits = key ? (MINI_CATALOG as any)[key] as any[] : [];
@@ -216,6 +220,8 @@ const registry: Record<ProviderId, ICartProvider> = {
   kroger:     stubProvider("kroger",  "Kroger"),
   heb:        stubProvider("heb",     "H-E-B"),
   albertsons: stubProvider("albertsons", "Albertsons"),
+  instacart:  stubProvider("instacart", "Instacart"),
+  doordash:   stubProvider("doordash", "DoorDash"),
 };
 
 // export a getter to avoid accidental mutation

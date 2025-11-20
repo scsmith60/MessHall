@@ -6,7 +6,7 @@ import React from "react";
 import { View, Text, TouchableOpacity, Modal, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-export type StoreKey = "walmart" | "kroger" | "amazon" | "heb" | "albertsons";
+export type StoreKey = "walmart" | "kroger" | "amazon" | "heb" | "albertsons" | "instacart" | "doordash";
 
 export function StoreChooserSheet({
   visible,
@@ -59,6 +59,8 @@ function labelForStore(s: StoreKey) {
   if (s === "amazon") return "Amazon";
   if (s === "heb") return "H-E-B";
   if (s === "albertsons") return "Albertsons";
+  if (s === "instacart") return "Instacart";
+  if (s === "doordash") return "DoorDash";
   return s;
 }
 

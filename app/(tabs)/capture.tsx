@@ -2425,13 +2425,29 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
             const heroFromDom = igDom?.imageUrl || igDom?.image_url || null;
             const articleTextRaw = typeof igDom?.text === "string" ? igDom.text : "";
-            const cleanedCaption = preCleanIgCaptionForParsing(rawCaption);
-            const cleanedArticle = preCleanIgCaptionForParsing(articleTextRaw);
+            // Use raw caption directly - the parser will handle cleaning internally
+            // Only do minimal cleaning to remove metadata prefixes
+            const minimalClean = (s: string) => {
+              let out = String(s || "");
+              // Remove Instagram metadata prefix only
+              out = out.replace(/^\s*\d+[\d,.\s]*\s+likes?,?\s*\d+[\d,.\s]*\s+comments?\s*-\s*[^:]+(?:\s+on\s+[^:]+)?:\s*/i, "");
+              // Remove standalone like/comment lines
+              out = out.replace(/^\s*\d+[\d,.\s]*\s+likes?.*$/gim, "");
+              out = out.replace(/^\s*\d+[\d,.\s]*\s+comments?.*$/gim, "");
+              return out.trim();
+            };
+            
+            const cleanedCaption = minimalClean(rawCaption);
+            const cleanedArticle = minimalClean(articleTextRaw);
             const combinedBody = [cleanedCaption, cleanedArticle].filter(Boolean).join("\n\n");
             
             // Debug: Show cleaned caption
-            dbg("[IG] Cleaned caption (first 300 chars):", cleanedCaption.slice(0, 300));
+            dbg("[IG] Raw caption length:", rawCaption.length);
+            dbg("[IG] Cleaned caption length:", cleanedCaption.length);
+            dbg("[IG] Cleaned caption (first 500 chars):", cleanedCaption.slice(0, 500));
+            dbg("[IG] Cleaned caption (last 300 chars):", cleanedCaption.length > 300 ? cleanedCaption.slice(-300) : cleanedCaption);
             dbg("[IG] Combined body length:", combinedBody.length);
+            dbg("[IG] Combined body (first 500 chars):", combinedBody.slice(0, 500));
             
             const captionDishTitle = findDishTitleFromText(combinedBody, url);
             const fallbackDishTitle = captionDishTitle || normalizeDishTitle(cleanTitle(captionToNiceTitle(combinedBody), url));
