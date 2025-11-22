@@ -1852,26 +1852,81 @@ function stitchBrokenSteps(lines: string[]): string[] {
           if (data.ingredients && data.ingredients.length >= 2) {
             // Handle ingredient sections - they might come from HTML extraction or JSON-LD
             if (data.ingredientSections && data.ingredientSections.length > 0) {
-              // Sections already extracted (from HTML fallback)
+              // Sections already extracted (from HTML fallback or merged from wprm_recipes)
               setIngredients(data.ingredients);
               setIngredientSections(data.ingredientSections);
               dbg('[RECIPE] Using ingredient sections from', source, ':', data.ingredientSections.length, 'sections');
+              dbg('[RECIPE] Section details:', data.ingredientSections.map(s => ({ name: s.name, count: s.ingredients.length })));
+              bumpStage(2);
+              // Don't try to detect sections from HTML if we already have them
             } else if (html && (source === 'jsonld' || source === 'microdata')) {
               // Try to detect sections from HTML if we have it
               // This helps preserve section headers like "For Muffin Batter:" that aren't in JSON-LD
               // IMPORTANT: Use JSON-LD ingredients (they're correct), only use HTML to find section headers
               try {
-                // Find section headers in HTML (like "For Muffin Batter:", "For Streusel Topping:")
-                const sectionHeaderRegex = /<(?:h[2-4]|p|div|strong|b|li|span)[^>]*>([^<]*(?:For\s+(?:the\s+)?[^:]+:|For\s+[^:]+:)[^<]*)<\/(?:h[2-4]|p|div|strong|b|li|span)>/gi;
+                // Helper to decode HTML entities and clean whitespace
+                const cleanHeaderText = (text: string): string => {
+                  if (!text) return '';
+                  // Decode HTML entities
+                  let cleaned = text
+                    .replace(/&nbsp;/g, ' ')
+                    .replace(/&#8217;/g, "'")
+                    .replace(/&#8211;/g, '-')
+                    .replace(/&#8212;/g, '--')
+                    .replace(/&#8220;/g, '"')
+                    .replace(/&#8221;/g, '"')
+                    .replace(/&#(\d+);/g, (_, num) => {
+                      const code = parseInt(num, 10);
+                      if (code === 160) return ' '; // Non-breaking space
+                      if (code >= 32 && code <= 126) return String.fromCharCode(code);
+                      return ' ';
+                    })
+                    .replace(/<[^>]+>/g, '') // Remove HTML tags
+                    .replace(/\s+/g, ' ') // Normalize whitespace
+                    .trim();
+                  return cleaned;
+                };
+                
+                // Find section headers in HTML - be more specific to only match ingredient-related headers
+                // Look for headers like "For Muffin Batter:", "Ingredients:", "For the Glaze:", etc.
+                const sectionHeaderRegex = /<(?:h[2-4]|p|div|strong|b)[^>]*class[^>]*(?:ingredient|recipe|section|header)[^>]*>([\s\S]*?)<\/(?:h[2-4]|p|div|strong|b)>/gi;
                 const foundHeaders: Array<{text: string, index: number}> = [];
                 let headerMatch;
                 while ((headerMatch = sectionHeaderRegex.exec(html)) !== null) {
-                  const headerText = headerMatch[1].replace(/<[^>]+>/g, '').trim();
-                  if (headerText && /For\s+(?:the\s+)?[^:]+:/i.test(headerText)) {
-                    foundHeaders.push({ 
-                      text: headerText.replace(/:/g, '').trim(), 
-                      index: headerMatch.index || 0 
-                    });
+                  let headerText = cleanHeaderText(headerMatch[1]);
+                  // Only accept headers that are ingredient-related
+                  if (headerText && (
+                    /^(ingredients?|for\s+(?:the\s+)?[^:]+|equipment|supplies)/i.test(headerText) ||
+                    /^[A-Z][^:]{3,50}:\s*$/i.test(headerText) // Capitalized phrase ending with colon
+                  )) {
+                    // Remove trailing colon and clean
+                    headerText = headerText.replace(/:\s*$/, '').trim();
+                    if (headerText.length > 3 && headerText.length < 100) {
+                      foundHeaders.push({ 
+                        text: headerText, 
+                        index: headerMatch.index || 0 
+                      });
+                    }
+                  }
+                }
+                
+                // Also try a simpler pattern for common ingredient section headers
+                // But be more strict - only match actual headers (h2-h4) or short text that starts with ingredient keywords
+                if (foundHeaders.length === 0) {
+                  // First try to match h2-h4 tags that contain ingredient keywords
+                  const headerTagPattern = /<(h[2-4])[^>]*>([^<]*(?:ingredients?|for\s+(?:the\s+)?[^:]+:)[^<]*)<\/\1>/gi;
+                  while ((headerMatch = headerTagPattern.exec(html)) !== null) {
+                    let headerText = cleanHeaderText(headerMatch[2]);
+                    // Only accept if it starts with ingredient keywords and is short (like a header)
+                    if (headerText && /^(ingredients?|for\s+(?:the\s+)?[^:]+|equipment|supplies)/i.test(headerText) && headerText.length < 150) {
+                      headerText = headerText.replace(/:\s*$/, '').trim();
+                      if (headerText.length > 3 && headerText.length < 100) {
+                        foundHeaders.push({ 
+                          text: headerText, 
+                          index: headerMatch.index || 0 
+                        });
+                      }
+                    }
                   }
                 }
                 
@@ -1904,38 +1959,63 @@ function stitchBrokenSteps(lines: string[]): string[] {
                     dbg('[RECIPE] Section', foundHeaders[i].text, 'has', count, 'ingredients');
                   }
                   
+                  // Filter out sections that don't actually have ingredients (likely false positives)
+                  const validSections: Array<{text: string, index: number, count: number}> = [];
+                  for (let i = 0; i < foundHeaders.length; i++) {
+                    // Only include sections that:
+                    // 1. Have at least 2 ingredients, OR
+                    // 2. Are the first section and have at least 1 ingredient (might be the main ingredient list)
+                    if (sectionCounts[i] >= 2 || (i === 0 && sectionCounts[i] >= 1)) {
+                      // Also check that the header text is actually ingredient-related
+                      const headerText = foundHeaders[i].text.toLowerCase();
+                      const isIngredientRelated = /ingredient|equipment|supplies|for\s+(?:the\s+)?(?:muffin|batter|glaze|topping|filling|dough|crust|sauce|dressing|marinade)/i.test(headerText);
+                      if (isIngredientRelated || sectionCounts[i] >= 3) {
+                        validSections.push({
+                          text: foundHeaders[i].text,
+                          index: foundHeaders[i].index,
+                          count: sectionCounts[i]
+                        });
+                      }
+                    }
+                  }
+                  
+                  dbg('[RECIPE] Valid ingredient sections after filtering:', validSections.map(s => `${s.text} (${s.count} ingredients)`));
+                  
                   // Create sections and distribute JSON-LD ingredients
                   const sections: IngredientSection[] = [];
                   let ingredientIndex = 0;
                   
-                  for (let i = 0; i < foundHeaders.length && ingredientIndex < data.ingredients.length; i++) {
-                    const sectionName = foundHeaders[i].text;
-                    const count = sectionCounts[i] || 0;
-                    const sectionIngredients: string[] = [];
-                    
-                    // Take the specified number of ingredients for this section
-                    const takeCount = count > 0 ? Math.min(count, data.ingredients.length - ingredientIndex) : 
-                                     (i === foundHeaders.length - 1 ? data.ingredients.length - ingredientIndex : 0);
-                    
-                    for (let j = 0; j < takeCount && ingredientIndex < data.ingredients.length; j++) {
-                      sectionIngredients.push(data.ingredients[ingredientIndex]);
-                      ingredientIndex++;
+                  // If we have valid sections, use them; otherwise, don't create sections
+                  if (validSections.length > 0) {
+                    for (let i = 0; i < validSections.length && ingredientIndex < data.ingredients.length; i++) {
+                      const sectionName = validSections[i].text;
+                      const count = validSections[i].count;
+                      const sectionIngredients: string[] = [];
+                      
+                      // Take the specified number of ingredients for this section
+                      const takeCount = count > 0 ? Math.min(count, data.ingredients.length - ingredientIndex) : 
+                                       (i === validSections.length - 1 ? data.ingredients.length - ingredientIndex : 0);
+                      
+                      for (let j = 0; j < takeCount && ingredientIndex < data.ingredients.length; j++) {
+                        sectionIngredients.push(data.ingredients[ingredientIndex]);
+                        ingredientIndex++;
+                      }
+                      
+                      if (sectionIngredients.length > 0) {
+                        sections.push({ name: sectionName, ingredients: sectionIngredients });
+                      }
                     }
                     
-                    if (sectionIngredients.length > 0) {
-                      sections.push({ name: sectionName, ingredients: sectionIngredients });
+                    // Add any remaining ingredients to the last section
+                    if (ingredientIndex < data.ingredients.length && sections.length > 0) {
+                      while (ingredientIndex < data.ingredients.length) {
+                        sections[sections.length - 1].ingredients.push(data.ingredients[ingredientIndex]);
+                        ingredientIndex++;
+                      }
+                    } else if (ingredientIndex < data.ingredients.length) {
+                      // No sections created, create ungrouped
+                      sections.push({ name: null, ingredients: data.ingredients.slice(ingredientIndex) });
                     }
-                  }
-                  
-                  // Add any remaining ingredients to the last section
-                  if (ingredientIndex < data.ingredients.length && sections.length > 0) {
-                    while (ingredientIndex < data.ingredients.length) {
-                      sections[sections.length - 1].ingredients.push(data.ingredients[ingredientIndex]);
-                      ingredientIndex++;
-                    }
-                  } else if (ingredientIndex < data.ingredients.length) {
-                    // No sections created, create ungrouped
-                    sections.push({ name: null, ingredients: data.ingredients.slice(ingredientIndex) });
                   }
                   
                   if (sections.length > 0) {
@@ -2019,6 +2099,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
         };
 
         const jsonLd = extractRecipeFromJsonLd(html);
+        // Also try HTML extraction to get wprm_recipes sections
+        const htmlExtracted = extractRecipeFromHtml(html);
+        
         if (jsonLd) {
           dbg('[RECIPE] JSON-LD recipe found');
           dbg('[RECIPE] JSON-LD extracted:', {
@@ -2029,6 +2112,38 @@ function stitchBrokenSteps(lines: string[]): string[] {
             steps: jsonLd.steps?.slice(0, 2),
             debugInfo: (jsonLd as any).__debugInfo,
           });
+          
+          // If HTML extraction found sections (from wprm_recipes), merge them with JSON-LD data
+          if (htmlExtracted?.ingredientSections && htmlExtracted.ingredientSections.length > 0) {
+            dbg('[RECIPE] Found', htmlExtracted.ingredientSections.length, 'sections from HTML/wprm, merging with JSON-LD');
+            dbg('[RECIPE] Section details:', htmlExtracted.ingredientSections.map(s => ({ name: s.name, count: s.ingredients.length })));
+            // Redistribute JSON-LD ingredients into the HTML sections
+            // This ensures we use the correct ingredients from JSON-LD but keep the section structure
+            const jsonLdCount = jsonLd.ingredients?.length || 0;
+            const htmlCount = htmlExtracted.ingredients?.length || 0;
+            
+            let ingIndex = 0;
+            const mergedSections = htmlExtracted.ingredientSections.map((section, idx) => {
+              const sectionSize = section.ingredients.length;
+              // Last section gets all remaining ingredients
+              const endIndex = idx === htmlExtracted.ingredientSections.length - 1 
+                ? jsonLdCount 
+                : Math.min(ingIndex + sectionSize, jsonLdCount);
+              const sectionIngredients = jsonLd.ingredients?.slice(ingIndex, endIndex) || [];
+              ingIndex = endIndex;
+              return {
+                name: section.name,
+                ingredients: sectionIngredients
+              };
+            });
+            
+            (jsonLd as any).ingredientSections = mergedSections;
+            dbg('[RECIPE] Merged sections:', mergedSections.map(s => ({ name: s.name, count: s.ingredients.length })));
+            dbg('[RECIPE] Total ingredients in merged sections:', mergedSections.reduce((sum, s) => sum + s.ingredients.length, 0), 'vs JSON-LD:', jsonLdCount);
+          } else {
+            dbg('[RECIPE] No sections found in HTML extraction (htmlExtracted:', !!htmlExtracted, 'sections:', htmlExtracted?.ingredientSections?.length || 0, ')');
+          }
+          
           // Auto-discover this site if it's not in our list
           await discoverRecipeSiteIfNeeded(url, html);
           const jsonApplied = await applyExtraction(jsonLd, 'jsonld', { includeMeta: true });
@@ -2071,8 +2186,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
         // Fallback: Try HTML parsing for sites without proper JSON-LD or microdata
         // (e.g., girlcarnivore.com and similar sites)
         // Note: HTML extraction doesn't return title - we use OG title instead
-        const htmlExtracted = extractRecipeFromHtml(html);
-        if (htmlExtracted) {
+        // (htmlExtracted was already extracted above for merging with JSON-LD)
+        if (htmlExtracted && !jsonLd) {
           dbg('[RECIPE] HTML fallback extraction found');
           dbg('[RECIPE] HTML extracted:', {
             ingredientsCount: htmlExtracted.ingredients?.length ?? 0,
@@ -3441,6 +3556,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
         // Preserve sections when saving
         let pos = 1;
         for (const section of ingredientSections) {
+          // Clean and trim section name to remove extra spaces
+          const sectionName = section.name ? section.name.trim().replace(/\s+/g, ' ') : null;
           for (const ing of section.ingredients) {
             const trimmed = (ing || "").trim();
             if (trimmed) {
@@ -3448,7 +3565,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 recipe_id: recipeId,
                 pos: pos++,
                 text: trimmed,
-                section_name: section.name || null
+                section_name: sectionName
               });
               savedIngredients.push(trimmed);
             }
