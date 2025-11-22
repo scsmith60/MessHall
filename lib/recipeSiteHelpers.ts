@@ -1063,6 +1063,8 @@ export function extractRecipeFromHtml(html: string): {
         if (ingredientSections.length === 0) {
           const liMatches = [...mainSection.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
           console.log('[HTML-EXTRACT] Found', liMatches.length, 'list items in ingredient section');
+          const rejectedItems: string[] = [];
+          
           for (const liMatch of liMatches) {
             let liContent = extractFullTextFromLi(liMatch[1]);
             // Debug: show raw content for first few items
@@ -1076,8 +1078,11 @@ export function extractRecipeFromHtml(html: string): {
                                        !liContent.match(/\d/) && 
                                        (liMatch[1].includes('href=') || liMatch[1].includes('tabindex'));
               
-              // Reject "See All" type links
-              const isSeeAllLink = /see\s+all|more|view\s+all|arrow|→/i.test(liContent);
+              // Reject "See All" type links - be more specific to avoid false positives
+              // Only match if it's a standalone phrase like "See All", "View All", "More Recipes", etc.
+              // Don't match "more" when it's part of ingredient text like "plus more for"
+              const isSeeAllLink = /^(see\s+all|view\s+all|more\s+(recipes?|items?|options?|like|from)|arrow|→)/i.test(liContent.trim()) ||
+                                   /(see\s+all|view\s+all|more\s+(recipes?|items?|options?|like|from))\s*$/i.test(liContent.trim());
               
               // Reject nutrition info
               const isNutritionInfo = /nutrition\s+info|nutritional\s+analysis|calories|total\s+fat|saturated\s+fat|cholesterol|sodium|carbohydrates|dietary\s+fiber|protein|sugar|per\s+serving/i.test(liContent);
@@ -1090,14 +1095,15 @@ export function extractRecipeFromHtml(html: string): {
                 continue;
               }
               
-              const hasQuantity = /(\d+\s+)?(\d+\/\d+|\d+)\s*(cup|cups|c\.|tsp|tbsp|oz|lb|g|kg|ml|l|tablespoon|teaspoon|pound|ounce|clove|cloves|sheet|sheets|large|small|medium|jumbo|head|heads|bunch|can|cans|package|packages)/i.test(liContent);
-              const hasIngredientWord = /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|hot\s+sauce|worcestershire|egg|eggs|oil|vegetable|canola|olive|potato|potatoes|cream\s+cheese|half\s+and\s+half|half-and-half|brussels\s+sprouts|bacon|vinegar|sprouts|water|kosher|fresh|ground|dried|chopped|minced|sliced|diced|peeled|trimmed)\b/i.test(liContent);
+              // Check for quantity - support abbreviations with periods (Tbsp., tsp., etc.) and parentheses like "(8-oz.)"
+              const hasQuantity = /(\d+\s+)?(\d+\/\d+|\d+)\s*(\(?\d+\s*[-–]\s*oz\.?\)?|cup|cups|c\.|tsp\.?|tbsp\.?|oz\.?|lb\.?|lbs\.?|g|kg|ml|l|liter|litre|tablespoon|tablespoons|teaspoon|teaspoons|pound|pounds|ounce|ounces|clove|cloves|sheet|sheets|large|small|medium|jumbo|head|heads|bunch|can|cans|package|packages|wheel|block)/i.test(liContent);
+              const hasIngredientWord = /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|hot\s+sauce|worcestershire|egg|eggs|oil|vegetable|canola|olive|potato|potatoes|cream\s+cheese|half\s+and\s+half|half-and-half|brussels\s+sprouts|bacon|vinegar|sprouts|water|kosher|fresh|ground|dried|chopped|minced|sliced|diced|peeled|trimmed|shallot|spinach|brie|cheddar|gouda|salami|capicola|chorizo|hummus|pecans|olives|mustard|jam|pomegranate|seeds|fig|spread)\b/i.test(liContent);
               
               // For Food Network and similar sites, require quantity OR multiple words OR ingredient word with context
               const hasMultipleWords = liContent.trim().split(/\s+/).length >= 2;
               // Also accept if it has a number (even without unit) or common cooking terms
               const hasNumber = /\d/.test(liContent);
-              const hasCookingTerm = /\b(kosher|fresh|ground|dried|chopped|minced|sliced|diced|peeled|trimmed|large|small|medium|whole|pieces|cloves?|heads?|bunches?)\b/i.test(liContent);
+              const hasCookingTerm = /\b(kosher|fresh|ground|dried|chopped|minced|sliced|diced|peeled|trimmed|large|small|medium|whole|pieces|cloves?|heads?|bunches?|thawed|frozen|finely|sliced|aged)\b/i.test(liContent);
               
               // More lenient: accept if it has quantity, OR (has ingredient word AND multiple words), OR (has number AND cooking term), OR (has ingredient word AND cooking term)
               const isValidIngredient = hasQuantity || 
@@ -1111,10 +1117,28 @@ export function extractRecipeFromHtml(html: string): {
                   console.log('[HTML-EXTRACT] Added ingredient', ingredients.length, ':', liContent);
                 }
               } else {
+                rejectedItems.push(liContent);
                 if (liMatches.length <= 10) {
                   console.log('[HTML-EXTRACT] Rejected ingredient (no quantity/word):', liContent.substring(0, 60));
-                  console.log('[HTML-EXTRACT] hasQuantity:', hasQuantity, 'hasIngredientWord:', hasIngredientWord, 'hasMultipleWords:', hasMultipleWords);
+                  console.log('[HTML-EXTRACT] hasQuantity:', hasQuantity, 'hasIngredientWord:', hasIngredientWord, 'hasMultipleWords:', hasMultipleWords, 'hasNumber:', hasNumber, 'hasCookingTerm:', hasCookingTerm);
                 }
+              }
+            }
+          }
+          
+          // Final validation: if we found N list items but only extracted M ingredients where M < N-2,
+          // be more lenient and accept rejected items that look like ingredients
+          if (liMatches.length > 0 && ingredients.length < liMatches.length - 2 && rejectedItems.length > 0) {
+            console.log('[HTML-EXTRACT] Validation check: Found', liMatches.length, 'items but only extracted', ingredients.length, 'ingredients. Re-evaluating', rejectedItems.length, 'rejected items.');
+            for (const rejected of rejectedItems) {
+              // More lenient check: accept if it has a number and at least 3 words, or has common food words
+              const hasNumber = /\d/.test(rejected);
+              const wordCount = rejected.trim().split(/\s+/).length;
+              const hasFoodWord = /\b(brie|cheddar|gouda|salami|capicola|chorizo|hummus|pecans|olives|mustard|jam|pomegranate|seeds|fig|spread|cheese|meat|board|wheel|block|package|can|jar|bottle|cup|tablespoon|teaspoon|oz|lb|pound|ounce)\b/i.test(rejected);
+              
+              if ((hasNumber && wordCount >= 3) || (hasFoodWord && wordCount >= 2)) {
+                ingredients.push(rejected);
+                console.log('[HTML-EXTRACT] Added rejected ingredient after validation:', rejected);
               }
             }
           }

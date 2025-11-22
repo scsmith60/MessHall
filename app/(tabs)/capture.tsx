@@ -3569,7 +3569,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
               if (allAttempts && allAttempts.length > 0) {
                 attempts = allAttempts;
                 // If the attempt failed but we have ingredients/steps now, user definitely corrected it
-                if (!attempts[0].success && (savedIngNormalized.length > 0 || savedStepsNormalized.length > 0)) {
+                if (!(attempts[0] as any).success && (savedIngNormalized.length > 0 || savedStepsNormalized.length > 0)) {
                   attemptIdToMark = attempts[0].id;
                   shouldTrackCorrection = true;
                   console.log(`[TRACKING] Detected correction: Import failed but user added ${savedIngNormalized.length} ingredients, ${savedStepsNormalized.length} steps`);
@@ -3584,7 +3584,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
               console.log(`[TRACKING] Comparing against database attempt ${latestAttempt.id}:`);
               console.log(`  Imported ingredients: ${latestAttempt.ingredients_count}, Saved: ${savedIngNormalized.length}`);
               console.log(`  Imported steps: ${latestAttempt.steps_count}, Saved: ${savedStepsNormalized.length}`);
-              console.log(`  Strategy: ${latestAttempt.strategy_used}, Success: ${latestAttempt.success}`);
+              console.log(`  Strategy: ${latestAttempt.strategy_used}, Success: ${(latestAttempt as any).success ?? 'unknown'}`);
               
               // Compare counts - if saved data differs at all, likely user made changes
               // Be more sensitive: any difference is considered a correction
