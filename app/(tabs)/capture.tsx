@@ -3059,6 +3059,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const partitioned = partitionIngredientRows(parsed.ingredients, parsed.steps);
             const normalizedSteps = mergeStepFragments(partitioned.steps);
 
+            // Store final ingredients list for use in step filtering
+            let finalIngredients: string[] = [];
+
             if (partitioned.ingredients.length >= 2 || normalizedSteps.length >= 1) {
               if (partitioned.ingredients.length) {
                 // Helper to filter artifacts from any ingredient list
@@ -3205,10 +3208,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 const cleanedFlat = splitIngredients.filter(filterArtifacts);
                 dbg('[TikTok] After filter - ingredients:', cleanedFlat);
                 
+                // Clean up bullet points and other trailing characters from ingredients
+                const cleanedIngredients = cleanedFlat.map(ing => {
+                  // Remove trailing bullet points, dashes, and other separators
+                  return ing.replace(/[\s•\u2022\u25CF\u25CB\-]+\s*$/, '').trim();
+                }).filter(ing => ing.length > 0);
+                
                 // Deduplicate ingredients (normalize and compare)
                 const deduplicated: string[] = [];
                 const seen = new Set<string>();
-                for (const ing of cleanedFlat) {
+                for (const ing of cleanedIngredients) {
                   // Normalize for comparison: lowercase, remove extra spaces, remove parentheticals
                   const normalized = ing.toLowerCase().replace(/\s+/g, ' ').trim();
                   const baseIng = normalized.replace(/\s*\([^)]*\)/g, '').trim();
@@ -3226,6 +3235,9 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 dbg('[TikTok] Filtered ingredients:', splitIngredients.length, '->', cleanedFlat.length, '->', deduplicated.length);
                 setIngredients(deduplicated);
                 hasTikTokIngredients = hasTikTokIngredients || cleanedFlat.some((line) => line && line.trim());
+                
+                // Store deduplicated for later use in step filtering
+                finalIngredients = deduplicated;
                 
                 // Use ingredient sections if available, otherwise use flat list
                 if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
@@ -3387,8 +3399,125 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   setIngredientSections(null);
                 }
               }
-              if (normalizedSteps.length) {
-                setSteps(normalizedSteps);
+              // Filter out ingredient-like lines from steps (but be very conservative - only filter obvious ingredients)
+              dbg('[TikTok] Before filtering steps:', normalizedSteps);
+              const filteredSteps = normalizedSteps.filter(step => {
+                const trimmed = step.trim();
+                if (!trimmed) return false;
+                
+                // Very short lines that are just ingredients (less than 30 chars, no verbs)
+                if (trimmed.length < 30) {
+                  const hasQtyUnit = /^(\d+(?:-\d+)?(?:\/\d+)?(?:\.\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])\s*(cup|cups|tsp|tbsp|oz|lb|g|gram|kg|ml|l|clove|cloves)\b/i.test(trimmed);
+                  const hasVerb = /\b(add|mix|combine|stir|whisk|fold|pour|drizzle|layer|spread|cook|bake|heat|preheat|melt|fry|saute|sear|season|toss|press|arrange|roll|wrap|serve|top|spoon|transfer|beat|blend|chop|mince|dice|slice|toast|grill|broil|roast|simmer|boil|knead|marinate|let|allow|rest|cover|refrigerate|chill|remove|bring|turn|increase|decrease|drain|rinse|trim|halve|cut|slice|build|thicken|finish|return|coat)\b/i.test(trimmed);
+                  if (hasQtyUnit && !hasVerb) {
+                    dbg('[TikTok] Filtering short ingredient-like line from steps:', trimmed);
+                    return false;
+                  }
+                }
+                
+                // Remove bullet points for checking
+                const cleanStep = trimmed.replace(/^[•\u2022\u25CF\u25CB\-\s]+/, '').replace(/[•\u2022\u25CF\u25CB\-\s]+$/, '').trim();
+                
+                // Pattern: Just ingredient name with "for garnish" (e.g., "Sesame seeds for garnish")
+                const isGarnishIngredient = /^[a-z\s]+for\s+(?:garnish|topping|serving|decoration)$/i.test(cleanStep);
+                
+                // Pattern: Contains bullet points separating ingredients (e.g., "• 1 tbsp butter • Sesame seeds")
+                const bulletParts = trimmed.split(/[•\u2022\u25CF\u25CB]+/).map(p => p.trim()).filter(Boolean);
+                const hasBulletSeparatedIngredients = bulletParts.length > 1 && bulletParts.every(part => {
+                  const cleanPart = part.trim();
+                  return /^(\d+(?:-\d+)?(?:\/\d+)?(?:\.\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])\s*(cup|cups|tsp|tbsp|oz|lb|g|gram|kg|ml|l|clove|cloves)\b/i.test(cleanPart) ||
+                         /^[a-z\s]+(?:for\s+(?:garnish|topping|serving|decoration)|to\s+taste)$/i.test(cleanPart);
+                });
+                
+                // Only filter if it's clearly just ingredients with no action
+                if (isGarnishIngredient || hasBulletSeparatedIngredients) {
+                  dbg('[TikTok] Filtering ingredient-like line from steps:', trimmed);
+                  return false;
+                }
+                return true;
+              });
+              dbg('[TikTok] After filtering steps:', filteredSteps, 'removed:', normalizedSteps.length - filteredSteps.length);
+              
+              // Extract ingredients that were filtered from steps and add them to the ingredients list
+              const filteredOutIngredients = normalizedSteps.filter((step, idx) => !filteredSteps.includes(step));
+              if (filteredOutIngredients.length > 0) {
+                dbg('[TikTok] Found ingredients in steps that were filtered out:', filteredOutIngredients);
+                
+                // Get current ingredients list from state (we'll update it after processing)
+                const currentIngredients = [...finalIngredients];
+                
+                // Split bullet-separated ingredients and clean them
+                const newIngredients: string[] = [];
+                for (const ing of filteredOutIngredients) {
+                  // Split on bullet points
+                  const bulletParts = ing.split(/[•\u2022\u25CF\u25CB]+/).map(p => p.trim()).filter(Boolean);
+                  for (const part of bulletParts) {
+                    // Remove trailing bullet points and clean
+                    const cleaned = part.replace(/[•\u2022\u25CF\u25CB\-\s]+$/, '').trim();
+                    if (cleaned.length > 0) {
+                      newIngredients.push(cleaned);
+                    }
+                  }
+                }
+                
+                dbg('[TikTok] Extracted ingredients from filtered steps:', newIngredients);
+                
+                // Check if "1 tsp cornstarch +" needs to be merged with "1 tbsp water (slurry)"
+                const cornstarchIdx = currentIngredients.findIndex(ing => /cornstarch\s*\+?\s*$/.test(ing.toLowerCase()));
+                const waterIng = newIngredients.find(ing => /water\s*\(slurry\)/i.test(ing));
+                
+                if (cornstarchIdx >= 0 && waterIng) {
+                  // Merge: "1 tsp cornstarch +" + "1 tbsp water (slurry)" = "1 tsp cornstarch + 1 tbsp water (slurry)"
+                  const cornstarchBase = currentIngredients[cornstarchIdx].replace(/\+\s*$/, '').trim();
+                  currentIngredients[cornstarchIdx] = `${cornstarchBase} + ${waterIng}`;
+                  dbg('[TikTok] Merged cornstarch with water:', currentIngredients[cornstarchIdx]);
+                  // Remove water from newIngredients since it's been merged
+                  const waterIdx = newIngredients.indexOf(waterIng);
+                  if (waterIdx >= 0) newIngredients.splice(waterIdx, 1);
+                }
+                
+                // Add remaining new ingredients if not already present
+                // Build a more comprehensive set for deduplication
+                const existingIngSet = new Set<string>();
+                for (const ing of currentIngredients) {
+                  const normalized = ing.toLowerCase().replace(/\s+/g, ' ').trim();
+                  const baseIng = normalized.replace(/\s*\([^)]*\)/g, '').trim();
+                  existingIngSet.add(normalized);
+                  existingIngSet.add(baseIng);
+                  // Also add key parts (e.g., "brown sugar" from "1 tbsp brown sugar")
+                  const qtyUnitMatch = normalized.match(/^(\d+(?:-\d+)?(?:\/\d+)?(?:\.\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])\s*(cup|cups|tsp|tbsp|oz|lb|g|gram|kg|ml|l|clove|cloves)\s+(.+)$/i);
+                  if (qtyUnitMatch && qtyUnitMatch[3]) {
+                    const ingredientName = qtyUnitMatch[3].trim();
+                    existingIngSet.add(ingredientName);
+                  }
+                }
+                
+                for (const newIng of newIngredients) {
+                  const normalized = newIng.toLowerCase().replace(/\s+/g, ' ').trim();
+                  const baseIng = normalized.replace(/\s*\([^)]*\)/g, '').trim();
+                  
+                  // Extract key ingredient name for comparison
+                  const qtyUnitMatch = normalized.match(/^(\d+(?:-\d+)?(?:\/\d+)?(?:\.\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])\s*(cup|cups|tsp|tbsp|oz|lb|g|gram|kg|ml|l|clove|cloves)\s+(.+)$/i);
+                  const ingredientName = qtyUnitMatch ? qtyUnitMatch[3].trim() : normalized;
+                  
+                  // Check if we already have this ingredient
+                  if (!existingIngSet.has(normalized) && !existingIngSet.has(baseIng) && !existingIngSet.has(ingredientName)) {
+                    currentIngredients.push(newIng);
+                    existingIngSet.add(normalized);
+                    existingIngSet.add(baseIng);
+                    existingIngSet.add(ingredientName);
+                    dbg('[TikTok] Added ingredient from steps:', newIng);
+                  } else {
+                    dbg('[TikTok] Skipped duplicate ingredient from steps:', newIng, 'matched:', normalized, baseIng, ingredientName);
+                  }
+                }
+                
+                setIngredients(currentIngredients);
+                dbg('[TikTok] Updated ingredients after extracting from steps:', currentIngredients.length, 'total');
+              }
+              
+              if (filteredSteps.length) {
+                setSteps(filteredSteps);
                 hasTikTokSteps = true;
               }
               bumpStage(2);
