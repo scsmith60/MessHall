@@ -658,6 +658,15 @@ export function parseRecipeText(input: string): ParseResult {
     } else {
       // This is an ingredient line
       const line = piece.text;
+      // Safety check: filter out headers that weren't caught by the sanitizer
+      // Headers ending with ":" that have no numbers/units should not be ingredients
+      if (line.trim().endsWith(':')) {
+        const base = line.trim().slice(0, -1).trim();
+        if (!/\d/.test(base) && !/(cup|cups|tsp|tbsp|oz|lb|g|gram|kg|ml|l)/i.test(base)) {
+          // This looks like a header, skip it
+          continue;
+        }
+      }
       if (!looksLikeIngredient(line) && !isLikelyPromoLine(line)) continue;
       
       let cand = cleanIngredientLine(line);

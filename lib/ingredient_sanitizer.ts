@@ -54,7 +54,10 @@ function looksLikeSectionHeader(s: string): boolean {
     
     // Check if it matches known section patterns
     if (headerHasHint(base)) return true;
-    if (/^for\s+(?:the\s+)?/i.test(base)) return true;
+    // Match "For [X]:" or "For the [X]:" patterns (e.g., "For noodles:", "For the cake:")
+    if (/^for\s+(?:the\s+)?[^:]+$/i.test(base)) return true;
+    // Match headers with parentheses like "Vegetables (optional but recommended):"
+    if (/^(vegetables?|noodles?|optional|recommended)(\s+\([^)]+\))?$/i.test(base)) return true;
     
     // Title case headers (e.g., "Chimichurri ingredients", "For the Cake")
     if (TITLE_CASE_HEADER.test(base)) return true;

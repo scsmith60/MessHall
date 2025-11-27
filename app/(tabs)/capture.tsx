@@ -926,9 +926,11 @@ function findDishTitleFromText(source: string, url: string): string | null {
       .replace(/\s{2,}/g, " ")
       .trim();
     
-    // Handle section headers like "For the Cake:" - split them onto separate lines
-    // so they don't get merged with ingredients
-    txt = txt.replace(/\b(For the [^:]+:)\s+/gi, "\n$1\n");
+    // Handle section headers - split them onto separate lines so they don't get merged with ingredients
+    // Match "For the [X]:" or "For [X]:" patterns
+    txt = txt.replace(/\b(For\s+(?:the\s+)?[^:]+:)\s+/gi, "\n$1\n");
+    // Also handle other headers like "Vegetables (optional but recommended):" or malformed ") Vegetables..."
+    txt = txt.replace(/\b([)}\]]*\s*[A-Z][a-z]+(?:\s+\([^)]+\))?:)\s+/gi, "\n$1\n");
 
     // rule A: split on explicit bullets
     txt = txt.replace(/\s*\u2022\s*/g, "\n\u2022 ");
@@ -948,10 +950,35 @@ function findDishTitleFromText(source: string, url: string): string | null {
       "\n"
     );
 
+    // rule D: split ingredients stuck together (e.g., "200 g egg noodles 1 tbsp oil")
+    // Split when we see a unit followed by ingredient name, then another quantity
+    txt = txt.replace(
+      new RegExp(`(${unitPattern})\\s+([a-z]+(?:\\s+[a-z]+)*)\\s+(?=\\d+\\s*${unitPattern})`, "gi"),
+      "$1 $2\n"
+    );
+
     const lines = txt
       .split(/\n+/)
       .map((l) => l.trim())
       .filter(Boolean)
+      .filter((l) => {
+        // Filter out section headers - anything ending with ":" that has no numbers/units
+        if (l.endsWith(':')) {
+          const base = l.slice(0, -1).trim();
+          // Remove any leading bullets/dashes that might have been added
+          const cleanBase = base.replace(/^[-•*\u2022]+\s*/, '').trim();
+          // If it has no numbers/units, check if it matches header patterns
+          if (!/\d/.test(cleanBase) && !/(cup|cups|tsp|tbsp|oz|lb|g|gram|kg|ml|l)/i.test(cleanBase)) {
+            // Match "For [X]:" or "For the [X]:" patterns
+            if (/^for\s+(?:the\s+)?[^:]+$/i.test(cleanBase)) return false;
+            // Match other header patterns like "Vegetables:", "Noodles:", etc.
+            if (/^(vegetables?|noodles?|ingredients?)(\s+\([^)]+\))?$/i.test(cleanBase)) return false;
+            // Match malformed headers starting with ")" or "]"
+            if (/^[)}\]]+\s*(vegetables?|noodles?)/i.test(cleanBase)) return false;
+          }
+        }
+        return true;
+      })
       .map((l) => (/^[-*\u2022]/.test(l) ? l : `\u2022 ${l}`));
 
     return ["Ingredients:", ...lines].join("\n");
@@ -1852,81 +1879,26 @@ function stitchBrokenSteps(lines: string[]): string[] {
           if (data.ingredients && data.ingredients.length >= 2) {
             // Handle ingredient sections - they might come from HTML extraction or JSON-LD
             if (data.ingredientSections && data.ingredientSections.length > 0) {
-              // Sections already extracted (from HTML fallback or merged from wprm_recipes)
+              // Sections already extracted (from HTML fallback)
               setIngredients(data.ingredients);
               setIngredientSections(data.ingredientSections);
               dbg('[RECIPE] Using ingredient sections from', source, ':', data.ingredientSections.length, 'sections');
-              dbg('[RECIPE] Section details:', data.ingredientSections.map(s => ({ name: s.name, count: s.ingredients.length })));
-              bumpStage(2);
-              // Don't try to detect sections from HTML if we already have them
             } else if (html && (source === 'jsonld' || source === 'microdata')) {
               // Try to detect sections from HTML if we have it
               // This helps preserve section headers like "For Muffin Batter:" that aren't in JSON-LD
               // IMPORTANT: Use JSON-LD ingredients (they're correct), only use HTML to find section headers
               try {
-                // Helper to decode HTML entities and clean whitespace
-                const cleanHeaderText = (text: string): string => {
-                  if (!text) return '';
-                  // Decode HTML entities
-                  let cleaned = text
-                    .replace(/&nbsp;/g, ' ')
-                    .replace(/&#8217;/g, "'")
-                    .replace(/&#8211;/g, '-')
-                    .replace(/&#8212;/g, '--')
-                    .replace(/&#8220;/g, '"')
-                    .replace(/&#8221;/g, '"')
-                    .replace(/&#(\d+);/g, (_, num) => {
-                      const code = parseInt(num, 10);
-                      if (code === 160) return ' '; // Non-breaking space
-                      if (code >= 32 && code <= 126) return String.fromCharCode(code);
-                      return ' ';
-                    })
-                    .replace(/<[^>]+>/g, '') // Remove HTML tags
-                    .replace(/\s+/g, ' ') // Normalize whitespace
-                    .trim();
-                  return cleaned;
-                };
-                
-                // Find section headers in HTML - be more specific to only match ingredient-related headers
-                // Look for headers like "For Muffin Batter:", "Ingredients:", "For the Glaze:", etc.
-                const sectionHeaderRegex = /<(?:h[2-4]|p|div|strong|b)[^>]*class[^>]*(?:ingredient|recipe|section|header)[^>]*>([\s\S]*?)<\/(?:h[2-4]|p|div|strong|b)>/gi;
+                // Find section headers in HTML (like "For Muffin Batter:", "For Streusel Topping:")
+                const sectionHeaderRegex = /<(?:h[2-4]|p|div|strong|b|li|span)[^>]*>([^<]*(?:For\s+(?:the\s+)?[^:]+:|For\s+[^:]+:)[^<]*)<\/(?:h[2-4]|p|div|strong|b|li|span)>/gi;
                 const foundHeaders: Array<{text: string, index: number}> = [];
                 let headerMatch;
                 while ((headerMatch = sectionHeaderRegex.exec(html)) !== null) {
-                  let headerText = cleanHeaderText(headerMatch[1]);
-                  // Only accept headers that are ingredient-related
-                  if (headerText && (
-                    /^(ingredients?|for\s+(?:the\s+)?[^:]+|equipment|supplies)/i.test(headerText) ||
-                    /^[A-Z][^:]{3,50}:\s*$/i.test(headerText) // Capitalized phrase ending with colon
-                  )) {
-                    // Remove trailing colon and clean
-                    headerText = headerText.replace(/:\s*$/, '').trim();
-                    if (headerText.length > 3 && headerText.length < 100) {
-                      foundHeaders.push({ 
-                        text: headerText, 
-                        index: headerMatch.index || 0 
-                      });
-                    }
-                  }
-                }
-                
-                // Also try a simpler pattern for common ingredient section headers
-                // But be more strict - only match actual headers (h2-h4) or short text that starts with ingredient keywords
-                if (foundHeaders.length === 0) {
-                  // First try to match h2-h4 tags that contain ingredient keywords
-                  const headerTagPattern = /<(h[2-4])[^>]*>([^<]*(?:ingredients?|for\s+(?:the\s+)?[^:]+:)[^<]*)<\/\1>/gi;
-                  while ((headerMatch = headerTagPattern.exec(html)) !== null) {
-                    let headerText = cleanHeaderText(headerMatch[2]);
-                    // Only accept if it starts with ingredient keywords and is short (like a header)
-                    if (headerText && /^(ingredients?|for\s+(?:the\s+)?[^:]+|equipment|supplies)/i.test(headerText) && headerText.length < 150) {
-                      headerText = headerText.replace(/:\s*$/, '').trim();
-                      if (headerText.length > 3 && headerText.length < 100) {
-                        foundHeaders.push({ 
-                          text: headerText, 
-                          index: headerMatch.index || 0 
-                        });
-                      }
-                    }
+                  const headerText = headerMatch[1].replace(/<[^>]+>/g, '').trim();
+                  if (headerText && /For\s+(?:the\s+)?[^:]+:/i.test(headerText)) {
+                    foundHeaders.push({ 
+                      text: headerText.replace(/:/g, '').trim(), 
+                      index: headerMatch.index || 0 
+                    });
                   }
                 }
                 
@@ -1959,63 +1931,38 @@ function stitchBrokenSteps(lines: string[]): string[] {
                     dbg('[RECIPE] Section', foundHeaders[i].text, 'has', count, 'ingredients');
                   }
                   
-                  // Filter out sections that don't actually have ingredients (likely false positives)
-                  const validSections: Array<{text: string, index: number, count: number}> = [];
-                  for (let i = 0; i < foundHeaders.length; i++) {
-                    // Only include sections that:
-                    // 1. Have at least 2 ingredients, OR
-                    // 2. Are the first section and have at least 1 ingredient (might be the main ingredient list)
-                    if (sectionCounts[i] >= 2 || (i === 0 && sectionCounts[i] >= 1)) {
-                      // Also check that the header text is actually ingredient-related
-                      const headerText = foundHeaders[i].text.toLowerCase();
-                      const isIngredientRelated = /ingredient|equipment|supplies|for\s+(?:the\s+)?(?:muffin|batter|glaze|topping|filling|dough|crust|sauce|dressing|marinade)/i.test(headerText);
-                      if (isIngredientRelated || sectionCounts[i] >= 3) {
-                        validSections.push({
-                          text: foundHeaders[i].text,
-                          index: foundHeaders[i].index,
-                          count: sectionCounts[i]
-                        });
-                      }
-                    }
-                  }
-                  
-                  dbg('[RECIPE] Valid ingredient sections after filtering:', validSections.map(s => `${s.text} (${s.count} ingredients)`));
-                  
                   // Create sections and distribute JSON-LD ingredients
                   const sections: IngredientSection[] = [];
                   let ingredientIndex = 0;
                   
-                  // If we have valid sections, use them; otherwise, don't create sections
-                  if (validSections.length > 0) {
-                    for (let i = 0; i < validSections.length && ingredientIndex < data.ingredients.length; i++) {
-                      const sectionName = validSections[i].text;
-                      const count = validSections[i].count;
-                      const sectionIngredients: string[] = [];
-                      
-                      // Take the specified number of ingredients for this section
-                      const takeCount = count > 0 ? Math.min(count, data.ingredients.length - ingredientIndex) : 
-                                       (i === validSections.length - 1 ? data.ingredients.length - ingredientIndex : 0);
-                      
-                      for (let j = 0; j < takeCount && ingredientIndex < data.ingredients.length; j++) {
-                        sectionIngredients.push(data.ingredients[ingredientIndex]);
-                        ingredientIndex++;
-                      }
-                      
-                      if (sectionIngredients.length > 0) {
-                        sections.push({ name: sectionName, ingredients: sectionIngredients });
-                      }
+                  for (let i = 0; i < foundHeaders.length && ingredientIndex < data.ingredients.length; i++) {
+                    const sectionName = foundHeaders[i].text;
+                    const count = sectionCounts[i] || 0;
+                    const sectionIngredients: string[] = [];
+                    
+                    // Take the specified number of ingredients for this section
+                    const takeCount = count > 0 ? Math.min(count, data.ingredients.length - ingredientIndex) : 
+                                     (i === foundHeaders.length - 1 ? data.ingredients.length - ingredientIndex : 0);
+                    
+                    for (let j = 0; j < takeCount && ingredientIndex < data.ingredients.length; j++) {
+                      sectionIngredients.push(data.ingredients[ingredientIndex]);
+                      ingredientIndex++;
                     }
                     
-                    // Add any remaining ingredients to the last section
-                    if (ingredientIndex < data.ingredients.length && sections.length > 0) {
-                      while (ingredientIndex < data.ingredients.length) {
-                        sections[sections.length - 1].ingredients.push(data.ingredients[ingredientIndex]);
-                        ingredientIndex++;
-                      }
-                    } else if (ingredientIndex < data.ingredients.length) {
-                      // No sections created, create ungrouped
-                      sections.push({ name: null, ingredients: data.ingredients.slice(ingredientIndex) });
+                    if (sectionIngredients.length > 0) {
+                      sections.push({ name: sectionName, ingredients: sectionIngredients });
                     }
+                  }
+                  
+                  // Add any remaining ingredients to the last section
+                  if (ingredientIndex < data.ingredients.length && sections.length > 0) {
+                    while (ingredientIndex < data.ingredients.length) {
+                      sections[sections.length - 1].ingredients.push(data.ingredients[ingredientIndex]);
+                      ingredientIndex++;
+                    }
+                  } else if (ingredientIndex < data.ingredients.length) {
+                    // No sections created, create ungrouped
+                    sections.push({ name: null, ingredients: data.ingredients.slice(ingredientIndex) });
                   }
                   
                   if (sections.length > 0) {
@@ -2099,9 +2046,6 @@ function stitchBrokenSteps(lines: string[]): string[] {
         };
 
         const jsonLd = extractRecipeFromJsonLd(html);
-        // Also try HTML extraction to get wprm_recipes sections
-        const htmlExtracted = extractRecipeFromHtml(html);
-        
         if (jsonLd) {
           dbg('[RECIPE] JSON-LD recipe found');
           dbg('[RECIPE] JSON-LD extracted:', {
@@ -2112,38 +2056,6 @@ function stitchBrokenSteps(lines: string[]): string[] {
             steps: jsonLd.steps?.slice(0, 2),
             debugInfo: (jsonLd as any).__debugInfo,
           });
-          
-          // If HTML extraction found sections (from wprm_recipes), merge them with JSON-LD data
-          if (htmlExtracted?.ingredientSections && htmlExtracted.ingredientSections.length > 0) {
-            dbg('[RECIPE] Found', htmlExtracted.ingredientSections.length, 'sections from HTML/wprm, merging with JSON-LD');
-            dbg('[RECIPE] Section details:', htmlExtracted.ingredientSections.map(s => ({ name: s.name, count: s.ingredients.length })));
-            // Redistribute JSON-LD ingredients into the HTML sections
-            // This ensures we use the correct ingredients from JSON-LD but keep the section structure
-            const jsonLdCount = jsonLd.ingredients?.length || 0;
-            const htmlCount = htmlExtracted.ingredients?.length || 0;
-            
-            let ingIndex = 0;
-            const mergedSections = htmlExtracted.ingredientSections.map((section, idx) => {
-              const sectionSize = section.ingredients.length;
-              // Last section gets all remaining ingredients
-              const endIndex = idx === htmlExtracted.ingredientSections.length - 1 
-                ? jsonLdCount 
-                : Math.min(ingIndex + sectionSize, jsonLdCount);
-              const sectionIngredients = jsonLd.ingredients?.slice(ingIndex, endIndex) || [];
-              ingIndex = endIndex;
-              return {
-                name: section.name,
-                ingredients: sectionIngredients
-              };
-            });
-            
-            (jsonLd as any).ingredientSections = mergedSections;
-            dbg('[RECIPE] Merged sections:', mergedSections.map(s => ({ name: s.name, count: s.ingredients.length })));
-            dbg('[RECIPE] Total ingredients in merged sections:', mergedSections.reduce((sum, s) => sum + s.ingredients.length, 0), 'vs JSON-LD:', jsonLdCount);
-          } else {
-            dbg('[RECIPE] No sections found in HTML extraction (htmlExtracted:', !!htmlExtracted, 'sections:', htmlExtracted?.ingredientSections?.length || 0, ')');
-          }
-          
           // Auto-discover this site if it's not in our list
           await discoverRecipeSiteIfNeeded(url, html);
           const jsonApplied = await applyExtraction(jsonLd, 'jsonld', { includeMeta: true });
@@ -2186,8 +2098,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
         // Fallback: Try HTML parsing for sites without proper JSON-LD or microdata
         // (e.g., girlcarnivore.com and similar sites)
         // Note: HTML extraction doesn't return title - we use OG title instead
-        // (htmlExtracted was already extracted above for merging with JSON-LD)
-        if (htmlExtracted && !jsonLd) {
+        const htmlExtracted = extractRecipeFromHtml(html);
+        if (htmlExtracted) {
           dbg('[RECIPE] HTML fallback extraction found');
           dbg('[RECIPE] HTML extracted:', {
             ingredientsCount: htmlExtracted.ingredients?.length ?? 0,
@@ -3149,11 +3061,328 @@ function stitchBrokenSteps(lines: string[]): string[] {
 
             if (partitioned.ingredients.length >= 2 || normalizedSteps.length >= 1) {
               if (partitioned.ingredients.length) {
-                setIngredients(partitioned.ingredients);
-                hasTikTokIngredients = hasTikTokIngredients || partitioned.ingredients.some((line) => line && line.trim());
+                // Helper to filter artifacts from any ingredient list
+                const filterArtifacts = (ing: string): boolean => {
+                  const t = ing.trim();
+                  if (!t) return false;
+                  
+                  // Remove leading bullets/dashes for checking
+                  const cleanT = t.replace(/^[-•*\u2022]+\s*/, '').trim();
+                  
+                  // FIRST: Explicit check for malformed headers starting with ")"
+                  if (t.startsWith(')') && /vegetables/i.test(t) && t.endsWith(':')) {
+                    dbg('[TikTok] Filtering malformed header starting with ):', t);
+                    return false;
+                  }
+                  
+                  // SECOND: Filter number artifacts: "2 0" (two numbers separated by space)
+                  if (/^\d+\s+\d+\s*$/.test(cleanT)) {
+                    dbg('[TikTok] Filtering number artifact:', t);
+                    return false;
+                  }
+                  
+                  // THIRD: If it ends with ":" and has no numbers/units, it's a header - filter it
+                  if (cleanT.endsWith(':')) {
+                    const base = cleanT.slice(0, -1).trim();
+                    // Remove any leading brackets/parentheses for checking
+                    const cleanBase = base.replace(/^[)}\]]+\s*/, '').trim();
+                    
+                    // Check for numbers (including fractions)
+                    const hasNumbers = /\d/.test(cleanBase) || /[½¼¾⅓⅔⅛⅜⅝⅞]/.test(cleanBase);
+                    // Check for units with word boundaries
+                    const hasUnits = /\b(cup|cups|tsp|tbsp|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs)\b/i.test(cleanBase);
+                    
+                    // If no numbers and no units, it's a header - filter it
+                    if (!hasNumbers && !hasUnits && cleanBase.length < 60) {
+                      dbg('[TikTok] Filtering header (ends with :, no numbers/units):', t, 'cleanBase:', cleanBase);
+                      return false;
+                    }
+                  }
+                  return true;
+                };
+                
+                // Helper function to split ingredients stuck together
+                function splitStuckIngredients(text: string): string[] {
+                  const trimmed = text.trim();
+                  if (!trimmed) return [text];
+                  
+                  // Simple strategy: Only split when we clearly see multiple ingredients
+                  // Look for: space + capital letter word (outside parentheses) that indicates a new ingredient
+                  // Examples:
+                  // - "1 tbsp oil Salt (for boiling)" → split before "Salt"
+                  // - "½ capsicum (thinly sliced) 2-3 spring onions" → split before "2-3"
+                  // - "200 g egg noodles" → DON'T split (one ingredient)
+                  
+                  const splitPoints: number[] = [0]; // Always start at beginning
+                  let parenDepth = 0;
+                  
+                  for (let i = 0; i < trimmed.length; i++) {
+                    if (trimmed[i] === '(') parenDepth++;
+                    if (trimmed[i] === ')') parenDepth--;
+                    
+                    // Look for space followed by capital letter (potential new ingredient start)
+                    if (parenDepth === 0 && trimmed[i] === ' ' && i + 1 < trimmed.length) {
+                      const nextChar = trimmed[i + 1];
+                      
+                      // Check if it's a capital letter (likely new ingredient like "Salt")
+                      if (nextChar >= 'A' && nextChar <= 'Z') {
+                        // Make sure we're not at the start of the line or right after a quantity
+                        // Check if there's substantial content before this (at least 5 chars)
+                        if (i > 5) {
+                          // Check if the previous word ended (not mid-word)
+                          const beforeSpace = trimmed.slice(Math.max(0, i - 10), i).trim();
+                          // If we have a complete ingredient before this (has quantity/unit or is substantial)
+                          if (beforeSpace.length > 3) {
+                            // Check if this capital word is followed by something that looks like an ingredient
+                            const afterCapital = trimmed.slice(i + 1, Math.min(trimmed.length, i + 20));
+                            // If it looks like an ingredient (has parentheses or is a known ingredient word)
+                            if (/^[A-Z][a-z]+(\s+\(|\s+[a-z]|$)/.test(afterCapital)) {
+                              splitPoints.push(i + 1);
+                            }
+                          }
+                        }
+                      }
+                      
+                      // Also check for quantity ranges (e.g., "2-3", "5-6") that start new ingredients
+                      if (i + 3 < trimmed.length) {
+                        const potentialRange = trimmed.slice(i + 1, i + 4);
+                        if (/^\d+-\d+/.test(potentialRange)) {
+                          // Check if there's a complete ingredient before this
+                          const beforeRange = trimmed.slice(0, i).trim();
+                          if (beforeRange.length > 5 && /[a-z]/.test(beforeRange)) {
+                            splitPoints.push(i + 1);
+                          }
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Add end point
+                  splitPoints.push(trimmed.length);
+                  
+                  // Remove duplicates and sort
+                  const uniqueSplits = Array.from(new Set(splitPoints)).sort((a, b) => a - b);
+                  
+                  // If we have multiple split points, split the text
+                  if (uniqueSplits.length > 2) {
+                    const parts: string[] = [];
+                    for (let i = 0; i < uniqueSplits.length - 1; i++) {
+                      const part = trimmed.slice(uniqueSplits[i], uniqueSplits[i + 1]).trim();
+                      if (part) parts.push(part);
+                    }
+                    return parts.length > 0 ? parts : [trimmed];
+                  } else {
+                    // No splits found, return original
+                    return [trimmed];
+                  }
+                }
+                
+                // First, split ingredients that are stuck together on the same line
+                const splitIngredients: string[] = [];
+                for (const ing of partitioned.ingredients) {
+                  const trimmed = ing.trim();
+                  
+                  // Check if line has a header at the end
+                  const headerMatch = trimmed.match(/^(.+?)\s+(For\s+(?:the\s+)?[^:]+|Vegetables?\s*\([^)]+\)):\s*$/i);
+                  if (headerMatch) {
+                    // Split: ingredient part and header part
+                    const ingredientPart = headerMatch[1].trim();
+                    const headerPart = headerMatch[2] + ':';
+                    if (ingredientPart) {
+                      // Further split the ingredient part if it has multiple ingredients
+                      splitIngredients.push(...splitStuckIngredients(ingredientPart));
+                    }
+                    if (headerPart) splitIngredients.push(headerPart);
+                  } else {
+                    // Check if line has multiple ingredients stuck together (no header)
+                    const parts = splitStuckIngredients(trimmed);
+                    splitIngredients.push(...parts);
+                  }
+                }
+                
+                // Now filter the split list
+                dbg('[TikTok] Before filter - ingredients:', splitIngredients);
+                const cleanedFlat = splitIngredients.filter(filterArtifacts);
+                dbg('[TikTok] After filter - ingredients:', cleanedFlat);
+                
+                // Deduplicate ingredients (normalize and compare)
+                const deduplicated: string[] = [];
+                const seen = new Set<string>();
+                for (const ing of cleanedFlat) {
+                  // Normalize for comparison: lowercase, remove extra spaces, remove parentheticals
+                  const normalized = ing.toLowerCase().replace(/\s+/g, ' ').trim();
+                  const baseIng = normalized.replace(/\s*\([^)]*\)/g, '').trim();
+                  // Check if we've seen this base ingredient
+                  if (!seen.has(normalized) && !seen.has(baseIng)) {
+                    seen.add(normalized);
+                    seen.add(baseIng);
+                    deduplicated.push(ing);
+                  } else {
+                    dbg('[TikTok] Deduplicating:', ing);
+                  }
+                }
+                
+                dbg('[TikTok] After deduplication - ingredients:', deduplicated);
+                dbg('[TikTok] Filtered ingredients:', splitIngredients.length, '->', cleanedFlat.length, '->', deduplicated.length);
+                setIngredients(deduplicated);
+                hasTikTokIngredients = hasTikTokIngredients || cleanedFlat.some((line) => line && line.trim());
+                
                 // Use ingredient sections if available, otherwise use flat list
                 if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
-                  setIngredientSections(parsed.ingredientSections);
+                  dbg('[TikTok] Raw sections from parser:', parsed.ingredientSections.map(s => ({ name: s.name, count: s.ingredients.length, ingredients: s.ingredients })));
+                  // Filter sections and their ingredients - split stuck ingredients first, then filter
+                  const cleanedSections = parsed.ingredientSections.map(section => {
+                    let name = section.name;
+                    // Filter out "Captions" and other non-recipe section headers
+                    if (name && /^(captions?|instructions?|steps?|directions?|method)$/i.test(name.trim())) {
+                      dbg('[TikTok] Filtering non-recipe section:', name);
+                      return null;
+                    }
+                    // Fix truncated section names like "bles (optional but recommended)" -> "Vegetables (optional but recommended)"
+                    if (name && /^[a-z]les\s*\(/i.test(name)) {
+                      const match = name.match(/^[a-z]les\s*(\([^)]+\))/i);
+                      if (match) name = `Vegetables ${match[1]}`.trim();
+                    }
+                    // Fix leading brackets in section names
+                    if (name) name = name.replace(/^[)}\]]+\s*/, '').trim();
+                    
+                    dbg('[TikTok] Processing section:', name, 'with', section.ingredients.length, 'ingredients:', section.ingredients);
+                    
+                    // Split stuck ingredients in section ingredients, then filter
+                    const splitSectionIngredients: string[] = [];
+                    for (const ing of section.ingredients) {
+                      const trimmed = ing.trim();
+                      const parts = splitStuckIngredients(trimmed);
+                      splitSectionIngredients.push(...parts);
+                    }
+                    
+                    dbg('[TikTok] After splitting section ingredients:', splitSectionIngredients);
+                    const filtered = splitSectionIngredients.filter(filterArtifacts);
+                    dbg('[TikTok] After filtering section ingredients:', filtered);
+                    
+                    // Deduplicate section ingredients
+                    const deduplicatedSection: string[] = [];
+                    const seenSection = new Set<string>();
+                    for (const ing of filtered) {
+                      const normalized = ing.toLowerCase().replace(/\s+/g, ' ').trim();
+                      const baseIng = normalized.replace(/\s*\([^)]*\)/g, '').trim();
+                      if (!seenSection.has(normalized) && !seenSection.has(baseIng)) {
+                        seenSection.add(normalized);
+                        seenSection.add(baseIng);
+                        deduplicatedSection.push(ing);
+                      }
+                    }
+                    
+                    return {
+                      name: name || section.name,
+                      ingredients: deduplicatedSection
+                    };
+                  }).filter(s => s !== null && s.ingredients.length > 0) as Array<{name: string, ingredients: string[]}>;
+                  
+                  dbg('[TikTok] Set ingredient sections:', cleanedSections.length, 'sections with', cleanedSections.reduce((sum, s) => sum + s.ingredients.length, 0), 'total ingredients');
+                  
+                  // If we filtered out all sections (e.g., "Captions"), try to rebuild from the flat list
+                  if (cleanedSections.length === 0 && deduplicated.length > 0) {
+                    // Look for section headers in the original caption to create proper sections
+                    const captionText = capRecipe || '';
+                    const sectionHeaders: Array<{name: string, index: number}> = [];
+                    
+                    // Find "For noodles:" and "Vegetables (optional but recommended):" in the caption
+                    const forNoodlesMatch = captionText.match(/For\s+noodles\s*:/i);
+                    const vegetablesMatch = captionText.match(/Vegetables?\s*\([^)]+\)\s*:/i);
+                    
+                    if (forNoodlesMatch) {
+                      sectionHeaders.push({ name: 'For noodles', index: forNoodlesMatch.index || 0 });
+                    }
+                    if (vegetablesMatch) {
+                      const matchText = vegetablesMatch[0].replace(/:\s*$/, '').trim();
+                      sectionHeaders.push({ name: matchText, index: vegetablesMatch.index || 0 });
+                    }
+                    
+                    // If we found headers, try to assign ingredients to sections
+                    if (sectionHeaders.length > 0) {
+                      sectionHeaders.sort((a, b) => a.index - b.index);
+                      const rebuiltSections: Array<{name: string, ingredients: string[]}> = [];
+                      
+                      // Assign ingredients based on their position in the original caption
+                      // For each section, find ingredients that appear after its header but before the next header
+                      for (let i = 0; i < sectionHeaders.length; i++) {
+                        const header = sectionHeaders[i];
+                        const nextHeader = sectionHeaders[i + 1];
+                        const sectionIngredients: string[] = [];
+                        
+                        // Get the text for this section (from this header to next header, or to end)
+                        const sectionStart = header.index + (captionText.slice(header.index).match(/:\s*/) || [''])[0].length;
+                        const sectionEnd = nextHeader ? nextHeader.index : captionText.length;
+                        const sectionText = captionText.slice(sectionStart, sectionEnd).toLowerCase();
+                        
+                        dbg('[TikTok] Section text for', header.name, ':', sectionText.substring(0, 100));
+                        
+                        // Match ingredients from deduplicated list that appear in this section
+                        // Use a more robust matching: check if key parts of the ingredient appear
+                        for (const ing of deduplicated) {
+                          // Normalize both for comparison
+                          const ingLower = ing.toLowerCase();
+                          // Extract key parts: quantity, unit, and main ingredient name
+                          const qtyMatch = ingLower.match(/(\d+(?:-\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])/);
+                          const unitMatch = ingLower.match(/\b(cup|cups|tsp|tbsp|oz|g|gram|kg|ml|l|clove|cloves|medium|large|small)\b/);
+                          const mainIngredient = ingLower.replace(/\([^)]*\)/g, '').replace(/\d+/g, '').replace(/[½¼¾⅓⅔⅛⅜⅝⅞]/g, '').replace(/\b(cup|cups|tsp|tbsp|oz|g|gram|kg|ml|l|clove|cloves|medium|large|small)\b/g, '').trim();
+                          
+                          // Check if this ingredient appears in the section text
+                          // Try multiple matching strategies
+                          let matches = false;
+                          
+                          // Strategy 1: Direct substring match (normalized)
+                          if (sectionText.includes(ingLower.replace(/\s+/g, ' '))) {
+                            matches = true;
+                          }
+                          // Strategy 2: Match by main ingredient name (at least 3 chars)
+                          else if (mainIngredient.length >= 3 && sectionText.includes(mainIngredient)) {
+                            matches = true;
+                          }
+                          // Strategy 3: Match by quantity + main word (for cases like "2-3 spring onions")
+                          else if (qtyMatch && mainIngredient.length >= 3) {
+                            const qty = qtyMatch[1];
+                            const mainWords = mainIngredient.split(/\s+/).filter(w => w.length >= 3);
+                            if (mainWords.length > 0) {
+                              const keyPhrase = `${qty} ${mainWords[0]}`;
+                              if (sectionText.includes(keyPhrase)) {
+                                matches = true;
+                              }
+                            }
+                          }
+                          
+                          if (matches) {
+                            sectionIngredients.push(ing);
+                            dbg('[TikTok] Matched ingredient to section', header.name, ':', ing);
+                          }
+                        }
+                        
+                        if (sectionIngredients.length > 0) {
+                          rebuiltSections.push({ name: header.name, ingredients: sectionIngredients });
+                        }
+                      }
+                      
+                      // Check if we missed any ingredients - assign remaining to the last section
+                      const assignedIngredients = new Set(rebuiltSections.flatMap(s => s.ingredients));
+                      const remainingIngredients = deduplicated.filter(ing => !assignedIngredients.has(ing));
+                      if (remainingIngredients.length > 0 && rebuiltSections.length > 0) {
+                        dbg('[TikTok] Assigning remaining ingredients to last section:', remainingIngredients);
+                        rebuiltSections[rebuiltSections.length - 1].ingredients.push(...remainingIngredients);
+                      }
+                      
+                      if (rebuiltSections.length > 0) {
+                        dbg('[TikTok] Rebuilt sections from headers:', rebuiltSections);
+                        setIngredientSections(rebuiltSections);
+                      } else {
+                        setIngredientSections(null);
+                      }
+                    } else {
+                      setIngredientSections(null);
+                    }
+                  } else {
+                    setIngredientSections(cleanedSections.length > 0 ? cleanedSections : null);
+                  }
                 } else {
                   setIngredientSections(null);
                 }
@@ -3556,8 +3785,6 @@ function stitchBrokenSteps(lines: string[]): string[] {
         // Preserve sections when saving
         let pos = 1;
         for (const section of ingredientSections) {
-          // Clean and trim section name to remove extra spaces
-          const sectionName = section.name ? section.name.trim().replace(/\s+/g, ' ') : null;
           for (const ing of section.ingredients) {
             const trimmed = (ing || "").trim();
             if (trimmed) {
@@ -3565,7 +3792,7 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 recipe_id: recipeId,
                 pos: pos++,
                 text: trimmed,
-                section_name: sectionName
+                section_name: section.name || null
               });
               savedIngredients.push(trimmed);
             }

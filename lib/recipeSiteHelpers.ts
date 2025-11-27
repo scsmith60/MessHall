@@ -690,7 +690,7 @@ export function extractRecipeFromHtml(html: string): {
             // Extract ingredients - wprm has ingredients in recipe.ingredients array
             if (recipe.ingredients && Array.isArray(recipe.ingredients)) {
               const ingredients: string[] = [];
-              let ingredientSections: Array<{ name: string | null; ingredients: string[] }> = [];
+              const ingredientSections: Array<{ name: string | null; ingredients: string[] }> = [];
               let currentSection: { name: string | null; ingredients: string[] } | null = null;
               
               console.log('[HTML-EXTRACT] wprm ingredients array length:', recipe.ingredients.length);
@@ -701,13 +701,12 @@ export function extractRecipeFromHtml(html: string): {
                 if (recipe.ingredients.length > 1) {
                   console.log('[HTML-EXTRACT] Second ingredient sample:', JSON.stringify(recipe.ingredients[1], null, 2));
                 }
-                // Log ALL ingredients to see if any are headers
-                for (let i = 0; i < Math.min(15, recipe.ingredients.length); i++) {
+                // Log a few more to see if we can spot section headers
+                for (let i = 0; i < Math.min(10, recipe.ingredients.length); i++) {
                   const ing = recipe.ingredients[i];
                   const hasAmount = !!(ing.amount || ing.unit);
                   const name = ing.name ? String(ing.name).trim() : '';
-                  const isAllCaps = /^[A-Z\s]{5,50}$/.test(name);
-                  console.log(`[HTML-EXTRACT] Ingredient ${i}: type="${ing.type}", name="${name}", hasAmount=${hasAmount}, isAllCaps=${isAllCaps}`);
+                  console.log(`[HTML-EXTRACT] Ingredient ${i}: type="${ing.type}", name="${name}", hasAmount=${hasAmount}`);
                 }
               }
               
@@ -716,44 +715,30 @@ export function extractRecipeFromHtml(html: string): {
                 // Headers can be: type 'header'/'group', OR names matching patterns (with or without colons)
                 const nameTrimmed = ing.name ? String(ing.name).trim().replace(/[:：]$/, '') : '';
                 
+                // More flexible header pattern matching - check for common section header patterns
+                const matchesHeaderPattern = nameTrimmed && (
+                  /^(FOR\s+THE|FOR\s+|TO\s+SERVE|INGREDIENTS\s+FOR|COOK\s+THE|MAKE\s+)/i.test(nameTrimmed) ||
+                  /^[A-Z\s]{5,30}$/.test(nameTrimmed) // All caps, 5-30 chars (likely a section header)
+                );
+                
                 // Don't treat items with amounts/units as headers
                 const hasAmountOrUnit = !!(ing.amount || ing.unit);
                 
-                // Check for all-caps section headers (like "BROWN SUGAR HONEY GLAZE")
-                // All-caps headers are almost always section headers, even if they contain ingredient words
-                const isAllCapsHeader = nameTrimmed && /^[A-Z\s]{5,50}$/.test(nameTrimmed) && !hasAmountOrUnit;
-                
-                // More flexible header pattern matching - check for common section header patterns
-                const matchesHeaderPattern = nameTrimmed && (
-                  /^(FOR\s+THE|FOR\s+|TO\s+SERVE|INGREDIENTS\s+FOR|COOK\s+THE|MAKE\s+|GLAZE|TOPPING|FILLING|SAUCE|DRESSING|MARINADE|RUB|SEASONING)/i.test(nameTrimmed) ||
-                  isAllCapsHeader
-                );
-                
                 // Don't treat ingredient-like names as headers (even if they match patterns)
-                // BUT: all-caps headers are exceptions - they're almost always section headers
                 // If it has ingredient words but no amount/unit, it's probably still an ingredient
-                const looksLikeIngredient = !isAllCapsHeader && nameTrimmed && /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|egg|eggs|oil|bread)\b/i.test(nameTrimmed);
+                const looksLikeIngredient = nameTrimmed && /\b(salt|pepper|butter|flour|sugar|garlic|onion|lemon|parsley|shrimp|chicken|beef|pork|wine|broth|sauce|seasoning|egg|eggs|oil|bread)\b/i.test(nameTrimmed);
                 
                 // Check if it's explicitly a header type OR matches header patterns
                 const isHeader = (ing.type === 'header' || ing.type === 'group') ||
-                                (matchesHeaderPattern && !hasAmountOrUnit && (!looksLikeIngredient || isAllCapsHeader) && nameTrimmed.length > 3);
-                
-                // Debug logging for header detection
-                if (nameTrimmed && nameTrimmed.length > 3 && !hasAmountOrUnit) {
-                  console.log(`[HTML-EXTRACT] Checking "${nameTrimmed}": isAllCapsHeader=${isAllCapsHeader}, matchesHeaderPattern=${!!matchesHeaderPattern}, looksLikeIngredient=${!!looksLikeIngredient}, isHeader=${isHeader}`);
-                }
+                                (matchesHeaderPattern && !hasAmountOrUnit && !looksLikeIngredient && nameTrimmed.length > 3);
                 
                 if (isHeader && ing.name) {
                   // Save previous section if it exists
                   if (currentSection && currentSection.ingredients.length > 0) {
                     ingredientSections.push(currentSection);
                   }
-                  // Start new section - clean and normalize the section name
-                  // Remove trailing colon, normalize whitespace, and trim
-                  const sectionName = nameTrimmed
-                    .replace(/:\s*$/, '') // Remove trailing colon
-                    .replace(/\s+/g, ' ') // Normalize multiple spaces to single space
-                    .trim();
+                  // Start new section - remove trailing colon if present
+                  const sectionName = nameTrimmed;
                   console.log('[HTML-EXTRACT] Found section header:', sectionName, 'type:', ing.type, 'original:', ing.name);
                   currentSection = { name: sectionName, ingredients: [] };
                 } else if (ing.name && (ing.amount || ing.unit || ing.type === 'ingredient')) {
@@ -782,72 +767,6 @@ export function extractRecipeFromHtml(html: string): {
               // Add last section
               if (currentSection && currentSection.ingredients.length > 0) {
                 ingredientSections.push(currentSection);
-              }
-              
-              // If we didn't find any section headers in wprm_recipes, try to find them in the HTML
-              // This handles cases where section headers like "BROWN SUGAR HONEY GLAZE" are in HTML but not in wprm data
-              if (ingredientSections.length === 1 && ingredientSections[0].name === null && ingredients.length > 0) {
-                console.log('[HTML-EXTRACT] No section headers found in wprm_recipes, checking HTML...');
-                
-                // Look for section headers in HTML near the ingredient list
-                // Common patterns: <h3>BROWN SUGAR HONEY GLAZE</h3>, <strong>BROWN SUGAR HONEY GLAZE</strong>, etc.
-                const sectionHeaderPatterns = [
-                  /<(?:h[2-4]|strong|b|div)[^>]*class[^>]*(?:ingredient|recipe|section|header)[^>]*>([^<]*(?:BROWN\s+SUGAR|GLAZE|TOPPING|FILLING|SAUCE|FOR\s+THE)[^<]*)<\/(?:h[2-4]|strong|b|div)>/gi,
-                  /<(?:h[2-4]|strong|b)[^>]*>([A-Z\s]{5,50}(?:GLAZE|TOPPING|FILLING|SAUCE|DRESSING|MARINADE|RUB))<\/(?:h[2-4]|strong|b)>/gi,
-                ];
-                
-                const foundHtmlHeaders: Array<{name: string, index: number}> = [];
-                for (const pattern of sectionHeaderPatterns) {
-                  let match;
-                  while ((match = pattern.exec(html)) !== null) {
-                    const headerText = match[1]
-                      .replace(/<[^>]+>/g, '')
-                      .replace(/\s+/g, ' ')
-                      .trim();
-                    if (headerText && headerText.length >= 5 && headerText.length <= 50) {
-                      foundHtmlHeaders.push({
-                        name: headerText,
-                        index: match.index || 0
-                      });
-                    }
-                  }
-                }
-                
-                if (foundHtmlHeaders.length > 0) {
-                  console.log('[HTML-EXTRACT] Found section headers in HTML:', foundHtmlHeaders.map(h => h.name));
-                  
-                  // Try to match HTML headers with ingredient positions
-                  // For now, if we find a header with "GLAZE" and we have 8+ ingredients, 
-                  // assume the first 2 are main ingredients and the rest are glaze
-                  const glazeHeader = foundHtmlHeaders.find(h => /GLAZE/i.test(h.name));
-                  if (glazeHeader && ingredients.length >= 8) {
-                    console.log('[HTML-EXTRACT] Detected glaze section, splitting ingredients');
-                    // Create new sections array instead of reassigning
-                    const newSections: Array<{ name: string | null; ingredients: string[] }> = [];
-                    
-                    // First section: main ingredients (first 2)
-                    if (ingredients.length >= 2) {
-                      newSections.push({
-                        name: null,
-                        ingredients: ingredients.slice(0, 2)
-                      });
-                    }
-                    
-                    // Second section: glaze ingredients (rest)
-                    if (ingredients.length > 2) {
-                      newSections.push({
-                        name: glazeHeader.name,
-                        ingredients: ingredients.slice(2)
-                      });
-                    }
-                    
-                    if (newSections.length > 0) {
-                      // Replace the sections array with new sections
-                      ingredientSections = newSections;
-                      console.log('[HTML-EXTRACT] Created sections from HTML headers:', ingredientSections.map(s => ({ name: s.name, count: s.ingredients.length })));
-                    }
-                  }
-                }
               }
               
               console.log('[HTML-EXTRACT] Extracted ingredients:', ingredients.length, 'sections:', ingredientSections.length);
