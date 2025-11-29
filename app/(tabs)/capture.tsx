@@ -75,6 +75,39 @@ function hasMeaningfulRecipeData(data?: RecipeExtraction | null): boolean {
   return ingCount >= 2 || stepCount >= 1;
 }
 
+// Helper: explode lines that contain multiple amount patterns into
+// separate ingredients, e.g.:
+// "1 tsp salt 2¼ tsp active dry yeast ¾ cup warm milk"
+//   -> ["1 tsp salt", "2¼ tsp active dry yeast", "¾ cup warm milk"]
+function explodeMultiAmountLine(line: string): string[] {
+  const text = (line || "").trim();
+  if (!text) return [];
+  const AMOUNT_MULTI =
+    /(\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?|[¼-¾⅐-⅞]|\d+(?:\.\d+)?\s*[–—-]\s*\d+(?:\.\d+)?)/g;
+  const indices: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = AMOUNT_MULTI.exec(text)) !== null) {
+    const idx = m.index;
+    const ch = text[idx];
+    // If this match is a standalone unicode fraction that immediately
+    // follows a digit (e.g., "2¼"), then that fraction is part of the
+    // SAME quantity and should not start a new slice.
+    if (/[¼-¾⅐-⅞]/.test(ch) && idx > 0 && /\d/.test(text[idx - 1])) {
+      continue;
+    }
+    indices.push(idx);
+  }
+  if (indices.length <= 1) return [text];
+  const pieces: string[] = [];
+  for (let i = 0; i < indices.length; i++) {
+    const start = indices[i];
+    const end = i + 1 < indices.length ? indices[i + 1] : text.length;
+    const slice = text.slice(start, end).trim();
+    if (slice) pieces.push(slice);
+  }
+  return pieces.length ? pieces : [text];
+}
+
 function decodeHtmlEntitiesLite(input: string): string {
   return input
     .replace(/&amp;/gi, "&")
@@ -3297,10 +3330,49 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   return ing.replace(/[\s•\u2022\u25CF\u25CB\-]+\s*$/, '').trim();
                 }).filter(ing => ing.length > 0);
                 
-                // Deduplicate ingredients (normalize and compare)
+                // Helper: explode lines that contain multiple amount patterns into
+                // separate ingredients, e.g.:
+                // "1 tsp salt 2¼ tsp active dry yeast ¾ cup warm milk"
+                //   -> ["1 tsp salt", "2¼ tsp active dry yeast", "¾ cup warm milk"]
+                const explodeMultiAmountLine = (line: string): string[] => {
+                  const text = (line || "").trim();
+                  if (!text) return [];
+                  const AMOUNT_MULTI = /(\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?|[¼-¾⅐-⅞]|\d+(?:\.\d+)?\s*[–—-]\s*\d+(?:\.\d+)?)/g;
+                  const indices: number[] = [];
+                  let m: RegExpExecArray | null;
+                  while ((m = AMOUNT_MULTI.exec(text)) !== null) {
+                    const idx = m.index;
+                    const ch = text[idx];
+                    // If this match is a standalone unicode fraction that immediately
+                    // follows a digit (e.g., "2¼"), then that fraction is part of the
+                    // SAME quantity and should not start a new slice.
+                    if (/[¼-¾⅐-⅞]/.test(ch) && idx > 0 && /\d/.test(text[idx - 1])) {
+                      continue;
+                    }
+                    indices.push(idx);
+                  }
+                  if (indices.length <= 1) return [text];
+                  const pieces: string[] = [];
+                  for (let i = 0; i < indices.length; i++) {
+                    const start = indices[i];
+                    const end = i + 1 < indices.length ? indices[i + 1] : text.length;
+                    const slice = text.slice(start, end).trim();
+                    if (slice) pieces.push(slice);
+                  }
+                  return pieces.length ? pieces : [text];
+                };
+                
+                // First expand any lines that contain multiple amounts
+                const expandedIngredients: string[] = [];
+                for (const ing of cleanedIngredients) {
+                  const parts = explodeMultiAmountLine(ing);
+                  expandedIngredients.push(...parts);
+                }
+                
+                // Deduplicate ingredients (normalize and compare) on expanded list
                 const deduplicated: string[] = [];
                 const seen = new Set<string>();
-                for (const ing of cleanedIngredients) {
+                for (const ing of expandedIngredients) {
                   // Normalize for comparison: lowercase, remove extra spaces, remove parentheticals
                   const normalized = ing.toLowerCase().replace(/\s+/g, ' ').trim();
                   const baseIng = normalized.replace(/\s*\([^)]*\)/g, '').trim();
@@ -3667,6 +3739,28 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   // Extract key ingredient name for comparison
                   const qtyUnitMatch = normalized.match(/^(\d+(?:-\d+)?(?:\/\d+)?(?:\.\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])\s*(cup|cups|tsp|tbsp|oz|lb|g|gram|kg|ml|l|clove|cloves)\s+(.+)$/i);
                   const ingredientName = qtyUnitMatch ? qtyUnitMatch[3].trim() : normalized;
+                  
+                  // If this new ingredient line contains multiple amount patterns
+                  // (e.g., "1 tsp salt 2¼ tsp active dry yeast ¾ cup warm milk") and
+                  // ALL of its component pieces are already present in the existing
+                  // ingredient set, skip adding the combined line as it would be
+                  // a confusing duplicate.
+                  const multiParts = explodeMultiAmountLine(newIng);
+                  if (multiParts.length > 1) {
+                    let allPartsExist = true;
+                    for (const part of multiParts) {
+                      const partNorm = part.toLowerCase().replace(/\s+/g, ' ').trim();
+                      const partBase = partNorm.replace(/\s*\([^)]*\)/g, '').trim();
+                      if (!existingIngSet.has(partNorm) && !existingIngSet.has(partBase)) {
+                        allPartsExist = false;
+                        break;
+                      }
+                    }
+                    if (allPartsExist) {
+                      dbg('[TikTok] Skipping combined multi-amount ingredient (all parts already exist):', newIng);
+                      continue;
+                    }
+                  }
                   
                   // Check if we already have this ingredient
                   if (!existingIngSet.has(normalized) && !existingIngSet.has(baseIng) && !existingIngSet.has(ingredientName)) {
