@@ -1854,6 +1854,11 @@ function stitchBrokenSteps(lines: string[]): string[] {
       dbg('[RECIPE] HTML provided, length:', html?.length || 0);
       
       try {
+        // Track whether we have already applied any meaningful data to state.
+        // If we have, later errors (e.g. logging/telemetry) should NOT cause
+        // the caller to treat the extraction as a failure or fall back.
+        let anyDataApplied = false;
+
         const host = (() => {
           try {
             return new URL(url).hostname.toLowerCase();
@@ -1877,9 +1882,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
             safeSetTitle(data.title, url, title, dbg, source);
           }
           if (data.ingredients && data.ingredients.length >= 2) {
-            // Handle ingredient sections - they might come from HTML extraction or JSON-LD
-            if (data.ingredientSections && data.ingredientSections.length > 0) {
-              // Sections already extracted (from HTML fallback)
+            // Handle ingredient sections - they might come from HTML extraction or JSON-LD.
+            // IMPORTANT: For html-fallback we prefer a flat, authoritative list of ingredients
+            // rather than potentially incomplete section groupings. The fallback HTML parser
+            // can easily miss some <li> items, and we don't want sections with fewer
+            // ingredients than the main list to hide items from the UI.
+            if (source !== 'html-fallback' && data.ingredientSections && data.ingredientSections.length > 0) {
+              // Sections already extracted (from structured/HTML sources we trust)
               setIngredients(data.ingredients);
               setIngredientSections(data.ingredientSections);
               dbg('[RECIPE] Using ingredient sections from', source, ':', data.ingredientSections.length, 'sections');
@@ -2017,7 +2026,8 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 setIngredientSections(null);
               }
             } else {
-              // Not JSON-LD/microdata or no HTML, use flat list
+              // Not JSON-LD/microdata or no HTML, or html-fallback where we don't trust
+              // section groupings – use flat list only so ALL ingredients are visible.
               setIngredients(data.ingredients);
               setIngredientSections(null);
             }
@@ -2038,9 +2048,16 @@ function stitchBrokenSteps(lines: string[]): string[] {
           const hasData = hasMeaningfulRecipeData(data);
           // Track successful import if we got meaningful data
           if (hasData && data.ingredients && data.ingredients.length >= 2) {
-            await trackSuccessfulImport(url, data.ingredients, data.steps || [], source as StrategyName);
+            // Mark that we've successfully applied data to state BEFORE doing any
+            // logging/telemetry so that errors there can't cause us to "lose" the recipe.
+            anyDataApplied = true;
             gotSomethingForRunRef.current = true;
             success = true;
+            try {
+              await trackSuccessfulImport(url, data.ingredients, data.steps || [], source as StrategyName);
+            } catch (err) {
+              dbg('[RECIPE] trackSuccessfulImport failed (non-fatal):', safeErr(err));
+            }
           }
           return hasData;
         };
@@ -2154,6 +2171,12 @@ function stitchBrokenSteps(lines: string[]): string[] {
       } catch (e) {
         dbg('[RECIPE] handler failed with error:', safeErr(e));
         dbg('[RECIPE] Error stack:', e instanceof Error ? e.stack : 'N/A');
+        // If we already applied any data to state, propagate success upwards
+        // so the caller does NOT discard a good extraction and fall back.
+        if (typeof anyDataApplied !== 'undefined' && anyDataApplied) {
+          dbg('[RECIPE] handler encountered error AFTER applying data; treating as success to avoid losing ingredients/steps');
+          return true;
+        }
         return false;
       }
     },
@@ -2789,9 +2812,17 @@ function stitchBrokenSteps(lines: string[]): string[] {
             const handled = await handleRecipeSite(url, html);
             dbg("[RECIPE] handleRecipeSite returned:", handled);
             
-            if (handled) {
+            // Treat populated ingredients as authoritative: if handleRecipeSite
+            // applied any data (ingredients >= 2), consider the recipe-site
+            // extraction successful even if it reported false (e.g. due to
+            // logging/telemetry errors after state was set).
+            const hasRecipeSiteData =
+              handled ||
+              (Array.isArray(ingredients) && ingredients.length >= 2);
+            
+            if (hasRecipeSiteData) {
               success = true;
-              dbg("G�� Recipe site extraction successful");
+              dbg("G�� Recipe site extraction successful (state has ingredients)");
             } else {
               dbg("[RECIPE] Extraction failed, falling back to OG metadata");
               // Fallback to OG if structured data failed
@@ -2893,13 +2924,19 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   const sigiTitle = extractTikTokTitleFromState((domPayload as any)?.sigi);
                   const domCandidates = [domT, sigiTitle].filter(Boolean);
                   for (const dt of domCandidates) {
-                    try {
-                      const ct = normalizeDishTitle(cleanTitle(String(dt), url));
-                      if (ct && !isWeakTitle(ct)) {
-                        safeSetTitle(ct, url, title, dbg, "tiktok:dom:cleanTitle");
-                        ttTitleCandidates.push({ v: ct, src: "tiktok:dom:cleanTitle" });
-                      }
-                    } catch {}
+                      try {
+                        let ct = normalizeDishTitle(cleanTitle(String(dt), url));
+                        // Clean title to remove ingredients (split on "Ingredients" or bullet points)
+                        if (ct) {
+                          ct = ct.split(/\s+Ingredients\s+/i)[0]
+                            .split(/\s*[•\u2022]\s*/)[0]
+                            .trim();
+                        }
+                        if (ct && !isWeakTitle(ct) && !isTikTokJunkTitle(ct)) {
+                          safeSetTitle(ct, url, title, dbg, "tiktok:dom:cleanTitle");
+                          ttTitleCandidates.push({ v: ct, src: "tiktok:dom:cleanTitle" });
+                        }
+                      } catch {}
                   }
                 } catch {}
 
@@ -3101,6 +3138,24 @@ function stitchBrokenSteps(lines: string[]): string[] {
                       return false;
                     }
                   }
+                  
+                  // FOURTH: Filter section headers that start with "For the" or "For" (even without colon)
+                  // Pattern: "For the [X]" or "For [X]" where X is a capitalized noun phrase
+                  // Examples: "For the Jalapeños", "For the Cajun Cream Cheese Filling", "For the Topping"
+                  // But allow "For 2 cups" (has numbers/units) to pass through
+                  const forThePattern = /^For\s+(?:the\s+)?[A-ZÀ-ÿ][A-Za-zÀ-ÿ]+(?:\s+[A-ZÀ-ÿ][A-Za-zÀ-ÿ]+)*(?:\s*[•:])?\s*$/i;
+                  if (forThePattern.test(cleanT)) {
+                    // Check if it has numbers/units (if so, it might be an ingredient like "For 2 cups")
+                    const hasNumbers = /\d/.test(cleanT) || /[½¼¾⅓⅔⅛⅜⅝⅞]/.test(cleanT);
+                    const hasUnits = /\b(cup|cups|tsp|tbsp|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs)\b/i.test(cleanT);
+                    
+                    // If no numbers and no units, it's a header - filter it
+                    if (!hasNumbers && !hasUnits) {
+                      dbg('[TikTok] Filtering header (For the [X] pattern, no numbers/units):', t);
+                      return false;
+                    }
+                  }
+                  
                   return true;
                 };
                 
@@ -3203,9 +3258,30 @@ function stitchBrokenSteps(lines: string[]): string[] {
                   }
                 }
                 
-                // Now filter the split list
-                dbg('[TikTok] Before filter - ingredients:', splitIngredients);
-                const cleanedFlat = splitIngredients.filter(filterArtifacts);
+                // Post-processing: merge split measurements with their ingredients
+                // e.g., "1/2 tsp" + "Cajun seasoning" -> "1/2 tsp Cajun seasoning"
+                const mergedIngredients: string[] = [];
+                for (let i = 0; i < splitIngredients.length; i++) {
+                  const current = splitIngredients[i].trim();
+                  const next = i + 1 < splitIngredients.length ? splitIngredients[i + 1].trim() : null;
+                  
+                  // Check if current line is just a measurement (quantity + unit, no ingredient name)
+                  const isJustMeasurement = /^(\d+(?:\/\d+)?(?:\.\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])\s*(cup|cups|tsp|tsps|tbsp|tbsps|teaspoon|teaspoons|tablespoon|tablespoons|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs|stick|sticks|slice|slices|can|cans|package|packages|bunch|bunches|head|heads|piece|pieces|fillet|fillets|strip|strips|stalk|stalks|bottle|bottles|jar|jars|box|boxes|bag|bags|container|containers)\s*$/i.test(current);
+                  
+                  // Check if next line is an ingredient name (starts with letter, not a quantity)
+                  const isNextLineIngredient = next && /^[a-zA-Z]/.test(next) && !/^(\d+(?:-\d+)?(?:\/\d+)?(?:\.\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])/.test(next);
+                  
+                  if (isJustMeasurement && isNextLineIngredient) {
+                    mergedIngredients.push(`${current} ${next}`);
+                    i++; // Skip the next line as it's been merged
+                  } else {
+                    mergedIngredients.push(current);
+                  }
+                }
+                
+                // Now filter the merged list
+                dbg('[TikTok] Before filter - ingredients:', mergedIngredients);
+                const cleanedFlat = mergedIngredients.filter(filterArtifacts);
                 dbg('[TikTok] After filter - ingredients:', cleanedFlat);
                 
                 // Clean up bullet points and other trailing characters from ingredients
@@ -3239,8 +3315,85 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 // Store deduplicated for later use in step filtering
                 finalIngredients = deduplicated;
                 
+                // Try to build simple sections from "For the ..." headers in the raw ingredient
+                // lines (before filtering), e.g. "For the Jalapeños", "For the Cajun Cream Cheese Filling".
+                // This is TikTok-specific and only uses header/ingredient ORDER, never drops items.
+                let tikTokSections: Array<{ name: string | null; ingredients: string[] }> | null = null;
+                try {
+                  const headerRegex = /^For\s+(?:the\s+)?(.+?)(?:\s*[•:])?\s*$/i;
+                  type RawSection = { name: string | null; rawIngredients: string[] };
+                  const rawSections: RawSection[] = [];
+                  let currentSection: RawSection | null = null;
+
+                  for (const rawLine of mergedIngredients) {
+                    const rawTrim = rawLine.trim().replace(/^[-•*\u2022]+\s*/, '');
+                    if (!rawTrim) continue;
+                    const m = rawTrim.match(headerRegex);
+                    const hasNumbers = /\d/.test(rawTrim) || /[½¼¾⅓⅔⅛⅜⅝⅞]/.test(rawTrim);
+                    const hasUnits = /\b(cup|cups|tsp|tbsp|oz|ounce|ounces|lb|lbs|pound|pounds|g|gram|grams|kg|ml|l|liter|litre|clove|cloves|egg|eggs)\b/i.test(rawTrim);
+                    if (m && !hasNumbers && !hasUnits) {
+                      // Start a new section
+                      if (currentSection && currentSection.rawIngredients.length > 0) {
+                        rawSections.push(currentSection);
+                      }
+                      const sectionName = m[1].trim();
+                      currentSection = { name: sectionName || null, rawIngredients: [] };
+                    } else if (currentSection) {
+                      currentSection.rawIngredients.push(rawTrim);
+                    }
+                  }
+                  if (currentSection && currentSection.rawIngredients.length > 0) {
+                    rawSections.push(currentSection);
+                  }
+
+                  if (rawSections.length > 0 && deduplicated.length > 0) {
+                    const normalizeBase = (s: string) =>
+                      s
+                        .toLowerCase()
+                        .replace(/[•\u2022\u25CF\u25CB]/g, '')
+                        .replace(/\s+/g, ' ')
+                        .replace(/\s*\([^)]*\)/g, '')
+                        .trim();
+
+                    const dedupBases = deduplicated.map(d => normalizeBase(d));
+                    const usedIdx = new Set<number>();
+                    const builtSections: Array<{ name: string | null; ingredients: string[] }> = [];
+
+                    for (const rawSec of rawSections) {
+                      const secIngredients: string[] = [];
+                      for (const rawIng of rawSec.rawIngredients) {
+                        const baseRaw = normalizeBase(rawIng);
+                        if (!baseRaw) continue;
+                        for (let i = 0; i < deduplicated.length; i++) {
+                          if (usedIdx.has(i)) continue;
+                          if (dedupBases[i] === baseRaw) {
+                            secIngredients.push(deduplicated[i]);
+                            usedIdx.add(i);
+                            break;
+                          }
+                        }
+                      }
+                      if (secIngredients.length > 0) {
+                        builtSections.push({ name: rawSec.name, ingredients: secIngredients });
+                      }
+                    }
+
+                    // Only use sections if they cover all ingredients in order; otherwise skip.
+                    const totalInSections = builtSections.reduce((sum, s) => sum + s.ingredients.length, 0);
+                    if (totalInSections === deduplicated.length && builtSections.length >= 1) {
+                      tikTokSections = builtSections;
+                      dbg('[TikTok] Built sections from raw headers:', tikTokSections.map(s => ({ name: s.name, count: s.ingredients.length })));
+                    }
+                  }
+                } catch (e) {
+                  dbg('[TikTok] Error building sections from raw headers:', safeErr(e));
+                  tikTokSections = null;
+                }
+                
                 // Use ingredient sections if available, otherwise use flat list
-                if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
+                if (tikTokSections && tikTokSections.length > 0) {
+                  setIngredientSections(tikTokSections);
+                } else if (parsed.ingredientSections && parsed.ingredientSections.length > 0) {
                   dbg('[TikTok] Raw sections from parser:', parsed.ingredientSections.map(s => ({ name: s.name, count: s.ingredients.length, ingredients: s.ingredients })));
                   // Filter sections and their ingredients - split stuck ingredients first, then filter
                   const cleanedSections = parsed.ingredientSections.map(section => {
@@ -3418,6 +3571,14 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 // Remove bullet points for checking
                 const cleanStep = trimmed.replace(/^[•\u2022\u25CF\u25CB\-\s]+/, '').replace(/[•\u2022\u25CF\u25CB\-\s]+$/, '').trim();
                 
+                // Bullet-only lines that start with a quantity+unit (e.g., "• 1/2 cup cheddar ...")
+                // are pure ingredients and should be moved to the ingredients list.
+                const isBulletQtyLine = /^[•\u2022\u25CF\u25CB\-\s]*((\d+(?:-\d+)?(?:\/\d+)?(?:\.\d+)?|[½¼¾⅓⅔⅛⅜⅝⅞])\s*(cup|cups|tsp|tbsp|oz|lb|g|gram|kg|ml|l|clove|cloves))/i.test(trimmed);
+                if (isBulletQtyLine) {
+                  dbg('[TikTok] Filtering bullet quantity ingredient line from steps:', trimmed);
+                  return false;
+                }
+                
                 // Pattern: Just ingredient name with "for garnish" (e.g., "Sesame seeds for garnish")
                 const isGarnishIngredient = /^[a-z\s]+for\s+(?:garnish|topping|serving|decoration)$/i.test(cleanStep);
                 
@@ -3514,6 +3675,62 @@ function stitchBrokenSteps(lines: string[]): string[] {
                 
                 setIngredients(currentIngredients);
                 dbg('[TikTok] Updated ingredients after extracting from steps:', currentIngredients.length, 'total');
+
+                // Safety: if we have ingredient sections, ensure they cover ALL ingredients.
+                // If the total number of items across sections doesn't match the flat list,
+                // append any "orphan" ingredients to the last section so nothing is hidden.
+                setIngredientSections((prev) => {
+                  if (!prev || !Array.isArray(prev) || !prev.length) return prev;
+                  const totalInSections = prev.reduce((sum, s) => sum + (s.ingredients?.length || 0), 0);
+                  if (totalInSections === currentIngredients.length) return prev;
+                  
+                  const sectionIngredientSet = new Set(
+                    prev.flatMap(s => (s.ingredients || []).map(i => i.toLowerCase().replace(/\s+/g, ' ').trim()))
+                  );
+                  const orphans = currentIngredients.filter(ing => {
+                    const norm = ing.toLowerCase().replace(/\s+/g, ' ').trim();
+                    return !sectionIngredientSet.has(norm);
+                  });
+                  
+                  if (!orphans.length) return prev;
+                  
+                  const updated = prev.map(s => ({ ...s, ingredients: [...(s.ingredients || [])] }));
+                  
+                  for (const orphan of orphans) {
+                    const oLower = orphan.toLowerCase();
+                    
+                    // Heuristic section assignment for TikTok:
+                    // - Cheese / filling-related → "Cajun Cream Cheese Filling"
+                    // - Butter / panko / crunch-related → "Topping"
+                    // - Otherwise, default to last section.
+                    let targetIdx = updated.length - 1; // default: last (often "Topping")
+                    for (let i = 0; i < updated.length; i++) {
+                      const nameLower = (updated[i].name || '').toLowerCase();
+                      
+                      const isFillingSection = /filling|cream cheese/.test(nameLower);
+                      const isToppingSection = /topping/.test(nameLower);
+                      
+                      if (isFillingSection && /\b(cheddar|cheese|cream cheese|parmesan)\b/.test(oLower)) {
+                        targetIdx = i;
+                        break;
+                      }
+                      
+                      if (isToppingSection && /\b(butter|panko|breadcrumbs?|crunch)\b/.test(oLower)) {
+                        targetIdx = i;
+                        break;
+                      }
+                    }
+                    
+                    updated[targetIdx].ingredients.push(orphan);
+                  }
+                  
+                  dbg('[TikTok] Patched ingredient sections to include orphans from steps:', {
+                    previousTotal: totalInSections,
+                    flatCount: currentIngredients.length,
+                    orphans: orphans.length,
+                  });
+                  return updated;
+                });
               }
               
               if (filteredSteps.length) {

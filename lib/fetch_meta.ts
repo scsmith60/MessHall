@@ -320,7 +320,20 @@ function finalize(url: string, p: PartialPick, html: string, source: string, raw
 
   // 3) ingredients → cleaned strings (UI will later parse into qty/unit)
   const rawIng = Array.isArray(p.ingredients) ? p.ingredients : [];
-  const canonical = normalizeIngredientLines(rawIng);
+
+  // For structured recipe sources (JSON-LD / Microdata / hand-rolled blog parsers),
+  // we trust the site's own ingredient lines and avoid aggressive re-parsing.
+  // That prevents us from accidentally dropping amounts or mangling things like
+  // "1/4 cup (110℉/45℃) water" into just "110℉/45℃ water".
+  const isStructuredSource =
+    source === 'json-ld:Recipe' ||
+    source === 'microdata' ||
+    source === 'gordonramsay' ||
+    source === 'aroundmyfamilytable';
+
+  const ingredients = isStructuredSource
+    ? rawIng.map(s => String(s).trim()).filter(Boolean)
+    : normalizeIngredientLines(rawIng);
 
   // 4) steps → trimmed strings
   const steps = Array.isArray(p.steps) ? p.steps.map(s => String(s).trim()).filter(Boolean) : [];
@@ -340,7 +353,7 @@ function finalize(url: string, p: PartialPick, html: string, source: string, raw
     cleanedRawCaption = cleanedRawCaption.trim();
   }
 
-  return { url, title, image, ingredients: canonical, steps, rawCaption: cleanedRawCaption };
+  return { url, title, image, ingredients, steps, rawCaption: cleanedRawCaption };
 }
 
 function hasMeaningfulRecipeData(p: PartialPick): boolean {
