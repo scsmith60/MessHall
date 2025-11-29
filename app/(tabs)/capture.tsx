@@ -3189,6 +3189,13 @@ function stitchBrokenSteps(lines: string[]): string[] {
                         if (i > 5) {
                           // Check if the previous word ended (not mid-word)
                           const beforeSpace = trimmed.slice(Math.max(0, i - 10), i).trim();
+                          // If the text before the split is just a single quantity + unit
+                          // (e.g., "1 loaf", "2 cups"), treat it as part of the SAME ingredient.
+                          // We only want to split when there was already a complete ingredient
+                          // phrase before this capital word.
+                          if (/^\d+\s+\w+$/.test(beforeSpace)) {
+                            continue;
+                          }
                           // If we have a complete ingredient before this (has quantity/unit or is substantial)
                           if (beforeSpace.length > 3) {
                             // Check if this capital word is followed by something that looks like an ingredient
